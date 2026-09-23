@@ -1,0 +1,16 @@
+{
+  "name": "nemusic-on-steam",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "mkdir -p dist && starlight pack --release",
+    "dev": "mkdir -p dist && starlight watch",
+    "test": "node --experimental-strip-types --test frontend/*.test.ts",
+    "prepare": "starlight lsp"
+  },
+  "devDependencies": {
+    "@steambrew/starlight": "^1.1.3",
+    "@types/react": "19.1.1",
+    "@types/react-dom": "19.1.1"
+  }
+}

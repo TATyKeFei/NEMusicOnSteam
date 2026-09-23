@@ -1,0 +1,11 @@
+{
+  "diagnostics.disable": [
+    "undefined-global",
+    "lowercase-global"
+  ],
+  "workspace": {
+    "library": [
+      ".millennium/lsp/lua-types"
+    ]
+  }
+}

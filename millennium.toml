@@ -1,0 +1,36 @@
+[plugin]
+id = "com.nemusic.onsteam"
+name = "网易云音乐"
+version = "0.1.0"
+author = "NEMusicOnSteam"
+description = "把网易云官方网页播放器嵌进 Steam 主窗口。"
+
+[backend]
+entry = "backend/main.lua"
+sources = ["backend/**/*.lua"]
+
+[frontend]
+entry = "frontend/index.tsx"
+
+[frontend.globals]
+
+[compiler]
+# "auto" 会直接装进本机 Millennium。这里写成文件，没装 Millennium 时也能构建。
+output_path = "dist/com.nemusic.onsteam.star"
+
+[dev]
+auto_restart = true
+reload_steamui_when = "both"
+
+[inspect]
+depth = 4
+colors = true
+show_hidden = true
+
+[logger]
+padding = 0
+backend_prefix = "BCK"
+frontend_prefix = "FRT"
+
+[patches]
+debug = false
