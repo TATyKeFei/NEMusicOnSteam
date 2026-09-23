@@ -16,8 +16,9 @@
 
 ## Ai声明
 
+我不会typescript和lua，我臭玩rust和godotscript的。这个项目是我指挥Ai写的
 
-我不会typescript和lua，我臭写rust和godotscript的。这个项目是我指挥Ai写的
+Grok4.7是真笨啊，还是gpt6好使
 
 反正这个项目也不大就内嵌个页面没啥技术含量
 
