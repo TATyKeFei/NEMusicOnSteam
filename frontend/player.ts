@@ -1,7 +1,7 @@
 import { PlayerChrome, type PlayerMode } from "./chrome.ts";
 import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "./constants.ts";
 import { sameBounds, type Bounds } from "./layout.ts";
-import { browserStorage, readSettings, writeSettings, type LauncherPosition, type PlayerSettings } from "./settings.ts";
+import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "./settings.ts";
 import {
   BROWSER_VIEW_STACK_TOP,
   browserId,
@@ -174,10 +174,13 @@ export class PlayerController {
     if (win.document?.body == null) return;
     this.chrome.mount(win.document, {
       onOpen: () => this.open(),
+      onNavigateAway: () => {
+        if (this.mode === "expanded") this.collapse();
+      },
+      onToolbarChange: () => this.syncView(false),
       onCollapse: () => this.collapse(),
       onReload: () => this.reload(),
       onClose: () => this.close(),
-      onMove: (position) => this.moveLauncher(position),
     });
     if (this.resizeTarget !== win) {
       this.unbindResize();
@@ -195,12 +198,6 @@ export class PlayerController {
     this.render();
     this.syncView(false);
   };
-
-  private moveLauncher(position: LauncherPosition): void {
-    this.settings = { ...this.settings, launcher: position };
-    writeSettings(browserStorage(), this.settings);
-    this.render();
-  }
 
   private ensureView(win: SteamWindow, popup: SteamPopup | null): void {
     const client = win.SteamClient?.BrowserView?.Create != null ? win.SteamClient : sharedSteamClient();
@@ -289,12 +286,14 @@ export class PlayerController {
     this.render();
   };
 
+  toggleFromNav(): string {
+    return this.open();
+  }
+
   private render(): void {
     const bounds = this.chrome.render({
       mode: this.mode,
       status: this.status,
-      launcherText: this.mode === "collapsed" && this.settings.keepAliveWhenCollapsed ? "网易云 · 后台" : "网易云",
-      launcher: this.settings.launcher,
       keepAlive: this.settings.keepAliveWhenCollapsed,
     });
     if (bounds != null) this.applyBounds(bounds, false);
@@ -318,8 +317,6 @@ export class PlayerController {
     const bounds = this.chrome.render({
       mode: this.mode,
       status: this.status,
-      launcherText: this.mode === "collapsed" && this.settings.keepAliveWhenCollapsed ? "网易云 · 后台" : "网易云",
-      launcher: this.settings.launcher,
       keepAlive: this.settings.keepAliveWhenCollapsed,
     });
     if (bounds != null) this.applyBounds(bounds, force);

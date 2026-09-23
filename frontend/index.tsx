@@ -34,7 +34,7 @@ function SettingsContent() {
     <>
       <Field
         label="播放器"
-        description={`${snapshot.status}。展开时盖住主窗口里菜单栏以下的区域，要操作 Steam 先收起。`}
+        description={`${snapshot.status}。点击顶部其他栏目即可返回 Steam 页面。`}
         bottomSeparator="standard"
       >
         <DialogButton onClick={() => player.open()}>{snapshot.mode === "closed" ? "打开" : "展开"}</DialogButton>
@@ -79,6 +79,26 @@ function SettingsContent() {
 /** @ffi */
 export function openPlayer(): string {
   return getPlayer().open();
+}
+
+/** @ffi */
+export function togglePlayer(): string {
+  return getPlayer().toggleFromNav();
+}
+
+/** @ffi */
+export function collapsePlayer(): string {
+  return getPlayer().collapse();
+}
+
+/** @ffi */
+export function reloadPlayer(): string {
+  return getPlayer().reload();
+}
+
+/** @ffi */
+export function closePlayer(): string {
+  return getPlayer().close();
 }
 
 /** @ffi */
