@@ -12,16 +12,16 @@
 
 # 声明
 
-非任何官方插件! 本项目与网易、Valve 都没关系。我要有关系我还写这个sb项目
-
-登录态在 Steam 自带的浏览器里，和系统浏览器不共享
+- 非任何官方插件! 本项目与网易、Valve 都没关系。我要有关系我还在这写这个sb项目
+- 登录态在 Steam 自带的浏览器里，和系统其他浏览器不共享
+- Ai生成: 这个项目是我指挥Ai写的，反正这个项目也不大就内嵌个页面支持点小玩意没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的
 
 # 支持
 
-| 系统    | 可用性                 | 备注       |
-| :---    | :---                   | :---       |
-| Linux   | 支持x86_64             | 由于Millennium仅支持x86_64版本的Steam不支持arm，我也无能为力                           |
-| Windows | 未知                   | 我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份     |
+| 系统    | 可用性                 | 备注及注意事项       |
+| :---    | :---                   | :---                 |
+| Linux   | 仅支持x86_64版本       | 由于Millennium仅支持x86_64版本的Steam不支持arm，我也无能为力                           |
+| Windows | 未知、仅支持x86_64版本 | 我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份     |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
 | Mac OS  | 不支持                 | 我是穷鬼安卓人没钱买苹果测试，不过Millennium好像也没支持MacOS                          |
 
@@ -32,14 +32,14 @@
 | MPRIS      | 支持媒体键、控制音量进度条; 循环、列表播放还未支持  |  |
 | 通知       | 支持发送系统通知显示歌曲信息、封面                    | Mako、Windows未测试，仅测试了KDE通知        |
 | 音质设置   | 支持           | 在**Steam → 设置 → 网易云音乐**里可以设置。但要注意账号是否有vip不然开不了高音质 |
-| 后台播放   | 支持  | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话变听歌吧?       |
-| 游戏中叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为傻逼Steam不支持Wayland |
+| 后台播放   | 支持  | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
+| Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | 状态显示当前歌曲 | 考虑支持中 | 让好友能看到你在听啥歌 |
-|  |
+|  | |
 
-# 安装
+# 安装教程
 
-## 注意事项
+## 需求
 
 - 需要 Millennium **3.4.0+**
 - 不支持通过 Flatpak / Snap 安装的 Steam
@@ -79,7 +79,7 @@ https://docs.steambrew.app/users/getting-started/installation
 curl -fsSL "https://steambrew.app/install.sh" | bash
 ```
 
-## 安装插件
+## 开始安装插件
 
 从[Releases](https://github.com/TATyKeFei/NEMusicOnSteam/releases)页面下载最新版插件，放入这个路径里
 
@@ -164,14 +164,6 @@ npm run dev
 - Steam 更新可能改掉 `BrowserView` 或主窗口名字 `SP Desktop`可能导致打不开，需要时间适配
 - MPRIS 通过 DevTools 在网易云页面读取状态并调用现有播放器动作，依赖网页的 React/Redux 结构；网易云音乐Web版改版可能需要更新适配
 - 关闭播放器时会把那个节流开关设回去。这时候如果正在语音，有可能和通话抢同一个开关
-
-## Ai声明
-
-我不会typescript和lua，我臭玩rust和godotscript的。这个项目是我指挥Ai写的
-
-Grok4.7是真笨啊，还是gpt6好使
-
-反正这个项目也不大就内嵌个页面支持点小玩意没啥技术含量
 
 # 参考的项目
 
