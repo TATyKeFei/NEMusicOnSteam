@@ -44,6 +44,7 @@ INTROSPECTION = """<node>
     <property name="CanPause" type="b" access="read"/>
     <property name="CanSeek" type="b" access="read"/>
     <property name="CanControl" type="b" access="read"/>
+    <property name="Volume" type="d" access="readwrite"/>
   </interface>
 </node>"""
 
@@ -60,7 +61,7 @@ class MprisService:
         self.connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self.node = Gio.DBusNodeInfo.new_for_xml(INTROSPECTION)
         for interface in self.node.interfaces:
-            self.connection.register_object(OBJECT_PATH, interface, self.on_method, self.on_property, None)
+            self.connection.register_object(OBJECT_PATH, interface, self.on_method, self.on_property, self.on_set_property)
         self.owner = Gio.bus_own_name_on_connection(self.connection, BUS_NAME, Gio.BusNameOwnerFlags.NONE, None, None)
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.make_handler())
         self.server.daemon_threads = True
@@ -126,6 +127,8 @@ class MprisService:
                     return
                 with service.lock:
                     previous = service.state
+                    if state.get("volume") is None:
+                        state["volume"] = previous.get("volume")
                     service.state = state
                     service.last_seen = time.monotonic()
                 changed = []
@@ -141,6 +144,10 @@ class MprisService:
                     changed.append("CanGoPrevious")
                 if any(previous.get(key) != state.get(key) for key in ("active", "canSeek")):
                     changed.append("CanSeek")
+                if previous.get("volume") != state.get("volume"):
+                    changed.append("Volume")
+                if state.get("active"):
+                    changed.append("Position")
                 if changed:
                     GLib.idle_add(service.emit_changed, changed)
                 if previous.get("trackId") == state.get("trackId") and previous.get("active") and state.get("active"):
@@ -171,6 +178,13 @@ class MprisService:
             if current is not None and current.unpack() == track_id:
                 self.queue({"action": "setposition", "value": position})
         invocation.return_value(None)
+
+    def on_set_property(self, _connection, _sender, _path, interface, name, value):
+        if interface != "org.mpris.MediaPlayer2.Player" or name != "Volume":
+            return False
+        volume = max(0.0, min(1.0, float(value.unpack())))
+        self.queue({"action": "volume", "value": volume})
+        return True
 
     def metadata(self, state):
         title = str(state.get("title") or "")
@@ -219,6 +233,7 @@ class MprisService:
             "CanPause": GLib.Variant("b", active),
             "CanSeek": GLib.Variant("b", active and bool(state.get("canSeek"))),
             "CanControl": GLib.Variant("b", active),
+            "Volume": GLib.Variant("d", max(0.0, min(1.0, float(state.get("volume") if state.get("volume") is not None else 1.0)))),
         }
         return player.get(name)
 

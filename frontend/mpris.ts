@@ -1,5 +1,6 @@
 import { ChromeDevToolsProtocol, ffi } from "millennium";
 import { isPlayerDocument } from "./constants.ts";
+import { commandScript, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
 
 type TrackState = {
   active: boolean;
@@ -14,9 +15,8 @@ type TrackState = {
   canSeek: boolean;
   canGoNext: boolean;
   canGoPrevious: boolean;
+  volume: number | null;
 };
-
-type Command = { action: string; value?: number };
 
 const getEndpoint = ffi<[], string>("mpris_endpoint");
 const EMPTY_STATE: TrackState = {
@@ -32,43 +32,8 @@ const EMPTY_STATE: TrackState = {
   canSeek: false,
   canGoNext: false,
   canGoPrevious: false,
+  volume: 1,
 };
-
-const SNAPSHOT_SCRIPT = `(() => {
-  const media = document.querySelector('audio, video');
-  const metadata = navigator.mediaSession?.metadata;
-  const title = metadata?.title || document.querySelector('[class*="song-name"], [class*="songName"], [class*="SongName"]')?.textContent?.trim() || '';
-  const artist = metadata?.artist || document.querySelector('[class*="artist-name"], [class*="artistName"]')?.textContent?.trim() || '';
-  const album = metadata?.album || '';
-  const artUrl = metadata?.artwork?.at(-1)?.src || '';
-  const duration = Number.isFinite(media?.duration) ? media.duration : 0;
-  const position = Number.isFinite(media?.currentTime) ? media.currentTime : 0;
-  const controls = Array.from(document.querySelectorAll('button, [role="button"], [class*="next"], [class*="prev"]')).map(element => [element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid'), element.className].filter(value => typeof value === 'string').join(' ').toLowerCase());
-  return { active: true, playbackStatus: media ? (media.paused ? 'Paused' : 'Playing') : navigator.mediaSession?.playbackState === 'playing' ? 'Playing' : 'Stopped', title, artist, album, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: !!media && Number.isFinite(media.duration) && media.duration > 0, canGoNext: controls.some(label => /下一首|下一曲|next/.test(label)), canGoPrevious: controls.some(label => /上一首|上一曲|prev/.test(label)) };
-})()`;
-
-function commandScript(command: Command): string {
-  return `(() => {
-    const command = ${JSON.stringify(command)};
-    const media = document.querySelector('audio, video');
-    const button = (words) => Array.from(document.querySelectorAll('button, [role="button"], [class*="next"], [class*="prev"]')).find(element => {
-      const label = [element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid'), element.className].filter(value => typeof value === 'string').join(' ').toLowerCase();
-      return words.some(word => label.includes(word));
-    });
-    const click = words => { const element = button(words); if (element) element.click(); return !!element; };
-    switch (command.action) {
-      case 'play': if (media) { media.play(); return true; } return click(['播放', 'play']);
-      case 'pause': if (media) { media.pause(); return true; } return click(['暂停', 'pause']);
-      case 'playpause': if (media) { if (media.paused) media.play(); else media.pause(); return true; } return click(['播放', '暂停', 'play', 'pause']);
-      case 'stop': if (media) { media.pause(); media.currentTime = 0; return true; } return false;
-      case 'next': return click(['下一首', '下一曲', 'next']);
-      case 'previous': return click(['上一首', '上一曲', 'previous', 'prev']);
-      case 'seek': if (media && Number.isFinite(media.duration)) { media.currentTime = Math.max(0, Math.min(media.duration, media.currentTime + command.value / 1000000)); return true; } return false;
-      case 'setposition': if (media && Number.isFinite(media.duration)) { media.currentTime = Math.max(0, Math.min(media.duration, command.value / 1000000)); return true; } return false;
-    }
-    return false;
-  })()`;
-}
 
 export class MprisBridge {
   private timer = 0;
@@ -80,6 +45,7 @@ export class MprisBridge {
   private sessionId: string | null = null;
   private state: TrackState = EMPTY_STATE;
   private status = "尚未连接";
+  private commandError = "";
 
   constructor(private readonly open: () => void, private readonly close: () => void) {}
 
@@ -165,7 +131,7 @@ export class MprisBridge {
 
   private async evaluate(expression: string, userGesture = false): Promise<unknown> {
     if (!this.sessionId) return null;
-    const result = await ChromeDevToolsProtocol.send("Runtime.evaluate", { expression, returnByValue: true, userGesture }, this.sessionId);
+    const result = await ChromeDevToolsProtocol.send("Runtime.evaluate", { expression, returnByValue: true, userGesture, awaitPromise: true }, this.sessionId);
     if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
     return result.result.value;
   }
@@ -176,19 +142,23 @@ export class MprisBridge {
     try {
       if (!(await this.connect())) return;
       await this.attach();
-      this.state = this.sessionId ? (await this.evaluate(SNAPSHOT_SCRIPT)) as TrackState : EMPTY_STATE;
-      const update = await this.request("/state", this.state);
-      if (!update.ok) throw new Error(`MPRIS state update failed: ${update.status}`);
       const commands = await this.request("/commands");
       if (!commands.ok) throw new Error(`MPRIS command poll failed: ${commands.status}`);
-      this.status = "MPRIS 已连接";
       for (const command of (await commands.json()) as Command[]) {
         if (command.action === "open") this.open();
         else if (command.action === "close") this.close();
         else if (this.sessionId) {
-          await this.evaluate(commandScript(command), true);
+          const handled = await this.evaluate(commandScript(command), true);
+          if (["volume", "seek", "setposition"].includes(command.action)) {
+            this.commandError = handled ? "" : `MPRIS ${command.action} 未执行；未找到可用的网易云播放器状态`;
+            if (!handled) console.warn("[NEMusic] MPRIS command not handled", command.action);
+          }
         }
       }
+      this.state = this.sessionId ? (await this.evaluate(SNAPSHOT_SCRIPT)) as TrackState : EMPTY_STATE;
+      const update = await this.request("/state", this.state);
+      if (!update.ok) throw new Error(`MPRIS state update failed: ${update.status}`);
+      this.status = this.commandError || "MPRIS 已连接";
     } catch (error) {
       console.warn("[NEMusic] MPRIS bridge", error);
       this.status = "MPRIS 连接失败；请检查 Steam 控制台和辅助进程日志";

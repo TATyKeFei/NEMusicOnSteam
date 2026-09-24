@@ -64,6 +64,8 @@ MPRIS 使用 Millennium 的 Chrome DevTools 接口读取内嵌网页，再由随
 
 播放一首歌后可以用 `playerctl -p NEMusicOnSteam metadata` 查看信息，或用 `playerctl -p NEMusicOnSteam play-pause` 测试控制。插件设置页会显示 MPRIS 连接状态。
 
+进度跳转和音量控制通过网页现有的 Redux 播放器动作执行，音量读取播放器确认后的状态，关闭音量浮层也能操作。可以用 `playerctl -p NEMusicOnSteam position 60` 跳到第 60 秒，用 `playerctl -p NEMusicOnSteam volume 0.3` 调到 30%，再用 `playerctl -p NEMusicOnSteam volume` 查看回报。如果网页改版后无法找到播放器状态，插件设置页和 Steam 控制台会报告命令未执行。
+
 ## 依赖
 
 - Millennium **3.4.0** 或更新。Linux 不支持 Flatpak / Snap 版 Steam。
@@ -119,6 +121,6 @@ npm run dev
 - 第一次要在内嵌页里登录。登录弹窗依赖 Steam 允许非信任弹窗（插件创建 BrowserView 时关了 `bOnlyAllowTrustedPopups`）。
 - 播放器页面使用 Steam 的 BrowserView 承载网页；Steam 本身没有供插件注册独立主窗口路由的稳定接口。
 - Steam 更新可能改掉 `BrowserView` 或主窗口名字 `SP Desktop`，那样就打不开画面。
-- 不注入网易云页面内部，也改不了它的播放逻辑。
+- MPRIS 通过 DevTools 在网易云页面读取状态并调用现有播放器动作，依赖网页的 React/Redux 结构；网页改版可能需要更新适配。
 - 关闭播放器时会把那个节流开关设回去。这时候如果正在语音，有可能和通话抢同一个开关。
 - Millennium 官方说法是客户端内的主题和插件不违反订阅协议。这仍然是非官方修改，风险自己担。
