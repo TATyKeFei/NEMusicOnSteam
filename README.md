@@ -58,12 +58,17 @@ Grok4.7是真笨啊，还是gpt6好使
 
 这是对照当前 Steam 的 `steamui` 写的，**还没有在最小化状态下实际听完一首再切歌的验证**。如果最小化之后声音还在、但播完不切下一首，多半是网页自己暂停了，或者这版 CEF 没理会这个接口。插件解决不了那种情况。收起时如果连那 4 像素也关掉，切歌更容易停。
 
-也没有接系统媒体键和 MPRIS。音质、歌词就是网页播放器的水平，不是网易云桌面客户端。
+Linux 上接入了 MPRIS：桌面媒体控件可以显示歌曲信息，并发送播放、暂停、上一首、下一首和进度跳转命令。音质、歌词仍然是网页播放器的水平，不是网易云桌面客户端。
+
+MPRIS 使用 Millennium 的 Chrome DevTools 接口读取内嵌网页，再由随插件打包的 Python 辅助进程在用户会话 D-Bus 上注册 `org.mpris.MediaPlayer2.NEMusicOnSteam`。打开 Steam 后可用 `playerctl -l` 查看；关闭 Steam 或卸载插件后，辅助进程会在约 15 秒内自行退出。网页改版可能使歌曲信息或上一首、下一首按钮失效。
+
+播放一首歌后可以用 `playerctl -p NEMusicOnSteam metadata` 查看信息，或用 `playerctl -p NEMusicOnSteam play-pause` 测试控制。插件设置页会显示 MPRIS 连接状态。
 
 ## 依赖
 
 - Millennium **3.4.0** 或更新。Linux 不支持 Flatpak / Snap 版 Steam。
 - 构建用 Bun 1.0+，或者 Node + npm。这个仓库在没有 Bun 的环境里用 npm 编过。
+- Linux MPRIS 需要系统的 Python 3、PyGObject 和用户会话 D-Bus。Arch 安装 `python-gobject`；Debian/Ubuntu 安装 `python3-gi`。
 
 安装 Millennium（其他发行版的预编译脚本，装之前自己看一遍）：
 

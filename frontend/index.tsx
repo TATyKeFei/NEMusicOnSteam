@@ -72,6 +72,7 @@ function SettingsContent() {
           onChange={(disableBackgroundThrottling) => player.updateSettings({ disableBackgroundThrottling })}
         />
       </Field>
+      <Field label="系统媒体控制" description={snapshot.mprisStatus} bottomSeparator="none" />
     </>
   );
 }

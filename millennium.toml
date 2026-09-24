@@ -9,6 +9,9 @@ description = "把网易云官方网页播放器嵌进 Steam 主窗口。"
 entry = "backend/main.lua"
 sources = ["backend/**/*.lua"]
 
+[assets]
+resources = ["backend/mpris_helper.py"]
+
 [frontend]
 entry = "frontend/index.tsx"
 
