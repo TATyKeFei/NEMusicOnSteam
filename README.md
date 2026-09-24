@@ -6,7 +6,9 @@
 
 把网易云官方网页播放器嵌进 **Steam 主窗口**，就不用再挂一个浏览器和他们的客户端吃你内存了
 
-这个项目还在胚胎阶段，可能需要点时间完善。如果你愿意贡献代码可以提个PR
+这个项目还在胚胎阶段，先把框架搭起来再完善UI和使用体验这类，需要点时间
+
+如果你愿意贡献代码可以提个Issues让我知道再提PR
 
 # 声明
 
@@ -21,13 +23,13 @@
 | Linux   | 支持x86_64             | 由于Millennium仅支持x86_64版本的Steam不支持arm，我也无能为力                           |
 | Windows | 未知                   | 我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份     |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
-| Mac OS  | 不支持                 | 我是穷鬼安卓人没钱买苹果测试，Millennium好像也没支持MacOS                              |
+| Mac OS  | 不支持                 | 我是穷鬼安卓人没钱买苹果测试，不过Millennium好像也没支持MacOS                          |
 
 # 特色功能
 
 | 内容       | 支持状况                                              | 备注   |
 | :---       | :---                                                  | :---   |
-| MPRIS      | 支持媒体键、控制音量进度条; 循环、列表播放还未支持  | 需要 Python3、PyGObject和D-Bus。Arch系可以安装这个解决`sudo pacman -S python-gobject`、Debian系安装`python3-gi` |
+| MPRIS      | 支持媒体键、控制音量进度条; 循环、列表播放还未支持  |  |
 | 通知       | 支持发送系统通知显示歌曲信息、封面                    | Mako、Windows未测试，仅测试了KDE通知        |
 | 音质设置   | 支持           | 在**Steam → 设置 → 网易云音乐**里可以设置。但要注意账号是否有vip不然开不了高音质 |
 | 后台播放   | 支持  | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话变听歌吧?       |
@@ -113,15 +115,17 @@ Windows: `不知道`
 
 ## 后台播放
 
-本机这份 Steam 前端里，语音通话会调用：
-
-`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`
+Steam 语音通话会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`
 
 插件在播放器还活着的时候，每隔几秒把同一个开关打开。这是为了 Steam 窗口最小化之后，页面里的定时器和切歌逻辑还能跑。
 
-这是对照当前 Steam 的 `steamui` 写的，**还没有在最小化状态下实际听完一首再切歌的验证**。如果最小化之后声音还在、但播完不切下一首，多半是网页自己暂停了，或者这版 CEF 没理会这个接口。插件解决不了那种情况。收起时如果连那 4 像素也关掉，切歌更容易停。
+这是对照当前 Steam 的 `steamui` 写的，**还没有在最小化状态下实际听完一首再切歌的验证**。如果最小化之后声音还在、但播完不切下一首，多半是网页自己暂停了，或者 CEF 没理会这个接口。插件解决不了那种情况。收起时如果连那 4 像素也关掉，切歌更容易停。
 
 ## MPRIS
+
+> 需要 Python3、PyGObject和D-Bus
+
+Arch系可以安装这个解决`sudo pacman -S python-gobject`、Debian系安装`python3-gi`、Windows不知道
 
 MPRIS 使用 Millennium 的 Chrome DevTools 接口读取内嵌网页，再由随插件打包的 Python 辅助进程在用户会话 D-Bus 上注册 `org.mpris.MediaPlayer2.NEMusicOnSteam`。打开 Steam 后可用 `playerctl -l` 查看；关闭 Steam 或卸载插件后，辅助进程会在约 15 秒内自行退出。网页改版可能使歌曲信息或上一首、下一首按钮失效
 
