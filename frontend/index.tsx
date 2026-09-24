@@ -58,7 +58,7 @@ function SettingsContent() {
       </Field>
       <Field
         label="当前实际音质"
-        description={`${qualityLabel(quality.current)}。${quality.status}。`}
+        description={`${qualityLabel(quality.current)}。${quality.status}。如果没有变化可能是没有vip或有延迟可以重启Steam或重新打开设置看看`}
         bottomSeparator="thick"
       />
       <Field
