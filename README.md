@@ -12,9 +12,10 @@
 
 # 声明
 
+- 不确保能一直使用，可能因为Steam更新、网易云音乐Web版下架等不可预因素停止更新
 - 非任何官方插件! 本项目与网易、Valve 都没关系。我要有关系我还在这写这个sb项目
 - 登录态在 Steam 自带的浏览器里，和系统其他浏览器不共享
-- Ai生成: 这个项目是我指挥Ai写的，反正这个项目也不大就内嵌个页面支持点小玩意没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的
+- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的
 
 # 支持
 
@@ -73,7 +74,7 @@ https://docs.steambrew.app/users/getting-started/installation
 
 ### 其他发行版/系统
 
-其他发行版的预编译脚本，官方推荐的我没试过，装之前建议自己先看一遍
+复制下面命令下载其他发行版的预编译脚本并执行，官方推荐的我没试过，装之前建议自己先看一遍
 
 ```bash
 curl -fsSL "https://steambrew.app/install.sh" | bash
@@ -88,18 +89,6 @@ Linux: `~/.local/share/millennium/plugins/`
 Windows: `不知道`
 
 然后完全终止 Steam 进程再打开，在 **Steam → Millennium → Plugins**
-
-## 为什么有客户端还要去写这个？
-
-如果你去网易云音乐官网下载页面点击Linux下载，你会发现tm居然直接跳转到Web版？
-
-网易那么多个客户端版本就是不给Linux适配，我天天用Muxicfox按错快捷键有点烦
-
-然后我看到我Steam天天在后台没啥用，想到他能装插件于是就萌生了这种想法让Linux用上网易云
-
-反正Stean天天在后台吃内存也是吃白饭，不用白不用。哦对了v社啥时候才支持wayland，2027年了哥
-
-我体验下来确实不错，没想到Web版音质也这么好
 
 # 怎么用?
 
@@ -172,3 +161,15 @@ npm run dev
 | 项目 | 链接 |
 | :--- | :--- |
 | MusicFox | [Github仓库](https://github.com/go-musicfox/go-musicfox) |
+
+# 为什么有网易云客户端还要去写这个？
+
+如果你去网易云音乐官网下载页面点击Linux下载，你会发现tm居然直接跳转到Web版？
+
+网易那么多个客户端版本就是不给Linux适配，我天天用Muxicfox按错快捷键有点烦
+
+然后我看到我Steam天天在后台没啥用，想到他能装插件于是就萌生了这种想法让Linux用上网易云
+
+反正Stean天天在后台吃内存也是吃白饭，不用白不用。哦对了v社啥时候才支持wayland，2027年了哥
+
+我体验下来确实不错，没想到Web版音质也这么好
