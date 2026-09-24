@@ -37,7 +37,32 @@
 | 后台播放   | 支持  | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | 状态显示当前歌曲 | 考虑支持中 | 让好友能看到你在听啥歌 |
-|  | |
+
+# 预览
+
+<p align="center">
+  <img src=".docs/p1.png" width="800">
+  <br>
+  <sub>主界面</sub>
+</p>
+
+<p align="center">
+  <img src=".docs/p2.png" width="800">
+  <br>
+  <sub>设置界面(施工中)</sub>
+</p>
+
+<p align="center">
+  <img src=".docs/p3.png" width="800">
+  <br>
+  <sub>MPRIS支持</sub>
+</p>
+
+<p align="center">
+  <img src=".docs/p4.png" width="800">
+  <br>
+  <sub>弹窗通知支持</sub>
+</p>
 
 # 安装教程
 
