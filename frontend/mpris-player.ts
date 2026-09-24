@@ -1,6 +1,6 @@
 export type Command = { action: string; value?: number };
 
-const PLAYER_ACCESS_SCRIPT = `
+export const PLAYER_ACCESS_SCRIPT = `
   const findPlayerStore = () => {
     const seeds = document.querySelectorAll('#btn_pc_minibar_play, [aria-label="播放进度调节"], #root > *');
     for (const element of seeds) {
@@ -74,7 +74,7 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const title = metadata?.title || text('.m-playbar .words .name, [class*="song-name"], [class*="songName"], [class*="SongName"]');
   const artist = metadata?.artist || text('.m-playbar .words .by a, [class*="artist-name"], [class*="artistName"]');
   const album = metadata?.album || '';
-  const artUrl = metadata?.artwork?.at(-1)?.src || document.querySelector('.m-playbar .head img')?.src || '';
+  const artUrl = metadata?.artwork?.at(-1)?.src || playing?.resourceCoverUrl || document.querySelector('.m-playbar .head img')?.src || '';
   const progressSlider = slider('播放进度调节');
   const progress = sliderValue(sliderHandle('播放进度调节')) || sliderValue(progressSlider);
   const mediaDuration = Number.isFinite(media?.duration) && media.duration > 0 ? media.duration : 0;

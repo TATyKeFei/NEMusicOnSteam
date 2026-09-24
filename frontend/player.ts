@@ -2,6 +2,7 @@ import { PlayerChrome, type PlayerMode } from "./chrome.ts";
 import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "./constants.ts";
 import { sameBounds, type Bounds } from "./layout.ts";
 import { MprisBridge } from "./mpris.ts";
+import { QualityBridge, type QualitySnapshot } from "./quality.ts";
 import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "./settings.ts";
 import {
   BROWSER_VIEW_STACK_TOP,
@@ -26,12 +27,14 @@ export type PlayerSnapshot = {
   hasView: boolean;
   throttlingSupported: boolean | null;
   mprisStatus: string;
+  quality: QualitySnapshot;
   settings: PlayerSettings;
 };
 
 export class PlayerController {
   private readonly chrome = new PlayerChrome();
   private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); });
+  private readonly quality = new QualityBridge();
   private settings: PlayerSettings = readSettings(browserStorage());
   private mode: PlayerMode = "closed";
   private status = "还没打开";
@@ -82,6 +85,7 @@ export class PlayerController {
       hasView: this.view != null,
       throttlingSupported: this.throttlingSupported,
       mprisStatus: this.mpris.getStatus(),
+      quality: this.quality.snapshot(),
       settings: { ...this.settings, launcher: { ...this.settings.launcher } },
     };
   }
@@ -92,6 +96,10 @@ export class PlayerController {
     this.render();
     this.syncView(true);
     return this.snapshot().settings;
+  }
+
+  setQuality(value: number): void {
+    this.quality.setQuality(value);
   }
 
   open(): string {
@@ -231,6 +239,7 @@ export class PlayerController {
     }
     this.view = created;
     this.mpris.setEnabled(true);
+    this.quality.setEnabled(true);
     this.client = client;
     this.parentId = id;
     this.owner = win;
@@ -285,6 +294,7 @@ export class PlayerController {
     this.unbindPopup();
     this.view = null;
     this.mpris.setEnabled(false);
+    this.quality.setEnabled(false);
     this.parentId = null;
     this.client = null;
     this.loaded = false;
@@ -394,6 +404,7 @@ export class PlayerController {
     this.unbindPopup();
     this.view = null;
     this.mpris.setEnabled(false);
+    this.quality.setEnabled(false);
     this.parentId = null;
     this.client = null;
     this.loaded = false;

@@ -1,6 +1,10 @@
-import { definePlugin, DialogButton, Field, Toggle } from "millennium";
-import { useEffect, useState } from "react";
+import { definePlugin, DialogButton, Dropdown, Field, Toggle } from "millennium";
+import { useEffect, useState, type ReactElement } from "react";
 import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player.ts";
+import { QUALITY_OPTIONS, qualityLabel } from "./quality-player.ts";
+import { SteamSettingsEntry } from "./steam-settings.ts";
+
+const steamSettings = new SteamSettingsEntry(() => <SettingsContent />);
 
 function NoteIcon() {
   return (
@@ -23,6 +27,10 @@ function SettingsContent() {
   }, [player]);
 
   const settings = snapshot.settings;
+  const quality = snapshot.quality;
+  const qualityOptions = QUALITY_OPTIONS.some(option => option.data === quality.preferred) || quality.preferred == null
+    ? QUALITY_OPTIONS
+    : [...QUALITY_OPTIONS, { data: quality.preferred, label: qualityLabel(quality.preferred) }];
   const throttling =
     snapshot.throttlingSupported == null
       ? "还没探测"
@@ -32,6 +40,27 @@ function SettingsContent() {
 
   return (
     <>
+      <Field
+        label="播放音质"
+        description="播放歌曲时切换会短暂重新加载并保留进度；暂停时只保存设置，下一首生效。高音质取决于账号权益和歌曲资源。"
+        bottomSeparator="standard"
+      >
+        <Dropdown
+          rgOptions={qualityOptions}
+          selectedOption={quality.preferred}
+          strDefaultLabel="等待播放器"
+          disabled={!quality.available || quality.updating}
+          onChange={option => {
+            player.setQuality(option.data);
+            setSnapshot(player.snapshot());
+          }}
+        />
+      </Field>
+      <Field
+        label="当前实际音质"
+        description={`${qualityLabel(quality.current)}。${quality.status}。`}
+        bottomSeparator="thick"
+      />
       <Field
         label="播放器"
         description={`${snapshot.status}。点击顶部其他栏目即可返回 Steam 页面。`}
@@ -77,6 +106,10 @@ function SettingsContent() {
   );
 }
 
+export function renderSettings(): ReactElement {
+  return <SettingsContent />;
+}
+
 /** @ffi */
 export function openPlayer(): string {
   return getPlayer().open();
@@ -104,15 +137,18 @@ export function closePlayer(): string {
 
 /** @ffi */
 export function shutdown(): string {
+  steamSettings.stop();
   shutdownPlayer();
   return "ok";
 }
 
 export default definePlugin(() => {
   getPlayer().boot();
+  steamSettings.start();
   return {
     title: "网易云音乐",
     icon: <NoteIcon />,
     content: <SettingsContent />,
+    onDismount: () => shutdown(),
   };
 });

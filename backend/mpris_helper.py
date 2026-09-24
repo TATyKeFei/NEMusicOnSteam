@@ -1,16 +1,34 @@
 import hashlib
+import html
 import json
 import os
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.client import HTTPException
+from tempfile import TemporaryDirectory
+from urllib.request import Request, urlopen
 
 from gi.repository import Gio, GLib
 
 
 OBJECT_PATH = "/org/mpris/MediaPlayer2"
 BUS_NAME = "org.mpris.MediaPlayer2.NEMusicOnSteam"
+
+
+def cover_extension(data):
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return None
+
+
 INTROSPECTION = """<node>
   <interface name="org.mpris.MediaPlayer2">
     <method name="Raise"/>
@@ -57,6 +75,10 @@ class MprisService:
         self.state = {}
         self.commands = []
         self.last_seen = time.monotonic()
+        self.notification_serial = 0
+        self.last_notified_track = None
+        self.cover_files = {}
+        self.cover_directory = TemporaryDirectory(prefix="covers-", dir=runtime_dir)
         self.loop = GLib.MainLoop()
         self.connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self.node = Gio.DBusNodeInfo.new_for_xml(INTROSPECTION)
@@ -131,6 +153,11 @@ class MprisService:
                         state["volume"] = previous.get("volume")
                     service.state = state
                     service.last_seen = time.monotonic()
+                    if state.get("active") and state.get("playbackStatus") == "Playing" and state.get("title"):
+                        track = (state.get("trackId"), state.get("title"), state.get("artist"))
+                        if track != service.last_notified_track:
+                            service.last_notified_track = track
+                            GLib.idle_add(service.notify_track, str(state["title"]), str(state.get("artist") or "未知歌手"), str(state.get("artUrl") or ""))
                 changed = []
                 if any(previous.get(key) != state.get(key) for key in ("active", "playbackStatus")):
                     changed.append("PlaybackStatus")
@@ -158,6 +185,82 @@ class MprisService:
                 self.reply(200, {})
 
         return Handler
+
+    def notify_track(self, title, artist, art_url=""):
+        self.notification_serial += 1
+        serial = self.notification_serial
+        if art_url in self.cover_files:
+            self.cover_files[art_url] = self.cover_files.pop(art_url)
+            return self.send_notification(title, artist, self.cover_files[art_url])
+        if art_url.startswith(("https://", "http://")):
+            threading.Thread(target=self.load_notification_cover, args=(serial, title, artist, art_url), daemon=True).start()
+            return False
+        return self.send_notification(title, artist)
+
+    def load_notification_cover(self, serial, title, artist, art_url):
+        data = None
+        try:
+            request = Request(art_url, headers={"User-Agent": "NEMusicOnSteam", "Referer": "https://music.163.com/"})
+            with urlopen(request, timeout=3) as response:
+                limit = 4 * 1024 * 1024
+                content = response.read(limit + 1)
+                if len(content) <= limit and cover_extension(content):
+                    data = content
+                else:
+                    print(f"[NEMusic] Notification cover rejected: type={response.headers.get_content_type()}, bytes={len(content)}", file=sys.stderr, flush=True)
+        except (OSError, ValueError, HTTPException) as error:
+            print(f"[NEMusic] Notification cover unavailable: {error}", file=sys.stderr, flush=True)
+        GLib.idle_add(self.finish_notification_cover, serial, title, artist, art_url, data)
+
+    def finish_notification_cover(self, serial, title, artist, art_url, data):
+        if serial != self.notification_serial:
+            return False
+        icon = "audio-x-generic"
+        extension = cover_extension(data) if data else None
+        if extension:
+            try:
+                path = os.path.join(self.cover_directory.name, hashlib.sha256(art_url.encode()).hexdigest() + extension)
+                with open(path, "wb") as cover_file:
+                    cover_file.write(data)
+                self.cover_files[art_url] = path
+                while len(self.cover_files) > 8:
+                    oldest = next(iter(self.cover_files))
+                    os.unlink(self.cover_files.pop(oldest))
+                icon = path
+            except OSError as error:
+                print(f"[NEMusic] Notification cover cache failed: {error}", file=sys.stderr, flush=True)
+        return self.send_notification(title, artist, icon)
+
+    def send_notification(self, title, artist, icon="audio-x-generic"):
+        try:
+            hints = {"suppress-sound": GLib.Variant("b", True)}
+            if os.path.isabs(icon):
+                hints["image-path"] = GLib.Variant("s", icon)
+            self.connection.call(
+                "org.freedesktop.Notifications",
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications",
+                "Notify",
+                GLib.Variant("(susssasa{sv}i)", (
+                    "网易云音乐 (Steam)", 0, icon, title, html.escape(artist),
+                    [], hints, 5000,
+                )),
+                GLib.VariantType.new("(u)"),
+                Gio.DBusCallFlags.NONE,
+                5000,
+                None,
+                self.on_notification_sent,
+                None,
+            )
+        except GLib.Error as error:
+            print(f"[NEMusic] Notification failed: {error}", file=sys.stderr, flush=True)
+        return False
+
+    def on_notification_sent(self, connection, result, _user_data):
+        try:
+            connection.call_finish(result)
+        except GLib.Error as error:
+            print(f"[NEMusic] Notification failed: {error}", file=sys.stderr, flush=True)
 
     def queue(self, command):
         with self.lock:
@@ -265,6 +368,7 @@ class MprisService:
         finally:
             self.server.shutdown()
             Gio.bus_unown_name(self.owner)
+            self.cover_directory.cleanup()
 
 
 if __name__ == "__main__":
