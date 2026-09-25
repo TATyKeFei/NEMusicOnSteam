@@ -102,7 +102,7 @@ function SettingsContent() {
       </Field>
       <Field
         label="下载当前歌曲"
-        description={`${download.status}。只下载正在播放的这一首`}
+        description={`${download.status}。${download.menu ? `${download.menu}。` : ""}这个按钮只下载正在播放的这一首`}
         bottomSeparator="thick"
       >
         <DialogButton onClick={() => player.downloadCurrentSong()} disabled={!download.available || download.busy}>

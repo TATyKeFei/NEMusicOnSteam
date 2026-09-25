@@ -2,8 +2,8 @@
 id = "icu.tatyrealms.nemos"
 name = "网易云音乐"
 version = "0.1.1"
-author = "NEMusicOnSteam"
-description = "把网易云官方网页播放器嵌进 Steam 主窗口。"
+author = "TATyKeFei"
+description = "把网易云官方网页播放器嵌进 Steam 里，并实现一些Web版没有的功能"
 
 [backend]
 entry = "backend/main.lua"

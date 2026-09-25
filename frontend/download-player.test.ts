@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
-import { DEFAULT_DOWNLOAD_QUALITY, downloadLevel, downloadScript, isDownloadQuality, songFileName } from "./download-player.ts";
+import {
+  DEFAULT_DOWNLOAD_QUALITY,
+  downloadLevel,
+  downloadScript,
+  isDownloadQuality,
+  songFileName,
+  type DownloadSong,
+} from "./download-player.ts";
 
 const LEVELS: Record<number, { level: string; encodeType: string | null }> = {
   128: { level: "standard", encodeType: null },
@@ -58,7 +65,12 @@ function downloadFixture(options: FixtureOptions = {}) {
       };
     },
   };
-  return { state, context, requests, run: (value: number) => runInNewContext(downloadScript(value), context) };
+  return {
+    state,
+    context,
+    requests,
+    run: (value: number, song?: DownloadSong) => runInNewContext(downloadScript(value, song), context),
+  };
 }
 
 describe("NetEase download resolution", () => {
@@ -141,6 +153,46 @@ describe("NetEase download resolution", () => {
     const player = downloadFixture({ trackId: "", curPlaying: { resourceId: "98765", name: "歌名", artists: [{ name: "歌手" }] } });
     await player.run(320);
     assert.match(player.requests[0].url, /ids=%5B98765%5D/);
+  });
+});
+
+describe("NetEase download of a song picked from a list", () => {
+  const SONG: DownloadSong = { id: 987654, name: "列表里的歌", artist: "列表里的歌手" };
+
+  it("asks for the picked song instead of the playing one", async () => {
+    const player = downloadFixture();
+    const result = await player.run(320, SONG);
+    assert.match(player.requests[0].url, /ids=%5B987654%5D/);
+    assert.equal(result.name, "列表里的歌");
+    assert.equal(result.artist, "列表里的歌手");
+    assert.equal(result.source, "api");
+  });
+
+  it("still works when nothing is playing", async () => {
+    const player = downloadFixture({ trackId: null, curPlaying: null });
+    assert.match((await player.run(320, SONG)).url, /^https:/);
+  });
+
+  it("never falls back to the stream that happens to be playing", async () => {
+    const player = downloadFixture({ payload: { code: 200, data: [{ url: null }] }, currentSrc: PLAYING_STREAM });
+    await assert.rejects(player.run(320, SONG), /无版权|VIP|未登录/);
+  });
+
+  it("surfaces a gone song without downloading the playing one", async () => {
+    const player = downloadFixture({ payload: { code: 404, data: [] }, currentSrc: PLAYING_STREAM });
+    await assert.rejects(player.run(320, SONG), /code 404/);
+  });
+
+  it("refuses a song it cannot identify", async () => {
+    for (const id of [0, -1, NaN]) {
+      assert.throws(() => downloadScript(320, { ...SONG, id }), /没有认出/);
+    }
+    assert.throws(() => downloadScript(320, { ...SONG, name: "  " }), /没有认出/);
+  });
+
+  it("trims the tags that end up in the file name", async () => {
+    const result = await downloadFixture().run(320, { id: 1, name: " 歌名 ", artist: " 歌手 " });
+    assert.equal(songFileName(result.artist, result.name), "歌手 - 歌名");
   });
 });
 

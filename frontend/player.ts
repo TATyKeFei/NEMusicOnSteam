@@ -37,7 +37,10 @@ export class PlayerController {
   private readonly chrome = new PlayerChrome();
   private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); });
   private readonly quality = new QualityBridge();
-  private readonly download = new DownloadBridge();
+  private readonly download = new DownloadBridge(() => ({
+    quality: this.settings.downloadQuality,
+    directory: this.settings.downloadDirectory,
+  }));
   private settings: PlayerSettings = readSettings(browserStorage());
   private mode: PlayerMode = "closed";
   private status = "还没打开";
@@ -107,7 +110,7 @@ export class PlayerController {
   }
 
   downloadCurrentSong(): void {
-    void this.download.download(this.settings.downloadQuality, this.settings.downloadDirectory);
+    void this.download.download();
   }
 
   open(): string {

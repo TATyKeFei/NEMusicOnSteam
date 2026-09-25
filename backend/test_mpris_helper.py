@@ -438,6 +438,19 @@ class DownloadRunTests(DownloadTestCase):
         self.assertIn("offline", job["error"])
         self.assertFalse(job["active"])
 
+    def test_a_finished_download_is_announced_with_where_it_landed(self):
+        job = self.run_job(b"ID3" + b"\x00" * 8)
+        directory = os.path.dirname(job["path"])
+        repository.GLib.idle_add.assert_called_once_with(
+            self.service.send_notification, "下载完成", f"{job['filename']} 已保存到 {directory}", "folder-download"
+        )
+
+    def test_a_failed_download_is_announced_with_the_reason(self):
+        job = {"active": True, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
+        with patch.object(helper, "urlopen", side_effect=OSError("offline")):
+            self.service.run_download(job, "https://cdn.example.com/song", self.directory.name, "歌", "mp3")
+        repository.GLib.idle_add.assert_called_once_with(self.service.send_notification, "下载失败", "offline", "dialog-error")
+
 
 class IdleShutdownTests(DownloadTestCase):
     def test_an_active_download_prevents_the_idle_shutdown(self):

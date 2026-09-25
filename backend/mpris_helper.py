@@ -522,14 +522,17 @@ class MprisService:
                     job["filename"] = os.path.basename(path)
                     job["path"] = path
                     job["total"] = received
+                GLib.idle_add(self.send_notification, "下载完成", f"{os.path.basename(path)} 已保存到 {os.path.dirname(path)}", "folder-download")
         except (OSError, ValueError, HTTPException) as error:
             if path is not None:
                 try:
                     os.unlink(path)
                 except OSError:
                     pass
+            failure = str(error) or error.__class__.__name__
             with self.lock:
-                job["error"] = str(error) or error.__class__.__name__
+                job["error"] = failure
+            GLib.idle_add(self.send_notification, "下载失败", failure, "dialog-error")
         finally:
             with self.lock:
                 job["active"] = False
