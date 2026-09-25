@@ -4,11 +4,11 @@
 
 > 注意! 使用的是官网那个页面，不是重写的客户端：`https://music.163.com/st/webplayer`
 
-把网易云官方网页播放器嵌进 **Steam 主窗口**，就不用再挂一个浏览器和他们的客户端吃你内存了
+把网易云官方网页播放器嵌进 **Steam**，就不用再挂一个浏览器和他们的客户端吃爆你内存了
 
 这个项目还在胚胎阶段，先把框架搭起来再完善UI和使用体验这类，需要点时间
 
-如果你愿意贡献代码可以提个Issues让我知道再提PR
+如果你愿意贡献代码可以提个 Issues 让我知道再提 PR
 
 # 声明
 
@@ -25,8 +25,8 @@
 
 | 系统    | 可用性                 | 备注及注意事项       |
 | :---    | :---                   | :---                 |
-| Linux   | 支持                   |                      |
-| Windows | 未知 + 未测试          | 我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份     |
+| Linux   | 支持                   | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不爆改应该都支持                       |
+| Windows | 未知        | 我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份     |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
 | Mac OS  | 不支持                 | 我是穷鬼安卓人没钱买苹果测试，不过Millennium好像也没支持MacOS                          |
 
@@ -36,14 +36,16 @@
 
 | 内容       | 支持状况                                              | 备注   |
 | :---       | :---                                                  | :---   |
-| MPRIS      | 支持媒体键、控制音量进度条; 循环、列表播放还未支持  |  |
+| MPRIS      | 支持媒体键、控制音量进度条; 循环、列表播放还未支持    | 仅Linux支持  |
 | 通知       | 支持发送系统通知显示歌曲信息、封面                    | Mako、Windows未测试，仅测试了KDE通知        |
 | 音质设置   | 支持           | 在**Steam → 设置 → 网易云音乐**里可以设置。但要注意账号是否有vip不然开不了高音质 |
 | 后台播放   | 支持  | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | 下载歌曲   | 正在制作       |        |
 | 桌面歌词   | 考虑支持中     |        |
+| 全局快捷键 | 计划实现方式中 | 目前未知实现方式和能否实现，能加会加       |
 | 状态显示当前歌曲 | 考虑支持中 | 让好友能看到你在听啥歌。“我去豪到我了” |
+| API 接口   | 后续支持       |        |
 
 # 预览
 
@@ -96,7 +98,7 @@ sudo pacman -S millennium
 
 ```
 paru: `paru -S millennium`
-yay: `yay -S millennium`
+yay:  `yay -S millennium`
 ```
 
 #### 可选安装
@@ -141,7 +143,7 @@ Windows: `不知道`
 
 第一次打开会让你扫码登录一下，之后都不会弹登录了
 
-# 功能
+# 功能介绍
 
 ## 后台播放
 
@@ -175,10 +177,10 @@ npm test
 npm run build
 ```
 
-构建产物在 `dist/com.nemusic.onsteam.star`
+构建产物在 `dist/<插件 id>-<版本号>.star`，例如 `dist/icu.tatyrealms.nemos-0.1.0.star`，版本号取自 `millennium.toml` 的 `[plugin].version`
 
 ```安装
-cp ./dist/com.nemusic.onsteam.star ~/.local/share/millennium/plugins/
+cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 ```
 
 Millennium 已经装好的话，可以把 `millennium.toml` 里的 `output_path` 改成 `auto` 再构建一次
@@ -199,9 +201,9 @@ npm run dev
 ├── NEMusicOnSteam/
 │   ├── .docs/                     # 项目文档与预览素材
 │   ├── backend/                   # 后端 (Lua + Python)
-│   │   └── ...
+│   │   └── ...   # 等确定下来再写
 │   ├── frontend/                  # 前端 (TypeScript/React)
-│   │   └── ...
+│   │   └── ...   # 等确定下来再写
 │   ├── .gitignore                 # Git 忽略配置
 │   ├── .luarc.json                # Lua 语言服务器配置
 │   ├── LICENSE                    # 开源许可证 (GPLv3)

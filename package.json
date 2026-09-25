@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "mkdir -p dist && starlight pack --release",
+    "build": "node scripts/build.mjs",
     "dev": "mkdir -p dist && starlight watch",
     "test": "node --experimental-strip-types --test frontend/*.test.ts",
     "prepare": "starlight lsp"

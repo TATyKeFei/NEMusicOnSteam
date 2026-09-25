@@ -161,7 +161,7 @@ export class MprisBridge {
       this.status = this.commandError || "MPRIS 已连接";
     } catch (error) {
       console.warn("[NEMusic] MPRIS bridge", error);
-      this.status = "MPRIS 连接失败；请检查 Steam 控制台和辅助进程日志";
+      this.status = "MPRIS 连接失败；请检查 Steam 控制台和辅助进程日志或去Github反馈";
       await this.detach();
       this.endpoint = null;
       this.token = null;

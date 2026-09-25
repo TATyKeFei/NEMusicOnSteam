@@ -117,7 +117,7 @@ export class PlayerController {
     if (this.view == null && this.mode === "closed") return this.status;
     this.pendingOpen = false;
     this.mode = "collapsed";
-    this.status = this.settings.keepAliveWhenCollapsed ? "已收起，播放器仍在后台" : "已收起。这种收起会把页面藏起来，切歌可能停";
+    this.status = this.settings.keepAliveWhenCollapsed ? "已收起，播放器仍在后台" : "已收起。收起会把页面藏起来，切歌可能停";
     this.render();
     this.syncView(true);
     return this.status;
@@ -217,7 +217,7 @@ export class PlayerController {
     const client = win.SteamClient?.BrowserView?.Create != null ? win.SteamClient : sharedSteamClient();
     const id = browserId(win.SteamClient) ?? browserId(client);
     if (client?.BrowserView?.Create == null || id == null) {
-      throw new Error("这个 Steam 没有可用的 BrowserView，嵌不进去");
+      throw new Error("这个 Steam 没有可用的 BrowserView 嵌不进去。可能 Steam 更新了什么，请去 Github 查看是否有更新或反馈");
     }
     if (this.view != null && this.parentId === id && this.owner === win) return;
     this.destroyView();
