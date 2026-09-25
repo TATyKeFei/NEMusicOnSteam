@@ -1,3 +1,5 @@
+import { DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download-player.ts";
+
 export type LauncherPosition = { left: number; bottom: number } | { left: number; top: number };
 
 export type PlayerSettings = {
@@ -5,6 +7,8 @@ export type PlayerSettings = {
   keepAliveWhenCollapsed: boolean;
   disableBackgroundThrottling: boolean;
   launcher: LauncherPosition;
+  downloadDirectory: string;
+  downloadQuality: number;
 };
 
 export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
@@ -14,6 +18,8 @@ export const defaultSettings: PlayerSettings = {
   keepAliveWhenCollapsed: true,
   disableBackgroundThrottling: true,
   launcher: { left: 16, bottom: 16 },
+  downloadDirectory: "",
+  downloadQuality: DEFAULT_DOWNLOAD_QUALITY,
 };
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -24,6 +30,10 @@ function finiteNumber(value: unknown): value is number {
 
 function booleanOr(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
+}
+
+function directoryOr(value: unknown, fallback: string): string {
+  return typeof value === "string" ? value.trim().slice(0, 4096) : fallback;
 }
 
 export function sanitizeLauncher(value: unknown): LauncherPosition {
@@ -42,6 +52,8 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     keepAliveWhenCollapsed: booleanOr(record.keepAliveWhenCollapsed, defaultSettings.keepAliveWhenCollapsed),
     disableBackgroundThrottling: booleanOr(record.disableBackgroundThrottling, defaultSettings.disableBackgroundThrottling),
     launcher: sanitizeLauncher(record.launcher),
+    downloadDirectory: directoryOr(record.downloadDirectory, defaultSettings.downloadDirectory),
+    downloadQuality: isDownloadQuality(record.downloadQuality) ? record.downloadQuality : defaultSettings.downloadQuality,
   };
 }
 

@@ -1,5 +1,6 @@
 import { PlayerChrome, type PlayerMode } from "./chrome.ts";
 import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "./constants.ts";
+import { DownloadBridge, type DownloadSnapshot } from "./download.ts";
 import { sameBounds, type Bounds } from "./layout.ts";
 import { MprisBridge } from "./mpris.ts";
 import { QualityBridge, type QualitySnapshot } from "./quality.ts";
@@ -28,6 +29,7 @@ export type PlayerSnapshot = {
   throttlingSupported: boolean | null;
   mprisStatus: string;
   quality: QualitySnapshot;
+  download: DownloadSnapshot;
   settings: PlayerSettings;
 };
 
@@ -35,6 +37,7 @@ export class PlayerController {
   private readonly chrome = new PlayerChrome();
   private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); });
   private readonly quality = new QualityBridge();
+  private readonly download = new DownloadBridge();
   private settings: PlayerSettings = readSettings(browserStorage());
   private mode: PlayerMode = "closed";
   private status = "还没打开";
@@ -86,6 +89,7 @@ export class PlayerController {
       throttlingSupported: this.throttlingSupported,
       mprisStatus: this.mpris.getStatus(),
       quality: this.quality.snapshot(),
+      download: this.download.snapshot(),
       settings: { ...this.settings, launcher: { ...this.settings.launcher } },
     };
   }
@@ -100,6 +104,10 @@ export class PlayerController {
 
   setQuality(value: number): void {
     this.quality.setQuality(value);
+  }
+
+  downloadCurrentSong(): void {
+    void this.download.download(this.settings.downloadQuality, this.settings.downloadDirectory);
   }
 
   open(): string {
@@ -240,6 +248,7 @@ export class PlayerController {
     this.view = created;
     this.mpris.setEnabled(true);
     this.quality.setEnabled(true);
+    this.download.setEnabled(true);
     this.client = client;
     this.parentId = id;
     this.owner = win;
@@ -295,6 +304,7 @@ export class PlayerController {
     this.view = null;
     this.mpris.setEnabled(false);
     this.quality.setEnabled(false);
+    this.download.setEnabled(false);
     this.parentId = null;
     this.client = null;
     this.loaded = false;
@@ -405,6 +415,7 @@ export class PlayerController {
     this.view = null;
     this.mpris.setEnabled(false);
     this.quality.setEnabled(false);
+    this.download.setEnabled(false);
     this.parentId = null;
     this.client = null;
     this.loaded = false;

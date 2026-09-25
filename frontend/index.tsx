@@ -1,4 +1,4 @@
-import { definePlugin, DialogButton, Dropdown, Field, Toggle } from "millennium";
+import { definePlugin, DialogButton, Dropdown, Field, TextField, Toggle } from "millennium";
 import { useEffect, useState, type ReactElement } from "react";
 import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality-player.ts";
@@ -20,14 +20,24 @@ function NoteIcon() {
 function SettingsContent() {
   const player = getPlayer();
   const [snapshot, setSnapshot] = useState<PlayerSnapshot>(() => player.snapshot());
+  const [directory, setDirectory] = useState(() => snapshot.settings.downloadDirectory);
 
   useEffect(() => {
     const timer = window.setInterval(() => setSnapshot(player.snapshot()), 400);
     return () => window.clearInterval(timer);
   }, [player]);
 
+  const commitDirectory = () => {
+    const trimmed = directory.trim();
+    if (trimmed === player.snapshot().settings.downloadDirectory) return;
+    player.updateSettings({ downloadDirectory: trimmed });
+    setDirectory(trimmed);
+    setSnapshot(player.snapshot());
+  };
+
   const settings = snapshot.settings;
   const quality = snapshot.quality;
+  const download = snapshot.download;
   const qualityOptions = QUALITY_OPTIONS.some(option => option.data === quality.preferred) || quality.preferred == null
     ? QUALITY_OPTIONS
     : [...QUALITY_OPTIONS, { data: quality.preferred, label: qualityLabel(quality.preferred) }];
@@ -59,8 +69,46 @@ function SettingsContent() {
       <Field
         label="当前实际音质"
         description={`${qualityLabel(quality.current)}。${quality.status}。如果没有变化可能是没有vip或当前歌曲不支持所选音质`}
-        bottomSeparator="thick"
+        bottomSeparator="standard"
       />
+      <Field
+        label="下载音质"
+        description="下载当前歌曲时用的音质，和上面的播放音质互不影响。账号没vip或歌曲没版权时可能拿不到所选档位"
+        bottomSeparator="standard"
+      >
+        <Dropdown
+          rgOptions={QUALITY_OPTIONS}
+          selectedOption={settings.downloadQuality}
+          strDefaultLabel="等待播放器"
+          onChange={option => {
+            player.updateSettings({ downloadQuality: option.data });
+            setSnapshot(player.snapshot());
+          }}
+        />
+      </Field>
+      <Field
+        label="下载目录"
+        description="留空则存到 ~/Music/网易云音乐，可以填 ~ 开头的路径。改完按回车或点到别处保存"
+        bottomSeparator="standard"
+      >
+        <TextField
+          value={directory}
+          onChange={event => setDirectory(event.target.value)}
+          onBlur={commitDirectory}
+          onKeyDown={event => {
+            if (event.key === "Enter") commitDirectory();
+          }}
+        />
+      </Field>
+      <Field
+        label="下载当前歌曲"
+        description={`${download.status}。只下载正在播放的这一首`}
+        bottomSeparator="thick"
+      >
+        <DialogButton onClick={() => player.downloadCurrentSong()} disabled={!download.available || download.busy}>
+          {download.busy ? "下载中" : "下载"}
+        </DialogButton>
+      </Field>
       <Field
         label="播放器"
         description={`${snapshot.status}。点击顶部其他栏目即可返回 Steam 页面`}

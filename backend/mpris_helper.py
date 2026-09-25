@@ -1,13 +1,16 @@
 import hashlib
 import html
+import ipaddress
 import json
 import os
+import socket
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.client import HTTPException
 from tempfile import TemporaryDirectory
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from gi.repository import Gio, GLib
@@ -27,6 +30,87 @@ def cover_extension(data):
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return ".webp"
     return None
+
+
+DEFAULT_DOWNLOAD_DIRECTORY = "~/Music/网易云音乐"
+DOWNLOAD_CHUNK = 64 * 1024
+DOWNLOAD_TIMEOUT = 30
+MAX_DOWNLOAD_BYTES = 512 * 1024 * 1024
+FILENAME_BYTE_LIMIT = 180
+DECLARED_AUDIO_TYPES = ("mp3", "flac", "m4a", "wav", "aac", "ape", "ogg")
+AUDIO_SUFFIXES = tuple("." + kind for kind in DECLARED_AUDIO_TYPES)
+CONTROL_CHARACTERS = frozenset(chr(code) for code in range(32)) | {"\x7f"}
+MP3_MAGIC = (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2", b"\xff\xfa", b"\xff\xf9")
+
+
+def audio_extension(data, declared=None):
+    if data[:3] == b"ID3" or data[:2] in MP3_MAGIC:
+        return ".mp3"
+    if data[:4] == b"fLaC":
+        return ".flac"
+    if data[4:8] == b"ftyp":
+        return ".m4a"
+    if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
+        return ".wav"
+    if data[:4] == b"OggS":
+        return ".ogg"
+    kind = str(declared or "").lower()
+    return "." + kind if kind in DECLARED_AUDIO_TYPES else None
+
+
+def sanitize_filename(name, extension):
+    text = "".join("-" if character in "/\\" else character for character in str(name or ""))
+    text = "".join(" " if character in CONTROL_CHARACTERS else character for character in text)
+    text = " ".join(text.split()).strip(" .")
+    for suffix in AUDIO_SUFFIXES:
+        if text.lower().endswith(suffix):
+            text = text[: -len(suffix)].strip(" .")
+            break
+    while text and len(text.encode("utf-8")) > FILENAME_BYTE_LIMIT:
+        text = text[:-1].strip(" .")
+    return (text or "未命名") + extension
+
+
+def download_directory(requested):
+    return os.path.expanduser(str(requested or "").strip() or DEFAULT_DOWNLOAD_DIRECTORY)
+
+
+def validate_download_url(url):
+    parts = urlsplit(str(url or ""))
+    if parts.scheme not in ("http", "https"):
+        raise ValueError("只支持 http/https 音频地址")
+    host = parts.hostname
+    if not host:
+        raise ValueError("音频地址缺少主机名")
+    try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        addresses = {info[4][0].split("%")[0] for info in socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)}
+    except (OSError, ValueError) as error:
+        raise ValueError(f"无法解析音频地址主机: {error}")
+    if not addresses:
+        raise ValueError("无法解析音频地址主机")
+    for address in addresses:
+        try:
+            resolved = ipaddress.ip_address(address)
+        except ValueError:
+            raise ValueError(f"无法识别的音频地址主机: {address}")
+        if not resolved.is_global:
+            raise ValueError("拒绝下载内网或保留地址")
+    return str(url)
+
+
+def open_unique(directory, base, extension):
+    root = os.path.realpath(directory)
+    for index in range(1000):
+        suffix = "" if index == 0 else f" ({index})"
+        path = os.path.join(root, f"{base}{suffix}{extension}")
+        if os.path.dirname(os.path.realpath(path)) != root:
+            raise ValueError("下载路径越界")
+        try:
+            return open(path, "xb"), path
+        except FileExistsError:
+            continue
+    raise ValueError("同名文件过多")
 
 
 INTROSPECTION = """<node>
@@ -74,6 +158,7 @@ class MprisService:
         self.lock = threading.Lock()
         self.state = {}
         self.commands = []
+        self.download = None
         self.last_seen = time.monotonic()
         self.notification_serial = 0
         self.last_notified_track = None
@@ -116,16 +201,33 @@ class MprisService:
                     return False
                 return True
 
+            def read_payload(self):
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length < 0 or length > 65536:
+                        raise ValueError("invalid length")
+                    payload = json.loads(self.rfile.read(length))
+                    if not isinstance(payload, dict):
+                        raise ValueError("invalid payload")
+                    return payload
+                except (ValueError, json.JSONDecodeError):
+                    return None
+
             def do_GET(self):
                 if not self.authorized():
                     return
-                if self.path != "/commands":
-                    self.reply(404, {})
+                if self.path == "/commands":
+                    with service.lock:
+                        service.last_seen = time.monotonic()
+                        commands, service.commands = service.commands, []
+                    self.reply(200, commands)
                     return
-                with service.lock:
-                    service.last_seen = time.monotonic()
-                    commands, service.commands = service.commands, []
-                self.reply(200, commands)
+                if self.path == "/download":
+                    with service.lock:
+                        service.last_seen = time.monotonic()
+                    self.reply(200, service.download_snapshot())
+                    return
+                self.reply(404, {})
 
             def do_POST(self):
                 if not self.authorized():
@@ -133,6 +235,21 @@ class MprisService:
                 if self.path == "/shutdown":
                     self.reply(200, {})
                     GLib.idle_add(service.loop.quit)
+                    return
+                if self.path == "/download":
+                    payload = self.read_payload()
+                    if payload is None:
+                        self.reply(400, {})
+                        return
+                    try:
+                        job = service.start_download(payload.get("url"), payload.get("filename"), payload.get("directory"), payload.get("type"))
+                    except ValueError as error:
+                        self.reply(400, {"error": str(error)})
+                        return
+                    if job is None:
+                        self.reply(409, {"error": "已有下载任务在进行"})
+                        return
+                    self.reply(202, {"started": True})
                     return
                 if self.path != "/state":
                     self.reply(404, {})
@@ -349,9 +466,81 @@ class MprisService:
         self.connection.emit_signal(None, OBJECT_PATH, "org.mpris.MediaPlayer2.Player", "Seeked", GLib.Variant("(x)", (position,)))
         return False
 
+    def download_snapshot(self):
+        with self.lock:
+            if self.download is None:
+                return {"active": False, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
+            return dict(self.download)
+
+    def start_download(self, url, filename, directory, declared):
+        validate_download_url(url)
+        destination = download_directory(directory)
+        try:
+            os.makedirs(destination, exist_ok=True)
+        except OSError as error:
+            raise ValueError(f"下载目录不可用: {error}")
+        if not os.path.isdir(destination) or not os.access(destination, os.W_OK):
+            raise ValueError(f"下载目录不可用: {destination}")
+        with self.lock:
+            if self.download is not None and self.download.get("active"):
+                return None
+            job = {"active": True, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
+            self.download = job
+            self.last_seen = time.monotonic()
+        worker = threading.Thread(target=self.run_download, args=(job, str(url), destination, str(filename or ""), declared), daemon=True)
+        worker.start()
+        return job
+
+    def run_download(self, job, url, destination, filename, declared):
+        path = None
+        try:
+            request = Request(url, headers={"User-Agent": "NEMusicOnSteam", "Referer": "https://music.163.com/"})
+            with urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
+                declared_total = int(response.headers.get("Content-Length") or 0)
+                if declared_total > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("音频文件超过大小上限")
+                chunk = response.read(DOWNLOAD_CHUNK)
+                if not chunk:
+                    raise ValueError("音频响应为空")
+                extension = audio_extension(chunk, declared)
+                if extension is None:
+                    raise ValueError("无法识别的音频格式")
+                handle, path = open_unique(destination, sanitize_filename(filename, ""), extension)
+                received = 0
+                with handle:
+                    while chunk:
+                        handle.write(chunk)
+                        received += len(chunk)
+                        if received > MAX_DOWNLOAD_BYTES:
+                            raise ValueError("音频文件超过大小上限")
+                        with self.lock:
+                            job["received"] = received
+                            job["total"] = max(declared_total, received)
+                            self.last_seen = time.monotonic()
+                        chunk = response.read(DOWNLOAD_CHUNK)
+                with self.lock:
+                    job["filename"] = os.path.basename(path)
+                    job["path"] = path
+                    job["total"] = received
+        except (OSError, ValueError, HTTPException) as error:
+            if path is not None:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            with self.lock:
+                job["error"] = str(error) or error.__class__.__name__
+        finally:
+            with self.lock:
+                job["active"] = False
+                self.last_seen = time.monotonic()
+
     def check_idle(self):
         with self.lock:
+            downloading = self.download is not None and self.download.get("active")
             expired = time.monotonic() - self.last_seen > 15
+        if downloading:
+            return True
         if expired:
             self.loop.quit()
             return False

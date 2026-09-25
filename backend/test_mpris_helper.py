@@ -1,10 +1,13 @@
 import importlib.util
 import io
 import json
+import os
+import socket
 from email.message import Message
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import threading
+import time
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -218,6 +221,236 @@ class PlaybackNotificationTests(ServiceTestCase):
         with patch.object(repository.GLib, "Error", RuntimeError, create=True), patch("sys.stderr", new_callable=io.StringIO) as output:
             self.service.on_notification_sent(connection, object(), None)
         self.assertIn("no notification daemon", output.getvalue())
+
+
+class FilenameTests(unittest.TestCase):
+    def test_separators_control_characters_and_dots_never_survive(self):
+        for original in ("..\\..\\etc/passwd", "/etc/shadow", "..", ".hidden", "a\x00b\x1fc", "  ..名字..  ", "name."):
+            name = helper.sanitize_filename(original, ".mp3")
+            self.assertTrue(name.endswith(".mp3"), name)
+            body = name[: -len(".mp3")]
+            self.assertTrue(body, original)
+            self.assertNotIn("/", body)
+            self.assertNotIn("\\", body)
+            self.assertFalse(body.startswith("."), name)
+            self.assertEqual(os.path.basename(body), body)
+            self.assertEqual(body, body.strip(" ."))
+
+    def test_unicode_is_kept_and_byte_length_is_capped(self):
+        name = helper.sanitize_filename("歌手" * 400 + " - " + "歌名" * 400, ".flac")
+        body = name[: -len(".flac")]
+        self.assertTrue(body.startswith("歌手"))
+        self.assertLessEqual(len(body.encode("utf-8")), helper.FILENAME_BYTE_LIMIT)
+
+    def test_empty_names_fall_back(self):
+        for original in ("  ..  ", "", None, "..."):
+            self.assertEqual(helper.sanitize_filename(original, ".mp3"), "未命名.mp3")
+
+    def test_a_supplied_audio_extension_is_replaced_not_stacked(self):
+        self.assertEqual(helper.sanitize_filename("歌 - 名.mp3", ".flac"), "歌 - 名.flac")
+        self.assertEqual(helper.sanitize_filename("歌 - 名.FLAC", ".mp3"), "歌 - 名.mp3")
+
+
+class DirectoryTests(unittest.TestCase):
+    def test_default_directory_uses_the_music_folder(self):
+        for requested in ("", None, "   "):
+            self.assertEqual(helper.download_directory(requested), os.path.expanduser("~/Music/网易云音乐"))
+
+    def test_explicit_directory_expands_home(self):
+        self.assertEqual(helper.download_directory("~/音乐/网易云"), os.path.expanduser("~/音乐/网易云"))
+        self.assertEqual(helper.download_directory("/tmp/nemusic"), "/tmp/nemusic")
+
+
+class AudioExtensionTests(unittest.TestCase):
+    def test_magic_bytes_win_over_the_declared_type(self):
+        self.assertEqual(helper.audio_extension(b"fLaC\x00\x00", "mp3"), ".flac")
+        self.assertEqual(helper.audio_extension(b"ID3\x04\x00", "flac"), ".mp3")
+        self.assertEqual(helper.audio_extension(b"\xff\xfb\x90\x00", None), ".mp3")
+        self.assertEqual(helper.audio_extension(b"\x00\x00\x00\x20ftypM4A ", "flac"), ".m4a")
+
+    def test_unknown_payloads_fall_back_to_a_known_declared_type_or_fail(self):
+        unknown = b"\x01\x02\x03\x04\x05\x06\x07\x08\x09"
+        self.assertEqual(helper.audio_extension(unknown, "flac"), ".flac")
+        self.assertIsNone(helper.audio_extension(unknown, None))
+        self.assertIsNone(helper.audio_extension(unknown, "exe"))
+
+
+class DownloadUrlTests(unittest.TestCase):
+    def test_rejects_non_http_schemes_and_missing_hosts(self):
+        for url in ("file:///etc/passwd", "ftp://example.com/song.mp3", "blob:https://music.163.com/x", "https:///song.mp3", "", None):
+            with self.assertRaises(ValueError):
+                helper.validate_download_url(url)
+
+    def test_rejects_loopback_private_and_link_local_hosts(self):
+        for address in ("127.0.0.1", "192.168.1.10", "10.0.0.5", "169.254.1.1", "::1", "fd00::1"):
+            with patch.object(helper.socket, "getaddrinfo", return_value=[(2, 1, 6, "", (address, 80))]):
+                with self.assertRaises(ValueError):
+                    helper.validate_download_url("http://cdn.example.com/song.mp3")
+
+    def test_accepts_a_public_host(self):
+        with patch.object(helper.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))]):
+            self.assertEqual(helper.validate_download_url("https://m701.music.126.net/song.mp3"), "https://m701.music.126.net/song.mp3")
+
+    def test_reports_unresolvable_hosts(self):
+        with patch.object(helper.socket, "getaddrinfo", side_effect=socket.gaierror("boom")):
+            with self.assertRaises(ValueError):
+                helper.validate_download_url("https://nope.invalid/song.mp3")
+
+
+class UniquePathTests(unittest.TestCase):
+    def test_existing_files_are_never_overwritten(self):
+        with TemporaryDirectory() as directory:
+            first, first_path = helper.open_unique(directory, "歌 - 名", ".mp3")
+            first.close()
+            second, second_path = helper.open_unique(directory, "歌 - 名", ".mp3")
+            second.close()
+            self.assertEqual(os.path.basename(first_path), "歌 - 名.mp3")
+            self.assertEqual(os.path.basename(second_path), "歌 - 名 (1).mp3")
+            self.assertEqual(len(os.listdir(directory)), 2)
+
+
+class DownloadTestCase(ServiceTestCase):
+    def setUp(self):
+        super().setUp()
+        self.service.download = None
+        self.service.last_seen = time.monotonic()
+        self.directory = TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+
+    def post_download(self, payload, token="test-token"):
+        handler_type = self.service.make_handler()
+        handler = handler_type.__new__(handler_type)
+        body = json.dumps(payload).encode()
+        handler.path = "/download"
+        handler.headers = {"X-NEMusic-Token": token, "Content-Length": str(len(body))}
+        handler.rfile = io.BytesIO(body)
+        handler.reply = Mock()
+        handler.do_POST()
+        return handler.reply
+
+    def get_download(self):
+        handler_type = self.service.make_handler()
+        handler = handler_type.__new__(handler_type)
+        handler.path = "/download"
+        handler.headers = {"X-NEMusic-Token": "test-token"}
+        handler.reply = Mock()
+        handler.do_GET()
+        return handler.reply
+
+    def public_host(self):
+        return patch.object(helper.socket, "getaddrinfo", return_value=[(2, 1, 6, "", ("93.184.216.34", 443))])
+
+    def run_job(self, content, declared="mp3", directory=None, total=None, filename="歌 - 名"):
+        headers = Message()
+        if total is not None:
+            headers["Content-Length"] = str(total)
+        response = io.BytesIO(content)
+        response.headers = headers
+        job = {"active": True, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
+        with patch.object(helper, "urlopen", return_value=response):
+            self.service.run_download(job, "https://cdn.example.com/song", directory or self.directory.name, filename, declared)
+        return job
+
+
+class DownloadEndpointTests(DownloadTestCase):
+    def test_requires_the_token(self):
+        reply = self.post_download({"url": "https://cdn.example.com/song.mp3"}, token="wrong")
+        reply.assert_called_once_with(403, {"error": "forbidden"})
+
+    def test_rejects_a_bad_scheme_without_starting_a_job(self):
+        with patch.object(helper.threading, "Thread") as worker:
+            reply = self.post_download({"url": "file:///etc/passwd", "filename": "歌", "directory": self.directory.name})
+        reply.assert_called_once_with(400, {"error": "只支持 http/https 音频地址"})
+        worker.assert_not_called()
+        self.assertIsNone(self.service.download)
+
+    def test_rejects_a_second_job_while_one_is_active(self):
+        self.service.download = {"active": True, "received": 1, "total": 2, "filename": "a.mp3", "path": "/tmp/a.mp3", "error": ""}
+        with self.public_host():
+            reply = self.post_download({"url": "https://cdn.example.com/song.mp3", "filename": "歌", "directory": self.directory.name})
+        reply.assert_called_once_with(409, {"error": "已有下载任务在进行"})
+
+    def test_rejects_an_unusable_directory(self):
+        with self.public_host():
+            reply = self.post_download({"url": "https://cdn.example.com/song.mp3", "filename": "歌", "directory": "/proc/nope/nope"})
+        self.assertEqual(reply.call_args.args[0], 400)
+        self.assertIn("下载目录不可用", reply.call_args.args[1]["error"])
+
+    def test_creates_a_missing_directory_and_starts_a_background_job(self):
+        target = Path(self.directory.name) / "新建目录"
+        with self.public_host(), patch.object(helper.threading, "Thread") as worker:
+            reply = self.post_download({"url": "https://cdn.example.com/song.mp3", "filename": "歌 - 名", "directory": str(target), "type": "mp3"})
+        reply.assert_called_once_with(202, {"started": True})
+        worker.return_value.start.assert_called_once_with()
+        self.assertTrue(target.is_dir())
+        self.assertTrue(self.service.download["active"])
+        self.assertEqual(self.service.download["filename"], "")
+
+    def test_reports_an_idle_progress_snapshot(self):
+        reply = self.get_download()
+        reply.assert_called_once_with(200, {"active": False, "received": 0, "total": 0, "filename": "", "path": "", "error": ""})
+
+
+class DownloadRunTests(DownloadTestCase):
+    def test_streams_audio_and_sniffs_the_extension_from_magic_bytes(self):
+        content = b"fLaC" + b"\x00" * 10
+        job = self.run_job(content, declared="mp3", total=len(content))
+        self.assertEqual(job["error"], "")
+        self.assertFalse(job["active"])
+        self.assertEqual(job["filename"], "歌 - 名.flac")
+        self.assertEqual(Path(job["path"]).read_bytes(), content)
+        self.assertEqual(job["received"], len(content))
+        self.assertEqual(job["total"], len(content))
+
+    def test_existing_files_are_suffixed_instead_of_overwritten(self):
+        first = self.run_job(b"ID3" + b"\x00" * 8)
+        second = self.run_job(b"ID3" + b"\x00" * 8)
+        self.assertEqual(first["filename"], "歌 - 名.mp3")
+        self.assertEqual(second["filename"], "歌 - 名 (1).mp3")
+        self.assertEqual(len(os.listdir(self.directory.name)), 2)
+
+    def test_a_crafted_filename_cannot_escape_the_directory(self):
+        job = self.run_job(b"ID3" + b"\x00" * 8, filename="../../../etc/passwd")
+        self.assertEqual(job["error"], "")
+        root = os.path.realpath(self.directory.name)
+        self.assertNotIn("/", job["filename"])
+        self.assertNotIn("\\", job["filename"])
+        self.assertEqual(job["path"], os.path.join(root, job["filename"]))
+        self.assertEqual(os.listdir(root), [job["filename"]])
+
+    def test_a_partial_file_is_removed_when_the_size_cap_is_hit(self):
+        with patch.object(helper, "MAX_DOWNLOAD_BYTES", 1024):
+            job = self.run_job(b"ID3" + b"\x00" * 2048, total=64)
+        self.assertIn("大小上限", job["error"])
+        self.assertFalse(job["active"])
+        self.assertEqual(os.listdir(self.directory.name), [])
+
+    def test_html_and_empty_responses_leave_no_file_behind(self):
+        for content, expected in ((b"<html>error</html>", "无法识别的音频格式"), (b"", "音频响应为空")):
+            job = self.run_job(content, declared=None)
+            self.assertIn(expected, job["error"])
+            self.assertEqual(os.listdir(self.directory.name), [])
+
+    def test_transport_errors_are_reported_without_crashing(self):
+        job = {"active": True, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
+        with patch.object(helper, "urlopen", side_effect=OSError("offline")):
+            self.service.run_download(job, "https://cdn.example.com/song", self.directory.name, "歌", "mp3")
+        self.assertIn("offline", job["error"])
+        self.assertFalse(job["active"])
+
+
+class IdleShutdownTests(DownloadTestCase):
+    def test_an_active_download_prevents_the_idle_shutdown(self):
+        self.service.download = {"active": True, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
+        self.service.last_seen = time.monotonic() - 3600
+        self.assertTrue(self.service.check_idle())
+
+    def test_an_idle_service_still_shuts_down(self):
+        self.service.download = {"active": False, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
+        self.service.last_seen = time.monotonic() - 3600
+        self.service.loop = SimpleNamespace(quit=Mock())
+        self.assertFalse(self.service.check_idle())
+        self.service.loop.quit.assert_called_once_with()
 
 
 if __name__ == "__main__":
