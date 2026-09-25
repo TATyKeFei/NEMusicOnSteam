@@ -1,8 +1,8 @@
 # NEMuxicOnSteam
 
-这是一个`Millennium`插件，可以让你的Steam运行`网易云Web版`
+这是一个 [Millennium](https://github.com/SteamClientHomebrew/Millennium) 插件，可以让你的Steam运行`网易云Web版`
 
-注意! 使用的是官网那个页面，不是重写的客户端：`https://music.163.com/st/webplayer`
+> 注意! 使用的是官网那个页面，不是重写的客户端：`https://music.163.com/st/webplayer`
 
 把网易云官方网页播放器嵌进 **Steam 主窗口**，就不用再挂一个浏览器和他们的客户端吃你内存了
 
@@ -12,18 +12,21 @@
 
 # 声明
 
-- 不确保能一直使用，可能因为Steam更新、网易云音乐Web版下架等不可预因素停止更新
-- 非任何官方插件! 本项目与网易、Valve 都没关系。我要有关系我还在这写这个sb项目
+- 不确保能一直使用，可能因为Steam更新、网易云音乐Web版下架等不可预因素停止更新某个功能
+- 非任何官方插件! 本项目与网易、Valve 都没关系。我要有关系我还在这写这个sb项目早躺平了
 - 登录态在 Steam 自带的浏览器里，和系统其他浏览器不共享
-- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的
 - 不会窃取任何数据，程序就开源在这了，不放心就自己构建插件
+- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的
+- 我不是xnn
 
 # 支持
 
+> 由于Millennium仅支持x86_64版本的Steam，所以不支持arm。我也无能为力
+
 | 系统    | 可用性                 | 备注及注意事项       |
 | :---    | :---                   | :---                 |
-| Linux   | 仅支持x86_64版本       | 由于Millennium仅支持x86_64版本的Steam不支持arm，我也无能为力                           |
-| Windows | 未知、仅支持x86_64版本 | 我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份     |
+| Linux   | 支持                   |                      |
+| Windows | 未知 + 未测试          | 我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份     |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
 | Mac OS  | 不支持                 | 我是穷鬼安卓人没钱买苹果测试，不过Millennium好像也没支持MacOS                          |
 
@@ -39,43 +42,43 @@
 | 后台播放   | 支持  | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | 下载歌曲   | 正在制作       |        |
-| 桌面歌词    | 考虑支持中    |        |
-| 状态显示当前歌曲 | 考虑支持中 | 让好友能看到你在听啥歌 |
+| 桌面歌词   | 考虑支持中     |        |
+| 状态显示当前歌曲 | 考虑支持中 | 让好友能看到你在听啥歌。“我去豪到我了” |
 
 # 预览
 
 <p align="center">
   <img src=".docs/p1.png" width="800">
   <br>
-  <sub>主界面</sub>
+  <sub>主界面(暂时通过右上角入口进入，以后可能会改)</sub>
 </p>
 
 <p align="center">
   <img src=".docs/p2.png" width="800">
   <br>
-  <sub>设置界面(施工中)</sub>
+  <sub>设置界面(施工中，图片里全是工地)</sub>
 </p>
 
 <p align="center">
   <img src=".docs/p3.png" width="800">
   <br>
-  <sub>MPRIS支持</sub>
+  <sub>MPRIS支持; 此图片的部件为<a herf=https://github.com/ccatterina/plasmusic-toolbar>PlsaMusic Toolbar</a></sub>
 </p>
 
 <p align="center">
   <img src=".docs/p4.png" width="800">
   <br>
-  <sub>弹窗通知支持</sub>
+  <sub>切换、下一首歌曲弹窗通知支持</sub>
 </p>
 
 # 安装教程
 
 ## 需求
 
-- 需要 Millennium **3.4.0+**
-- 不支持通过 Flatpak / Snap 安装的 Steam
+- 需要 [Millennium](https://github.com/SteamClientHomebrew/Millennium) **3.4.0+**
+- 不支持通过 Flatpak / Snap 安装的 Steam (本来就不建议通过这两安装Steam)
 
-### Arch系
+### Arch系发行版
 
 #### 通过Pacman安装(推荐)
 
@@ -96,13 +99,23 @@ paru: `paru -S millennium`
 yay: `yay -S millennium`
 ```
 
+#### 可选安装
+
+如需要媒体键控制需要额外依赖
+
+MPIRS依赖Python3、PyGObject和D-Bus，可通过安装以下包解决
+
+```
+sudo pacman -S python-gobject
+```
+
 ### Windows
 
 不知道，好像是通过exe安装包安装的。可以看看Millennium官网
 
 https://docs.steambrew.app/users/getting-started/installation
 
-### 其他发行版/系统
+### 其他Linux发行版/系统
 
 复制下面命令下载其他发行版的预编译脚本并执行，官方推荐的我没试过，装之前建议自己先看一遍
 
@@ -133,6 +146,8 @@ Windows: `不知道`
 ## 后台播放
 
 Steam 语音通话会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`
+
+但关闭播放器时会把那个节流开关调回去。这时候如果正在语音，有可能和通话抢同一个开关
 
 插件在播放器还活着的时候，每隔几秒把同一个开关打开。这是为了 Steam 窗口最小化之后，页面里的定时器和切歌逻辑还能跑。
 
@@ -166,38 +181,64 @@ npm run build
 cp ./dist/com.nemusic.onsteam.star ~/.local/share/millennium/plugins/
 ```
 
-Millennium 已经装好的话，可以把 `millennium.toml` 里的 `output_path` 改成 `auto` 再构建一次，starlight 会自己放进插件目录。
+Millennium 已经装好的话，可以把 `millennium.toml` 里的 `output_path` 改成 `auto` 再构建一次
 
-开发时：
+starlight 会自己放进插件目录并重启 Steam 重载插件
+
+### 测试开发时：
+
+//todo 有空再写
 
 ```bash
 npm run dev
 ```
 
+# 项目结构
+
+```
+├── NEMusicOnSteam/
+│   ├── .docs/                     # 项目文档与预览素材
+│   ├── backend/                   # 后端 (Lua + Python)
+│   │   └── ...
+│   ├── frontend/                  # 前端 (TypeScript/React)
+│   │   └── ...
+│   ├── .gitignore                 # Git 忽略配置
+│   ├── .luarc.json                # Lua 语言服务器配置
+│   ├── LICENSE                    # 开源许可证 (GPLv3)
+│   ├── README.md                  # 项目说明与使用指南
+│   ├── millennium.toml            # Millennium 插件配置文件
+│   ├── package-lock.json          # 依赖版本锁定文件
+│   ├── package.json               # 项目依赖与脚本配置
+│   └── tsconfig.json              # TypeScript 编译配置
+```
+
 # 已知限制
 
-- 第一次要在内嵌页里登录。登录弹窗依赖 Steam 允许非信任弹窗（插件创建 BrowserView 时关了 `bOnlyAllowTrustedPopups`）
+- 插件创建 BrowserView 时关了 `bOnlyAllowTrustedPopups`，否则 Steam 打开网易云等第三方网站会弹允许非信任弹窗
 - 播放器页面使用 Steam 的 BrowserView 承载网页；Steam 本身没有供插件注册独立主窗口路由的稳定接口
 - Steam 更新可能改掉 `BrowserView` 或主窗口名字 `SP Desktop`可能导致打不开，需要时间适配
-- MPRIS 通过 DevTools 在网易云页面读取状态并调用现有播放器动作，依赖网页的 React/Redux 结构；网易云音乐Web版改版可能需要更新适配
-- 关闭播放器时会把那个节流开关设回去。这时候如果正在语音，有可能和通话抢同一个开关
+- MPRIS 通过 DevTools 在网易云页面读取状态并调用现有播放器动作，依赖网页的 React/Redux 结构；网易云音乐Web版改版可能需要时间更新适配
+- 后台播放依赖 Steam 的通话功能，会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`函数。如果你正在通话时暂停播放音乐可能导致通话出问题
 
-# 参考的项目
+# 使用/参考的项目
 
-非常感谢以下项目，本项目部分功能参考或使用了他们的思路
+本仓库使用了以下项目的代码、参考了他们的实现思路
 
-| 项目 | 链接 |
-| :--- | :--- |
-| MusicFox | [Github仓库](https://github.com/go-musicfox/go-musicfox) |
+非常感谢以下项目，没有他们我要摸打滚爬好久才能做出来，开源万岁!
+
+| 项目 | 链接 | 备注 |
+| :--- | :--- | :--- |
+| MusicFox   | [Github仓库](https://github.com/go-musicfox/go-musicfox)         | 好用的网易云终端工具，本项目的MPIRS功能参考了此项目 |
+| Millennium | [Github仓库](https://github.com/SteamClientHomebrew/Millennium)  | 用于加载本插件                                      |
 
 # 为什么有网易云客户端还要去写这个？
 
 如果你去网易云音乐官网下载页面点击Linux下载，你会发现tm居然直接跳转到Web版？
 
-网易那么多个客户端版本就是不给Linux适配，我天天用Muxicfox按错快捷键有点烦
+那么多个客户端版本就是不给Linux适配，我天天用Muxicfox按错快捷键有点烦
 
 然后我看到我Steam天天在后台没啥用，想到他能装插件于是就萌生了这种想法让Linux用上网易云
 
 反正Stean天天在后台吃内存也是吃白饭，不用白不用。哦对了v社啥时候才支持wayland，2027年了哥
 
-我体验下来确实不错，没想到Web版音质也这么好
+结果我体验下来确实不错，没想到Web版音质也这么好

@@ -32,6 +32,6 @@ jobs:
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: nemusic-on-steam-plugin
+        name: artifact
         path: dist/com.nemusic.onsteam.star
         if-no-files-found: error
