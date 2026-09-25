@@ -3,4 +3,4 @@ node_modules/
 dist/
 .millennium/lsp/
 *.star
-./backend/__pycache__/*.pyc
+backend/__pycache__/*.pyc
