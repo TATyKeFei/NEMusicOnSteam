@@ -1,5 +1,6 @@
 import { definePlugin, DialogButton, Dropdown, Field, TextField, Toggle } from "millennium";
 import { useEffect, useState, type ReactElement } from "react";
+import { mprisCommand } from "./constants.ts";
 import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality-player.ts";
 import { SteamSettingsEntry } from "./steam-settings.ts";
@@ -47,6 +48,8 @@ function SettingsContent() {
       : snapshot.throttlingSupported
         ? "这版 Steam 有这个接口"
         : "这版 Steam 没有这个接口";
+  // MPRIS, and therefore the shortcut commands built on it, only exists on Linux.
+  const linux = /Linux/i.test(navigator.platform);
 
   return (
     <>
@@ -149,7 +152,24 @@ function SettingsContent() {
           onChange={(disableBackgroundThrottling) => player.updateSettings({ disableBackgroundThrottling })}
         />
       </Field>
-      <Field label="系统媒体控制" description={snapshot.mprisStatus} bottomSeparator="none" />
+      <Field label="系统媒体控制" description={snapshot.mprisStatus} bottomSeparator={linux ? "standard" : "none"} />
+      {linux ? (
+        <>
+          <Field
+            label="全局快捷键：暂停 / 继续"
+            description="在系统的键盘设置里新建一条快捷键，命令填下面这个，各桌面的具体位置见 README。必须带 -p，否则命令会发给浏览器等其它播放器"
+            bottomSeparator="standard"
+          >
+            <TextField value={mprisCommand("play-pause")} onChange={() => {}} bShowCopyAction />
+          </Field>
+          <Field label="全局快捷键：下一首" bottomSeparator="standard">
+            <TextField value={mprisCommand("next")} onChange={() => {}} bShowCopyAction />
+          </Field>
+          <Field label="全局快捷键：上一首" bottomSeparator="none">
+            <TextField value={mprisCommand("previous")} onChange={() => {}} bShowCopyAction />
+          </Field>
+        </>
+      ) : null}
     </>
   );
 }

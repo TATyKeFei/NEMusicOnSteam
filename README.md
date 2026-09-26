@@ -43,7 +43,7 @@
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | 下载歌曲   | 支持           | 列表里的歌曲更多菜单里新增了“下载”按钮，在**Steam → 设置 → 网易云音乐**里可以选下载音质和目录，默认路径 `~/Music/网易云音乐` |
 | 桌面歌词   | 考虑支持中     |        |
-| 全局快捷键 | 计划实现方式中 | 目前未知实现方式和能否实现，能加会加       |
+| 全局快捷键 | 支持           | 依赖 MPRIS 连接，做法见[下文](#全局快捷键)       |
 | 状态显示当前歌曲 | 考虑支持中 | 让好友能看到你在听啥歌。“我去豪到我了” |
 | API 接口   | 后续支持       |        |
 
@@ -169,6 +169,52 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 
 进度跳转和音量控制通过网页现有的 Redux 播放器动作执行，音量读取播放器确认后的状态，关闭音量浮层也能操作。可以用 `playerctl -p NEMusicOnSteam position 60` 跳到第 60 秒，用 `playerctl -p NEMusicOnSteam volume 0.3` 调到 30%，再用 `playerctl -p NEMusicOnSteam volume` 查看回报。如果网页改版后无法找到播放器状态，插件设置页和 Steam 控制台会报告命令未执行
 
+## 全局快捷键
+
+依赖 MPRIS 且仅 Linux，插件不自己抢键盘（Wayland 本来也不允许），利用了 MPIRS 媒体控制器
+
+<p align="center">
+  <img src=".docs/p5.png" width="800">
+  <br>
+  <sub>在KDE设置→快捷键→媒体控制器中可以设置</sub>
+</p>
+
+### 其他方式
+
+如您有其他需求或使用的桌面环境没有类似功能可以自己弄命令快捷键
+
+> 需要 playerctl
+> sudo pacman -S playerctl
+
+| 用途 | 命令 |
+| :--- | :--- |
+| 暂停 / 继续 | `playerctl -p NEMusicOnSteam play-pause` |
+| 下一首 | `playerctl -p NEMusicOnSteam next` |
+| 上一首 | `playerctl -p NEMusicOnSteam previous` |
+
+**`-p NEMusicOnSteam` 不能省。** 不加的话 `playerctl` 会把命令发给最后活跃的播放器，浏览器里开着视频时就去控制那个视频了。设置页有这三条命令的可复制版本。
+
+| 桌面 | 在哪绑 |
+| :--- | :--- |
+| KDE | 系统设置 → 键盘 → 快捷键 → 添加 → 命令或脚本 |
+| GNOME | 设置 → 键盘 → 查看及自定义快捷键 → 自定义快捷键 |
+| Xfce | 设置 → 键盘 → 应用程序快捷键 |
+| Cinnamon / MATE / LXQt | 各自的键盘设置里都有自定义快捷键 |
+| Sway | `bindsym --release Ctrl+Alt+p exec playerctl -p NEMusicOnSteam play-pause` |
+| Hyprland | `bind = CTRL ALT, P, exec, playerctl -p NEMusicOnSteam play-pause` |
+| niri | `bind "Mod+Alt+P" { spawn "playerctl" "-p" "NEMusicOnSteam" "play-pause"; }` |
+
+键盘上那些多媒体键（播放/暂停/上一首/下一首）多数桌面会自动接管 MPRIS 客户端，通常不用自己绑；只有自定义组合键才需要上面这套。
+
+不想装 `playerctl` 也能用，直接走 D-Bus 一样，就是把 `PlayPause` 换成 `Next`、`Previous`：
+
+```bash
+dbus-send --session --dest=org.mpris.MediaPlayer2.NEMusicOnSteam --type=method_call \
+  /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause
+```
+
+Steam 没开着的时候按了没反应是正常的，辅助进程跟着 Steam 一起退出
+
 # 构建
 
 ```bash
@@ -220,6 +266,7 @@ npm run dev
 - 播放器页面使用 Steam 的 BrowserView 承载网页；Steam 本身没有供插件注册独立主窗口路由的稳定接口
 - Steam 更新可能改掉 `BrowserView` 或主窗口名字 `SP Desktop`可能导致打不开，需要时间适配
 - MPRIS 通过 DevTools 在网易云页面读取状态并调用现有播放器动作，依赖网页的 React/Redux 结构；网易云音乐Web版改版可能需要时间更新适配
+- 全局快捷键不自己抢键盘，靠桌面把组合键绑到 MPRIS 命令，所以每个桌面都得手动设一次，插件替你做不了
 - 后台播放依赖 Steam 的通话功能，会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`函数。如果你正在通话时暂停播放音乐可能导致通话出问题
 
 # 使用/参考的项目
