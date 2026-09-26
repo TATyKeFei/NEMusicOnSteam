@@ -176,14 +176,15 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 <p align="center">
   <img src=".docs/p5.png" width="800">
   <br>
-  <sub>在KDE设置→快捷键→媒体控制器中可以设置</sub>
+  <sub>在KDE设置→快捷键→媒体控制器中可以设置<br>除了"向后播放xx秒"其他媒体键全正常使用</sub>
 </p>
 
 ### 其他方式
 
 如您有其他需求或使用的桌面环境没有类似功能可以自己弄命令快捷键
 
-> 需要 playerctl
+> 需要 playerctl 或其他 MPIRS 控制器
+>
 > sudo pacman -S playerctl
 
 | 用途 | 命令 |
