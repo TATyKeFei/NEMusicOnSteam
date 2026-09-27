@@ -168,6 +168,24 @@ class VolumeFeedbackTests(ServiceTestCase):
         self.assertEqual(self.service.state["volume"], 0.25)
         repository.GLib.idle_add.assert_called_once_with(self.service.emit_changed, ["Volume"])
 
+    def test_loop_shuffle_and_rate_writes_queue_mpris_commands(self):
+        for name, value, expected in (
+            ("LoopStatus", "Track", {"action": "loop", "value": "Track"}),
+            ("Shuffle", True, {"action": "shuffle", "value": True}),
+            ("Rate", 1.5, {"action": "rate", "value": 1.5}),
+        ):
+            self.service.commands = []
+            result = self.service.on_set_property(None, None, None, "org.mpris.MediaPlayer2.Player", name, SimpleNamespace(unpack=lambda value=value: value))
+            self.assertTrue(result)
+            self.assertEqual(self.service.commands, [expected])
+
+    def test_invalid_loop_and_rate_writes_are_rejected(self):
+        for name, value in (("LoopStatus", "Invalid"), ("Rate", 0), ("Rate", 5)):
+            self.service.commands = []
+            result = self.service.on_set_property(None, None, None, "org.mpris.MediaPlayer2.Player", name, SimpleNamespace(unpack=lambda value=value: value))
+            self.assertFalse(result)
+            self.assertEqual(self.service.commands, [])
+
 
 class PlaybackNotificationTests(ServiceTestCase):
     def playback(self, **changes):

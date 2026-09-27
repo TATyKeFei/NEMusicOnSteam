@@ -1,6 +1,5 @@
 import { definePlugin, DialogButton, Dropdown, Field, TextField, Toggle } from "millennium";
 import { useEffect, useState, type ReactElement } from "react";
-import { mprisCommand } from "./constants.ts";
 import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality-player.ts";
 import { SteamSettingsEntry } from "./steam-settings.ts";
@@ -38,7 +37,6 @@ function SettingsContent() {
 
   const settings = snapshot.settings;
   const quality = snapshot.quality;
-  const download = snapshot.download;
   const qualityOptions = QUALITY_OPTIONS.some(option => option.data === quality.preferred) || quality.preferred == null
     ? QUALITY_OPTIONS
     : [...QUALITY_OPTIONS, { data: quality.preferred, label: qualityLabel(quality.preferred) }];
@@ -49,7 +47,6 @@ function SettingsContent() {
         ? "这版 Steam 有这个接口"
         : "这版 Steam 没有这个接口";
   // MPRIS, and therefore the shortcut commands built on it, only exists on Linux.
-  const linux = /Linux/i.test(navigator.platform);
 
   return (
     <>
@@ -104,26 +101,12 @@ function SettingsContent() {
         />
       </Field>
       <Field
-        label="下载当前歌曲"
-        description={`${download.status}。${download.menu ? `${download.menu}。` : ""}这个按钮只下载正在播放的这一首`}
-        bottomSeparator="thick"
-      >
-        <DialogButton onClick={() => player.downloadCurrentSong()} disabled={!download.available || download.busy}>
-          {download.busy ? "下载中" : "下载"}
-        </DialogButton>
-      </Field>
-      <Field
         label="播放器"
         description={`${snapshot.status}。点击顶部其他栏目即可返回 Steam 页面`}
         bottomSeparator="standard"
       >
         <DialogButton onClick={() => player.open()}>{snapshot.mode === "closed" ? "打开" : "展开"}</DialogButton>
       </Field>
-      {linux ? (
-        <Field label="听歌识曲" description={snapshot.recognitionStatus} bottomSeparator="standard">
-          <DialogButton onClick={() => player.recognizeSong()}>听歌识曲</DialogButton>
-        </Field>
-      ) : null}
       <Field label="收起" description="播放器还在，只是让出画面" bottomSeparator="none">
         <DialogButton onClick={() => player.collapse()} disabled={snapshot.mode === "closed"}>
           收起
@@ -157,24 +140,7 @@ function SettingsContent() {
           onChange={(disableBackgroundThrottling) => player.updateSettings({ disableBackgroundThrottling })}
         />
       </Field>
-      <Field label="系统媒体控制" description={snapshot.mprisStatus} bottomSeparator={linux ? "standard" : "none"} />
-      {linux ? (
-        <>
-          <Field
-            label="全局快捷键：暂停 / 继续"
-            description="在系统的键盘设置里新建一条快捷键，命令填下面这个，各桌面的具体位置见 README。必须带 -p，否则命令会发给浏览器等其它播放器"
-            bottomSeparator="standard"
-          >
-            <TextField value={mprisCommand("play-pause")} onChange={() => {}} bShowCopyAction />
-          </Field>
-          <Field label="全局快捷键：下一首" bottomSeparator="standard">
-            <TextField value={mprisCommand("next")} onChange={() => {}} bShowCopyAction />
-          </Field>
-          <Field label="全局快捷键：上一首" bottomSeparator="none">
-            <TextField value={mprisCommand("previous")} onChange={() => {}} bShowCopyAction />
-          </Field>
-        </>
-      ) : null}
+      <Field label="系统媒体控制" description={snapshot.mprisStatus} bottomSeparator="none" />
     </>
   );
 }

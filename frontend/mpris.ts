@@ -17,6 +17,9 @@ type TrackState = {
   canGoNext: boolean;
   canGoPrevious: boolean;
   volume: number | null;
+  loopStatus: "None" | "Track" | "Playlist";
+  shuffle: boolean;
+  rate: number;
 };
 
 const getEndpoint = ffi<[], string>("mpris_endpoint");
@@ -35,6 +38,9 @@ const EMPTY_STATE: TrackState = {
   canGoNext: false,
   canGoPrevious: false,
   volume: 1,
+  loopStatus: "None",
+  shuffle: false,
+  rate: 1,
 };
 
 export class MprisBridge {

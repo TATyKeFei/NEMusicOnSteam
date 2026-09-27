@@ -148,6 +148,9 @@ INTROSPECTION = """<node>
     <property name="CanSeek" type="b" access="read"/>
     <property name="CanControl" type="b" access="read"/>
     <property name="Volume" type="d" access="readwrite"/>
+    <property name="LoopStatus" type="s" access="readwrite"/>
+    <property name="Shuffle" type="b" access="readwrite"/>
+    <property name="Rate" type="d" access="readwrite"/>
   </interface>
 </node>"""
 
@@ -327,6 +330,9 @@ class MprisService:
                     changed.append("CanSeek")
                 if previous.get("volume") != state.get("volume"):
                     changed.append("Volume")
+                for property_name, state_key in (("LoopStatus", "loopStatus"), ("Shuffle", "shuffle"), ("Rate", "rate")):
+                    if previous.get(state_key) != state.get(state_key):
+                        changed.append(property_name)
                 if state.get("active"):
                     changed.append("Position")
                 if changed:
@@ -439,9 +445,22 @@ class MprisService:
 
     def on_set_property(self, _connection, _sender, _path, interface, name, value):
         if interface != "org.mpris.MediaPlayer2.Player" or name != "Volume":
-            return False
-        volume = max(0.0, min(1.0, float(value.unpack())))
-        self.queue({"action": "volume", "value": volume})
+            if interface != "org.mpris.MediaPlayer2.Player" or name not in ("LoopStatus", "Shuffle", "Rate"):
+                return False
+        if name == "Volume":
+            self.queue({"action": "volume", "value": max(0.0, min(1.0, float(value.unpack())))})
+        elif name == "LoopStatus":
+            status = str(value.unpack())
+            if status not in ("None", "Track", "Playlist"):
+                return False
+            self.queue({"action": "loop", "value": status})
+        elif name == "Shuffle":
+            self.queue({"action": "shuffle", "value": bool(value.unpack())})
+        else:
+            rate = float(value.unpack())
+            if rate <= 0 or rate > 4:
+                return False
+            self.queue({"action": "rate", "value": rate})
         return True
 
     def metadata(self, state):
@@ -495,6 +514,9 @@ class MprisService:
             "CanSeek": GLib.Variant("b", active and bool(state.get("canSeek"))),
             "CanControl": GLib.Variant("b", active),
             "Volume": GLib.Variant("d", max(0.0, min(1.0, float(state.get("volume") if state.get("volume") is not None else 1.0)))),
+            "LoopStatus": GLib.Variant("s", state.get("loopStatus") or "None"),
+            "Shuffle": GLib.Variant("b", bool(state.get("shuffle"))),
+            "Rate": GLib.Variant("d", max(0.1, min(4.0, float(state.get("rate") or 1.0)))),
         }
         return player.get(name)
 

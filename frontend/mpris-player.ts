@@ -87,6 +87,10 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const duration = playing?.resourceDuration || progress?.max || pageDuration || mediaDuration;
   const position = progress?.max ? Math.max(0, Math.min(duration, progress.value)) : Number.isFinite(media?.currentTime) ? media.currentTime : pagePosition;
   const controls = Array.from(document.querySelectorAll('button, a, [role="button"], [class*="next"], [class*="prev"], [class*="ply"], [class*="prv"], [class*="nxt"]')).map(element => [element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid'), element.className].filter(value => typeof value === 'string').join(' ').toLowerCase());
+  const controlText = controls.join(' ');
+  const loopStatus = /单曲循环|single.?loop|one.?song/.test(controlText) ? 'Track' : /列表循环|list.?loop|repeat/.test(controlText) ? 'Playlist' : 'None';
+  const shuffle = /随机播放|shuffle/.test(controlText);
+  const rate = Number(media?.playbackRate) > 0 ? Number(media.playbackRate) : 1;
   const volumeSlider = slider('音量调节');
   const volumeState = sliderValue(sliderHandle('音量调节')) || sliderValue(volumeSlider);
   const volume = Number.isFinite(playing?.playingVolume) ? Math.max(0, Math.min(1, playing.playingVolume)) : volumeState?.max ? Math.max(0, Math.min(1, volumeState.value / volumeState.max)) : null;
@@ -95,7 +99,7 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const controlClass = String(playControl?.className || '');
   const isPlayingButton = playControl?.classList.contains('play-pause-btn') || /\\bpas\\b/.test(controlClass) || /暂停|pause/.test(playControl?.querySelector('[title]')?.getAttribute('title') || '');
   const playbackStatus = media ? (media.ended ? 'Stopped' : media.paused ? 'Paused' : 'Playing') : playControl ? (isPlayingButton ? 'Playing' : 'Paused') : sessionState === 'playing' ? 'Playing' : sessionState === 'paused' ? 'Paused' : title ? 'Playing' : 'Stopped';
-  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, lyrics, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(visible('#btn_pc_next')) || controls.some(label => /下一首|下一曲|next|\\bnxt\\b/.test(label)), canGoPrevious: Boolean(visible('#btn_pc_previous')) || controls.some(label => /上一首|上一曲|prev|\\bprv\\b/.test(label)), volume };
+  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, lyrics, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(visible('#btn_pc_next')) || controls.some(label => /下一首|下一曲|next|\\bnxt\\b/.test(label)), canGoPrevious: Boolean(visible('#btn_pc_previous')) || controls.some(label => /上一首|上一曲|prev|\\bprv\\b/.test(label)), volume, loopStatus, shuffle, rate };
 })()`;
 
 export function commandScript(command: Command): string {
@@ -145,6 +149,9 @@ export function commandScript(command: Command): string {
       case 'next': return clickSelector('#btn_pc_next') || click(['下一首', '下一曲', 'next', 'nxt']);
       case 'previous': return clickSelector('#btn_pc_previous') || click(['上一首', '上一曲', 'previous', 'prev', 'prv']);
       case 'volume': return Number.isFinite(command.value) && playerControl.volume(command.value);
+      case 'rate': if (media && Number.isFinite(command.value) && command.value > 0) { media.playbackRate = command.value; return true; } return false;
+      case 'shuffle': return click(['随机播放', 'shuffle']);
+      case 'loop': return click(['循环', 'repeat', 'loop']);
       case 'seek': return Number.isFinite(command.value) && playerControl.seek(currentPosition + command.value / 1000000);
       case 'setposition': return Number.isFinite(command.value) && playerControl.seek(command.value / 1000000);
     }
