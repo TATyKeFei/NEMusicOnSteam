@@ -74,6 +74,8 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const title = metadata?.title || text('.m-playbar .words .name, [class*="song-name"], [class*="songName"], [class*="SongName"]');
   const artist = metadata?.artist || text('.m-playbar .words .by a, [class*="artist-name"], [class*="artistName"]');
   const album = metadata?.album || '';
+  const lyrics = text('.m-lycifo__content, .lyric-content, [class*="lyric-content"], [class*="lyricContent"]')
+    .replace(/\\s*\\n\\s*/g, '\\n').trim().slice(0, 32768);
   const artUrl = metadata?.artwork?.at(-1)?.src || playing?.resourceCoverUrl || document.querySelector('.m-playbar .head img')?.src || '';
   const progressSlider = slider('播放进度调节');
   const progress = sliderValue(sliderHandle('播放进度调节')) || sliderValue(progressSlider);
@@ -93,7 +95,7 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const controlClass = String(playControl?.className || '');
   const isPlayingButton = playControl?.classList.contains('play-pause-btn') || /\\bpas\\b/.test(controlClass) || /暂停|pause/.test(playControl?.querySelector('[title]')?.getAttribute('title') || '');
   const playbackStatus = media ? (media.ended ? 'Stopped' : media.paused ? 'Paused' : 'Playing') : playControl ? (isPlayingButton ? 'Playing' : 'Paused') : sessionState === 'playing' ? 'Playing' : sessionState === 'paused' ? 'Paused' : title ? 'Playing' : 'Stopped';
-  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(visible('#btn_pc_next')) || controls.some(label => /下一首|下一曲|next|\\bnxt\\b/.test(label)), canGoPrevious: Boolean(visible('#btn_pc_previous')) || controls.some(label => /上一首|上一曲|prev|\\bprv\\b/.test(label)), volume };
+  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, lyrics, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(visible('#btn_pc_next')) || controls.some(label => /下一首|下一曲|next|\\bnxt\\b/.test(label)), canGoPrevious: Boolean(visible('#btn_pc_previous')) || controls.some(label => /上一首|上一曲|prev|\\bprv\\b/.test(label)), volume };
 })()`;
 
 export function commandScript(command: Command): string {

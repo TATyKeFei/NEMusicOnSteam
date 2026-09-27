@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from gi.repository import Gio, GLib
+from recognition import RecognitionService
 
 
 OBJECT_PATH = "/org/mpris/MediaPlayer2"
@@ -160,6 +161,7 @@ class MprisService:
         self.state = {}
         self.commands = []
         self.download = None
+        self.recognition = RecognitionService()
         self.last_seen = time.monotonic()
         self.notification_serial = 0
         self.last_notified_track = None
@@ -219,6 +221,15 @@ class MprisService:
             def do_GET(self):
                 if not self.authorized():
                     return
+                if self.path in ("/recognition", "/recognition/engine"):
+                    with service.lock:
+                        service.last_seen = time.monotonic()
+                    try:
+                        payload = {"source": service.recognition.engine()} if self.path.endswith("/engine") else service.recognition.snapshot()
+                        self.reply(200, payload)
+                    except Exception as error:
+                        self.reply(502, {"error": "识曲引擎加载失败：" + str(error)})
+                    return
                 if self.path in ("/commands", "/commands?wait=1"):
                     with service.command_ready:
                         service.last_seen = time.monotonic()
@@ -236,6 +247,27 @@ class MprisService:
 
             def do_POST(self):
                 if not self.authorized():
+                    return
+                if self.path in ("/recognition/start", "/recognition/match", "/recognition/cancel"):
+                    payload = self.read_payload()
+                    if payload is None:
+                        self.reply(400, {"error": "无效请求"})
+                        return
+                    with service.lock:
+                        service.last_seen = time.monotonic()
+                    try:
+                        if self.path.endswith("/start"):
+                            self.reply(202, {"id": service.recognition.start(payload.get("source"))})
+                        elif not isinstance(payload.get("id"), str) or not payload["id"]:
+                            self.reply(400, {"error": "缺少识曲任务编号"})
+                        elif self.path.endswith("/match"):
+                            service.recognition.submit(payload["id"], payload.get("fingerprint"))
+                            self.reply(202, {})
+                        else:
+                            service.recognition.cancel(payload["id"])
+                            self.reply(200, {})
+                    except ValueError as error:
+                        self.reply(400, {"error": str(error)})
                     return
                 if self.path == "/shutdown":
                     self.reply(200, {})
@@ -428,6 +460,9 @@ class MprisService:
         }
         if album:
             result["xesam:album"] = GLib.Variant("s", album)
+        lyrics = str(state.get("lyrics") or "").strip()
+        if lyrics:
+            result["xesam:asText"] = GLib.Variant("s", lyrics)
         if art.startswith(("https://", "http://")):
             result["mpris:artUrl"] = GLib.Variant("s", art)
         duration = state.get("duration")
@@ -545,10 +580,11 @@ class MprisService:
                 self.last_seen = time.monotonic()
 
     def check_idle(self):
+        self.recognition.expire()
         with self.lock:
             downloading = self.download is not None and self.download.get("active")
             expired = time.monotonic() - self.last_seen > 15
-        if downloading:
+        if downloading or self.recognition.active():
             return True
         if expired:
             self.loop.quit()
@@ -564,6 +600,7 @@ class MprisService:
         try:
             self.loop.run()
         finally:
+            self.recognition.cancel()
             self.server.shutdown()
             Gio.bus_unown_name(self.owner)
             self.cover_directory.cleanup()

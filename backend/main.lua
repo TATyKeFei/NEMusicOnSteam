@@ -16,6 +16,8 @@ function mpris_endpoint()
     if mpris_dir == nil then
         local script = millennium.assets.read("backend/mpris_helper.py")
         if script == nil then return "" end
+        local recognition = millennium.assets.read("backend/recognition.py")
+        if recognition == nil then return "" end
         local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
         mpris_dir = base .. "/nemusic-mpris-" .. utils.uuid()
         mpris_token = utils.uuid()
@@ -23,6 +25,7 @@ function mpris_endpoint()
         utils.exec("chmod 700 " .. shell_quote(mpris_dir))
         local path = mpris_dir .. "/helper.py"
         if not utils.write_file(path, script) then return "" end
+        if not utils.write_file(mpris_dir .. "/recognition.py", recognition) then return "" end
         if not utils.write_file(mpris_dir .. "/token", mpris_token) then return "" end
         utils.exec("python3 " .. shell_quote(path) .. " " .. shell_quote(mpris_dir) .. " </dev/null >" .. shell_quote(mpris_dir .. "/helper.log") .. " 2>&1 &")
     end

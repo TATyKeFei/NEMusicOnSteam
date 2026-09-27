@@ -4,6 +4,7 @@ import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "./constants.ts"
 import { DownloadBridge, type DownloadSnapshot } from "./download.ts";
 import { sameBounds, type Bounds } from "./layout.ts";
 import { MprisBridge } from "./mpris.ts";
+import { RecognitionBridge } from "./recognition.ts";
 import { QualityBridge, type QualitySnapshot } from "./quality.ts";
 import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "./settings.ts";
 import { STEAM_PAGE_FALLBACK_CLASSES, steamPageTransition, steamPageVisible, type SteamPageSelectors } from "./steam-page.ts";
@@ -44,6 +45,7 @@ export type PlayerSnapshot = {
   hasView: boolean;
   throttlingSupported: boolean | null;
   mprisStatus: string;
+  recognitionStatus: string;
   quality: QualitySnapshot;
   download: DownloadSnapshot;
   settings: PlayerSettings;
@@ -52,6 +54,7 @@ export type PlayerSnapshot = {
 export class PlayerController {
   private readonly chrome = new PlayerChrome();
   private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); });
+  private readonly recognition = new RecognitionBridge();
   private readonly quality = new QualityBridge();
   private readonly download = new DownloadBridge(() => ({
     quality: this.settings.downloadQuality,
@@ -111,6 +114,7 @@ export class PlayerController {
       hasView: this.view != null,
       throttlingSupported: this.throttlingSupported,
       mprisStatus: this.mpris.getStatus(),
+      recognitionStatus: this.recognition.getStatus(),
       quality: this.quality.snapshot(),
       download: this.download.snapshot(),
       settings: { ...this.settings, launcher: { ...this.settings.launcher } },
@@ -131,6 +135,11 @@ export class PlayerController {
 
   downloadCurrentSong(): void {
     void this.download.download();
+  }
+
+  recognizeSong(): void {
+    this.open();
+    this.recognition.open();
   }
 
   open(): string {
@@ -242,6 +251,7 @@ export class PlayerController {
       },
       onToolbarChange: () => this.syncView(false),
       onCollapse: () => this.collapse(),
+      onRecognize: () => this.recognizeSong(),
       onReload: () => this.reload(),
       onClose: () => this.close(),
     });
@@ -288,6 +298,7 @@ export class PlayerController {
     }
     this.view = created;
     this.mpris.setEnabled(true);
+    this.recognition.setEnabled(true);
     this.quality.setEnabled(true);
     this.download.setEnabled(true);
     this.client = client;
@@ -344,6 +355,7 @@ export class PlayerController {
     this.unbindPopup();
     this.view = null;
     this.mpris.setEnabled(false);
+    this.recognition.setEnabled(false);
     this.quality.setEnabled(false);
     this.download.setEnabled(false);
     this.parentId = null;
@@ -455,6 +467,7 @@ export class PlayerController {
     this.unbindPopup();
     this.view = null;
     this.mpris.setEnabled(false);
+    this.recognition.setEnabled(false);
     this.quality.setEnabled(false);
     this.download.setEnabled(false);
     this.parentId = null;

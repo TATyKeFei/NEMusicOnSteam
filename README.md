@@ -42,10 +42,24 @@
 | 后台播放   | 支持  | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | 下载歌曲   | 支持           | 列表里的歌曲更多菜单里新增了“下载”按钮，在**Steam → 设置 → 网易云音乐**里可以选下载音质和目录，默认路径 `~/Music/网易云音乐` |
-| 桌面歌词   | 考虑支持中     |        |
+| 听歌识曲   | 仅 Linux 支持  | 支持桌面音频、麦克风输入录制                     |
+| 桌面歌词   | 支持中         |        |
 | 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[下文](#全局快捷键)       |
-| 状态显示当前歌曲 | 考虑支持中 | 让好友能看到你在听啥歌。“我去豪到我了” |
 | API 接口   | 后续支持       |        |
+
+# 不支持功能
+
+| 内容       | 支持状况                                              | 备注   |
+| :--- | :--- | :--- |
+| 状态显示当前歌曲 | 不支持   | 目前没有稳定良好的思路方法实现，而且会骚扰好友   |
+
+## 听歌识曲
+
+在顶部“网易云音乐”的悬浮菜单中点击“听歌识曲”，或使用 **Steam → 设置 → 网易云音乐 → 听歌识曲**。选择“系统声音”可以识别游戏、视频等默认输出设备正在播放的音乐；选择“麦克风”则使用系统默认输入设备。点击开始后采集约 6 秒，支持取消，识别结果可以打开网易云歌曲页面。
+
+需要运行中的 PulseAudio 或 PipeWire 的 PulseAudio 兼容服务，以及 `parec`（Debian/Ubuntu 的 `pulseaudio-utils`、Arch 的 `libpulse`）；也可使用支持 PulseAudio 输入的 `ffmpeg`。设备选择跟随系统默认输入／输出，使用系统声音时建议暂停网易云自身播放，避免混音影响识别。
+
+首次使用会从 GitHub 下载固定版本且校验 SHA-256 的音频指纹引擎，缓存在辅助进程内存中；需要能够访问 `raw.githubusercontent.com` 和网易云识曲接口。实现参考 [NeteaseCloudMusicApiEnhanced 的 audio_match_demo](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced/tree/a8c781fd64faab17fedfd46e0615a2609307f163/public/audio_match_demo)。录音仅在本机内存中处理，不写录音文件；只向网易云发送音频指纹。识别成功率和可用性取决于音源及网易云接口，不保证哼唱识别。
 
 # 预览
 
@@ -281,8 +295,9 @@ npm run dev
 
 | 项目 | 链接 | 备注 |
 | :--- | :--- | :--- |
-| MusicFox   | [Github仓库](https://github.com/go-musicfox/go-musicfox)         | 好用的网易云终端工具，本项目的MPIRS功能参考了此项目 |
 | Millennium | [Github仓库](https://github.com/SteamClientHomebrew/Millennium)  | 用于加载本插件                                      |
+| MusicFox   | [Github仓库](https://github.com/go-musicfox/go-musicfox)         | 好用的网易云终端工具，本项目的MPIRS功能参考了此项目 |
+| open orpheus | [Github仓库](https://github.com/YUCLing/open-orpheus)          | 能让Linux运行网易云客户端，部分地方参考了他         |
 
 # 为什么有网易云客户端还要去写这个？
 

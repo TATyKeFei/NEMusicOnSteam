@@ -9,6 +9,7 @@ export type ChromeHandlers = {
   onNavigateAway: () => void;
   onToolbarChange: () => void;
   onCollapse: () => void;
+  onRecognize: () => void;
   onReload: () => void;
   onClose: () => void;
 };
@@ -68,6 +69,9 @@ export class PlayerChrome {
   private navObserver: MutationObserver | null = null;
   private navigationHost: HTMLElement | null = null;
   private handlers: ChromeHandlers | null = null;
+  private recognitionButton: HTMLButtonElement | null = null;
+  private recognitionHost: HTMLElement | null = null;
+  private recognitionObserver: MutationObserver | null = null;
 
   mountedDocument(): Document | null {
     return this.doc;
@@ -176,7 +180,7 @@ export class PlayerChrome {
           x: Math.max(0, Math.min(width - barWidth, Math.round(linkRect?.left ?? width - barWidth))),
           y: Math.round(linkRect?.bottom ?? header),
           width: barWidth,
-          height: 104,
+          height: bar.children.length * 32 + 8,
         }, false);
         bar.style.display = "flex";
       } else bar.style.display = "none";
@@ -322,6 +326,85 @@ export class PlayerChrome {
     this.linkLabel = null;
     this.linkMark = null;
     this.navHost = null;
+  }
+
+  /* recognition opens from inside the NetEase page */
+  private removeRecognitionButton(): void {
+    this.recognitionObserver?.disconnect();
+    this.recognitionObserver = null;
+    this.recognitionButton?.remove();
+    this.recognitionButton = null;
+    this.recognitionHost = null;
+  }
+  private findNewsButton(doc: Document): HTMLElement | null {
+    const width = doc.documentElement.clientWidth;
+    const candidates = Array.from(doc.querySelectorAll<HTMLElement>("[title], [aria-label]"));
+    return candidates
+      .filter((element) => {
+        if (this.root?.contains(element)) return false;
+        const label = `${element.getAttribute("title") ?? ""} ${element.getAttribute("aria-label") ?? ""}`.toLowerCase();
+        if (!((label.includes("steam") && (label.includes("news") || label.includes("新闻"))) || label.includes("新闻") || label.includes("news"))) return false;
+        const rect = element.getBoundingClientRect();
+        return rect.top >= 0 && rect.top < 70 && rect.right > width * 0.55 && rect.width > 12 && rect.height > 12;
+      })
+      .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0] ?? null;
+  }
+
+  private findTopRightButton(doc: Document): HTMLElement | null {
+    const width = doc.documentElement.clientWidth;
+    return Array.from(doc.querySelectorAll<HTMLElement>("button, [role='button']"))
+      .filter((element) => {
+        if (this.root?.contains(element)) return false;
+        const rect = element.getBoundingClientRect();
+        return rect.top >= 0 && rect.top < 60 && rect.left > width * 0.62 && rect.width >= 18 && rect.height >= 18;
+      })
+      .sort((left, right) => left.getBoundingClientRect().left - right.getBoundingClientRect().left)[0] ?? null;
+  }
+
+  private ensureRecognitionButton(doc: Document): void {
+    if (!/Linux/i.test(navigator.platform)) return;
+    const news = this.findNewsButton(doc) ?? this.findTopRightButton(doc);
+    if (news == null || news.parentElement == null) {
+      if (this.recognitionButton?.isConnected) return;
+      const button = doc.createElement("button");
+      button.type = "button";
+      button.title = "听歌识曲";
+      button.setAttribute("aria-label", "听歌识曲");
+      button.style.cssText = "position:fixed;top:2px;right:360px;width:34px;height:32px;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:2px;background:transparent;color:#d6d7d8;cursor:pointer;";
+      button.innerHTML = "<svg width=18 height=18 viewBox='0 0 24 24' aria-hidden='true'><path fill='currentColor' d='M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm7-3a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21H8a1 1 0 0 0 0 2h8a1 1 0 0 0 0-2h-3v-3.08A7 7 0 0 0 19 11Z'/></svg>";
+      button.addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); this.handlers?.onRecognize(); });
+      doc.body.append(button);
+      this.recognitionButton = button;
+      this.recognitionObserver = new MutationObserver(() => { if (!button.isConnected) this.ensureRecognitionButton(doc); });
+      this.recognitionObserver.observe(doc.body, { childList: true });
+      return;
+    }
+    const host = news.parentElement;
+    if (this.recognitionButton != null && this.recognitionHost === host && this.recognitionButton.isConnected) return;
+    this.removeRecognitionButton();
+    const button = doc.createElement("button");
+    button.type = "button";
+    button.title = "听歌识曲";
+    button.setAttribute("aria-label", "听歌识曲");
+    button.className = news.className;
+    button.style.cssText = news.getAttribute("style") ?? "";
+    button.style.cursor = "pointer";
+    button.style.display = "inline-flex";
+    button.style.alignItems = "center";
+    button.style.justifyContent = "center";
+    button.innerHTML = "<svg width=18 height=18 viewBox='0 0 24 24' aria-hidden='true'><path fill='currentColor' d='M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm7-3a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21H8a1 1 0 0 0 0 2h8a1 1 0 0 0 0-2h-3v-3.08A7 7 0 0 0 19 11Z'/></svg>";
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.handlers?.onRecognize();
+    });
+    host.insertBefore(button, news);
+    this.recognitionButton = button;
+    this.recognitionHost = host;
+    this.recognitionObserver = new MutationObserver(() => {
+      if (!this.recognitionButton?.isConnected) this.ensureRecognitionButton(doc);
+    });
+    this.recognitionObserver.observe(host, { childList: true });
   }
 
   private ensureNavLink(doc: Document): HTMLElement | null {

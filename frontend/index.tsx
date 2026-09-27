@@ -119,6 +119,11 @@ function SettingsContent() {
       >
         <DialogButton onClick={() => player.open()}>{snapshot.mode === "closed" ? "打开" : "展开"}</DialogButton>
       </Field>
+      {linux ? (
+        <Field label="听歌识曲" description={snapshot.recognitionStatus} bottomSeparator="standard">
+          <DialogButton onClick={() => player.recognizeSong()}>听歌识曲</DialogButton>
+        </Field>
+      ) : null}
       <Field label="收起" description="播放器还在，只是让出画面" bottomSeparator="none">
         <DialogButton onClick={() => player.collapse()} disabled={snapshot.mode === "closed"}>
           收起

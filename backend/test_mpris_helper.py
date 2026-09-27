@@ -32,6 +32,7 @@ class ServiceTestCase(unittest.TestCase):
         self.service.command_ready = threading.Condition(self.service.lock)
         self.service.token = "test-token"
         self.service.commands = []
+        self.service.recognition = helper.RecognitionService()
         self.service.state = {"volume": 0.42}
         self.service.notification_serial = 0
         self.service.last_notified_track = None
@@ -109,6 +110,42 @@ class CommandDeliveryTests(ServiceTestCase):
         handler.do_GET()
         handler.reply.assert_called_once_with(403, {"error": "forbidden"})
         self.assertEqual(self.service.commands, [{"action": "next"}])
+
+
+class RecognitionEndpointTests(ServiceTestCase):
+    def post(self, path, payload, token="test-token"):
+        handler_type = self.service.make_handler()
+        handler = handler_type.__new__(handler_type)
+        content = json.dumps(payload).encode()
+        handler.path = path
+        handler.headers = {"X-NEMusic-Token": token, "Content-Length": str(len(content))}
+        handler.rfile = io.BytesIO(content)
+        handler.reply = Mock()
+        handler.do_POST()
+        return handler.reply
+
+    def test_recording_requires_authentication_and_an_explicit_start(self):
+        with patch.object(self.service.recognition, "start", return_value="job") as start:
+            reply = self.post("/recognition/start", {"source": "microphone"}, token="wrong")
+            reply.assert_called_once_with(403, {"error": "forbidden"})
+            start.assert_not_called()
+            reply = self.post("/recognition/start", {"source": "system"})
+            reply.assert_called_once_with(202, {"id": "job"})
+            start.assert_called_once_with("system")
+
+    def test_cancel_requires_a_job_id_and_does_not_cancel_every_job(self):
+        with patch.object(self.service.recognition, "cancel") as cancel:
+            reply = self.post("/recognition/cancel", {})
+            self.assertEqual(reply.call_args.args[0], 400)
+            cancel.assert_not_called()
+            reply = self.post("/recognition/cancel", {"id": "job"})
+            reply.assert_called_once_with(200, {})
+            cancel.assert_called_once_with("job")
+
+    def test_recorder_error_is_returned_to_the_ui(self):
+        with patch.object(self.service.recognition, "start", side_effect=ValueError("需要安装 parec")):
+            reply = self.post("/recognition/start", {"source": "system"})
+        reply.assert_called_once_with(400, {"error": "需要安装 parec"})
 
 
 class VolumeFeedbackTests(ServiceTestCase):
@@ -513,6 +550,15 @@ class DownloadRunTests(DownloadTestCase):
 
 
 class IdleShutdownTests(DownloadTestCase):
+    def test_active_recognition_prevents_idle_shutdown_but_abandoned_jobs_expire(self):
+        self.service.last_seen = time.monotonic() - 3600
+        self.service.recognition.job = {"id": "job", "stage": "recorded", "updated": time.monotonic(), "samples": "raw"}
+        self.assertTrue(self.service.check_idle())
+        self.service.recognition.job["updated"] -= 60
+        self.service.loop = SimpleNamespace(quit=Mock())
+        self.assertFalse(self.service.check_idle())
+        self.assertEqual(self.service.recognition.job["samples"], "")
+
     def test_an_active_download_prevents_the_idle_shutdown(self):
         self.service.download = {"active": True, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
         self.service.last_seen = time.monotonic() - 3600

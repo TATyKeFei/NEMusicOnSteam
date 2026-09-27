@@ -7,6 +7,7 @@ type TrackState = {
   playbackStatus: "Playing" | "Paused" | "Stopped";
   title: string;
   artist: string;
+  lyrics: string;
   album: string;
   artUrl: string;
   trackId: string;
@@ -24,6 +25,7 @@ const EMPTY_STATE: TrackState = {
   playbackStatus: "Stopped",
   title: "",
   artist: "",
+  lyrics: "",
   album: "",
   artUrl: "",
   trackId: "",
