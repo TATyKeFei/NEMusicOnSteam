@@ -29,6 +29,7 @@ class ServiceTestCase(unittest.TestCase):
     def setUp(self):
         self.service = helper.MprisService.__new__(helper.MprisService)
         self.service.lock = threading.Lock()
+        self.service.command_ready = threading.Condition(self.service.lock)
         self.service.token = "test-token"
         self.service.commands = []
         self.service.state = {"volume": 0.42}
@@ -49,6 +50,65 @@ class ServiceTestCase(unittest.TestCase):
         handler.reply = Mock()
         handler.do_POST()
         handler.reply.assert_called_once_with(200, {})
+
+
+class CommandDeliveryTests(ServiceTestCase):
+    def handler(self, path="/commands?wait=1"):
+        handler_type = self.service.make_handler()
+        handler = handler_type.__new__(handler_type)
+        handler.path = path
+        handler.headers = {"X-NEMusic-Token": "test-token"}
+        handler.reply = Mock()
+        return handler
+
+    def test_waiting_request_wakes_when_command_arrives(self):
+        handler = self.handler()
+        waiting = threading.Event()
+        original_wait = self.service.command_ready.wait
+
+        def wait(timeout=None):
+            waiting.set()
+            return original_wait(timeout)
+
+        with patch.object(self.service.command_ready, "wait", side_effect=wait):
+            worker = threading.Thread(target=handler.do_GET, daemon=True)
+            worker.start()
+            self.assertTrue(waiting.wait(1))
+            self.service.queue({"action": "playpause"})
+            worker.join(1)
+            self.assertFalse(worker.is_alive())
+        handler.reply.assert_called_once_with(200, [{"action": "playpause"}])
+        self.assertEqual(self.service.commands, [])
+
+    def test_commands_already_queued_return_in_order_without_waiting(self):
+        commands = [{"action": "next"}, {"action": "previous"}]
+        for command in commands:
+            self.service.queue(command)
+        handler = self.handler()
+        with patch.object(self.service.command_ready, "wait") as wait:
+            handler.do_GET()
+            wait.assert_not_called()
+        handler.reply.assert_called_once_with(200, commands)
+
+    def test_empty_poll_times_out_and_legacy_poll_does_not_wait(self):
+        handler = self.handler()
+        with patch.object(self.service.command_ready, "wait_for", return_value=False) as wait:
+            handler.do_GET()
+            self.assertEqual(wait.call_args.kwargs["timeout"], 10)
+        handler.reply.assert_called_once_with(200, [])
+        handler = self.handler("/commands")
+        with patch.object(self.service.command_ready, "wait_for") as wait:
+            handler.do_GET()
+            wait.assert_not_called()
+        handler.reply.assert_called_once_with(200, [])
+
+    def test_unauthorized_poll_cannot_consume_commands(self):
+        self.service.queue({"action": "next"})
+        handler = self.handler()
+        handler.headers = {}
+        handler.do_GET()
+        handler.reply.assert_called_once_with(403, {"error": "forbidden"})
+        self.assertEqual(self.service.commands, [{"action": "next"}])
 
 
 class VolumeFeedbackTests(ServiceTestCase):

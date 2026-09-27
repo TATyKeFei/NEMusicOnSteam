@@ -46,8 +46,16 @@ export class MprisBridge {
   private state: TrackState = EMPTY_STATE;
   private status = "尚未连接";
   private commandError = "";
+  private commandRequest: AbortController | null = null;
+  private pendingCommands: Command[] = [];
 
-  constructor(private readonly open: () => void, private readonly close: () => void) {}
+  private readonly open: () => void;
+  private readonly close: () => void;
+
+  constructor(open: () => void, close: () => void) {
+    this.open = open;
+    this.close = close;
+  }
 
   start(): void {
     if (this.timer) return;
@@ -55,13 +63,15 @@ export class MprisBridge {
       this.status = "仅 Linux 支持 MPRIS";
       return;
     }
-    this.timer = window.setInterval(() => void this.tick(), 1200);
+    this.timer = window.setInterval(() => void this.tick(), 500);
     void this.tick();
   }
 
   async stop(): Promise<void> {
     window.clearInterval(this.timer);
     this.timer = 0;
+    this.commandRequest?.abort();
+    this.pendingCommands = [];
     const endpoint = this.endpoint;
     const token = this.token;
     this.endpoint = null;
@@ -85,6 +95,7 @@ export class MprisBridge {
   private async connect(): Promise<boolean> {
     if (this.endpoint && this.token) return true;
     const result = await getEndpoint();
+    if (!this.timer) return false;
     const separator = result.lastIndexOf("|");
     if (separator < 0) {
       this.status = "MPRIS 不可用；请检查 Python 3、PyGObject 和用户会话 D-Bus";
@@ -136,15 +147,45 @@ export class MprisBridge {
     return result.result.value;
   }
 
+  private async listenForCommands(): Promise<void> {
+    if (this.commandRequest || !this.timer || !this.endpoint || !this.token) return;
+    const controller = new AbortController();
+    this.commandRequest = controller;
+    try {
+      while (this.timer && !controller.signal.aborted) {
+        const response = await fetch(`${this.endpoint}/commands?wait=1`, {
+          headers: { "X-NEMusic-Token": this.token! },
+          signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(`MPRIS command poll failed: ${response.status}`);
+        const commands = (await response.json()) as Command[];
+        if (controller.signal.aborted || !this.timer) return;
+        if (commands.length) {
+          this.pendingCommands.push(...commands);
+          await this.tick();
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) console.warn("[NEMusic] MPRIS commands", error);
+    } finally {
+      if (this.commandRequest === controller) this.commandRequest = null;
+    }
+  }
+
   private async tick(): Promise<void> {
     if (this.busy || !this.timer) return;
     this.busy = true;
     try {
       if (!(await this.connect())) return;
-      await this.attach();
-      const commands = await this.request("/commands");
-      if (!commands.ok) throw new Error(`MPRIS command poll failed: ${commands.status}`);
-      for (const command of (await commands.json()) as Command[]) {
+      if (!this.timer) return;
+      void this.listenForCommands();
+      if (!this.sessionId || !this.pendingCommands.length || !this.enabled) await this.attach();
+      if (!this.timer) {
+        await this.detach();
+        return;
+      }
+      while (this.pendingCommands.length) {
+        const command = this.pendingCommands.shift()!;
         if (command.action === "open") this.open();
         else if (command.action === "close") this.close();
         else if (this.sessionId) {
@@ -156,17 +197,20 @@ export class MprisBridge {
         }
       }
       this.state = this.sessionId ? (await this.evaluate(SNAPSHOT_SCRIPT)) as TrackState : EMPTY_STATE;
+      if (!this.timer) return;
       const update = await this.request("/state", this.state);
       if (!update.ok) throw new Error(`MPRIS state update failed: ${update.status}`);
       this.status = this.commandError || "MPRIS 已连接";
     } catch (error) {
       console.warn("[NEMusic] MPRIS bridge", error);
       this.status = "MPRIS 连接失败；请检查 Steam 控制台和辅助进程日志或去Github反馈";
+      this.commandRequest?.abort();
       await this.detach();
       this.endpoint = null;
       this.token = null;
     } finally {
       this.busy = false;
+      if (this.pendingCommands.length && this.timer && this.endpoint) void this.tick();
     }
   }
 }

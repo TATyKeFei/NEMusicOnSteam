@@ -156,6 +156,7 @@ class MprisService:
         self.runtime_dir = runtime_dir
         self.token = token
         self.lock = threading.Lock()
+        self.command_ready = threading.Condition(self.lock)
         self.state = {}
         self.commands = []
         self.download = None
@@ -189,6 +190,8 @@ class MprisService:
                 self.send_header("Access-Control-Allow-Headers", "X-NEMusic-Token, Content-Type")
                 self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
                 self.send_header("Access-Control-Allow-Private-Network", "true")
+                self.send_header("Access-Control-Max-Age", "600")
+                self.send_header("Cache-Control", "no-store")
                 self.end_headers()
                 self.wfile.write(body)
 
@@ -216,9 +219,11 @@ class MprisService:
             def do_GET(self):
                 if not self.authorized():
                     return
-                if self.path == "/commands":
-                    with service.lock:
+                if self.path in ("/commands", "/commands?wait=1"):
+                    with service.command_ready:
                         service.last_seen = time.monotonic()
+                        if self.path == "/commands?wait=1":
+                            service.command_ready.wait_for(lambda: bool(service.commands), timeout=10)
                         commands, service.commands = service.commands, []
                     self.reply(200, commands)
                     return
@@ -380,8 +385,9 @@ class MprisService:
             print(f"[NEMusic] Notification failed: {error}", file=sys.stderr, flush=True)
 
     def queue(self, command):
-        with self.lock:
+        with self.command_ready:
             self.commands.append(command)
+            self.command_ready.notify()
 
     def on_method(self, _connection, _sender, _path, interface, method, parameters, invocation):
         if interface == "org.mpris.MediaPlayer2":

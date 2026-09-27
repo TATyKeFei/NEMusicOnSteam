@@ -1,3 +1,4 @@
+import { findModule } from "millennium";
 import { PlayerChrome, type PlayerMode } from "./chrome.ts";
 import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "./constants.ts";
 import { DownloadBridge, type DownloadSnapshot } from "./download.ts";
@@ -5,6 +6,7 @@ import { sameBounds, type Bounds } from "./layout.ts";
 import { MprisBridge } from "./mpris.ts";
 import { QualityBridge, type QualitySnapshot } from "./quality.ts";
 import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "./settings.ts";
+import { STEAM_PAGE_FALLBACK_CLASSES, steamPageTransition, steamPageVisible, type SteamPageSelectors } from "./steam-page.ts";
 import {
   BROWSER_VIEW_STACK_TOP,
   browserId,
@@ -21,6 +23,20 @@ const TICK_MS = 400;
 const THROTTLE_REFRESH_MS = 2000;
 const VIEW_NAME = "NEMusicOnSteam";
 let nextViewId = 1;
+
+function steamPageClasses(): SteamPageSelectors {
+  try {
+    const css = findModule((module) => typeof module?.MainBrowserContainer === "string");
+    if (css == null) return STEAM_PAGE_FALLBACK_CLASSES;
+    return {
+      main: typeof css.MainBrowserContainer === "string" ? css.MainBrowserContainer : STEAM_PAGE_FALLBACK_CLASSES.main,
+      external: typeof css.ExternalBrowserContainer === "string" ? css.ExternalBrowserContainer : STEAM_PAGE_FALLBACK_CLASSES.external,
+    };
+  } catch (error) {
+    console.warn("[NEMusic] Steam page classes", error);
+    return STEAM_PAGE_FALLBACK_CLASSES;
+  }
+}
 
 export type PlayerSnapshot = {
   mode: PlayerMode;
@@ -41,6 +57,9 @@ export class PlayerController {
     quality: this.settings.downloadQuality,
     directory: this.settings.downloadDirectory,
   }));
+  private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
+  private steamPageShown: boolean | null = null;
+  private yieldedForSteamPage = false;
   private settings: PlayerSettings = readSettings(browserStorage());
   private mode: PlayerMode = "closed";
   private status = "还没打开";
@@ -64,6 +83,7 @@ export class PlayerController {
     if (this.booted) return;
     this.booted = true;
     this.settings = readSettings(browserStorage());
+    this.steamPageSelectors = steamPageClasses();
     this.pendingOpen = this.settings.openOnStart;
     this.timer = window.setInterval(this.tick, TICK_MS);
     this.mpris.start();
@@ -115,6 +135,7 @@ export class PlayerController {
 
   open(): string {
     this.boot();
+    this.yieldedForSteamPage = false;
     this.pendingOpen = true;
     const popup = findMainPopup();
     if (popup == null) {
@@ -125,13 +146,29 @@ export class PlayerController {
   }
 
   collapse(): string {
+    return this.collapseTo(this.settings.keepAliveWhenCollapsed ? "已收起，播放器仍在后台" : "已收起。收起会把页面藏起来，切歌可能停");
+  }
+
+  private collapseTo(status: string): string {
     if (this.view == null && this.mode === "closed") return this.status;
     this.pendingOpen = false;
     this.mode = "collapsed";
-    this.status = this.settings.keepAliveWhenCollapsed ? "已收起，播放器仍在后台" : "已收起。收起会把页面藏起来，切歌可能停";
+    this.status = status;
     this.render();
     this.syncView(true);
     return this.status;
+  }
+
+  private syncSteamPage(shown: boolean): void {
+    const action = steamPageTransition(this.steamPageShown, shown, this.mode, this.yieldedForSteamPage);
+    this.steamPageShown = shown;
+    if (action === "none") return;
+    if (action === "yield") {
+      this.yieldedForSteamPage = true;
+      this.collapseTo("Steam 打开了自己的网页，网易云让出画面，音乐继续");
+      return;
+    }
+    this.open();
   }
 
   close(): string {
@@ -189,6 +226,7 @@ export class PlayerController {
       }
       this.render();
       this.syncView(false);
+      if (popup != null) this.syncSteamPage(steamPageVisible(popup.window.document, this.steamPageSelectors));
     } catch (error) {
       this.status = errorText(error);
       console.error("[NEMusic]", error);
