@@ -43,7 +43,7 @@
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | 下载歌曲   | 支持           | 列表里的歌曲更多菜单里新增了“下载”按钮，在**Steam → 设置 → 网易云音乐**里可以选下载音质和目录，默认路径 `~/Music/网易云音乐` |
 | 听歌识曲   | 仅 Linux 支持  | 支持桌面音频、麦克风输入录制                     |
-| 桌面歌词   | 支持中         |        |
+| 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[下文](#歌词)       |
 | 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[下文](#全局快捷键)       |
 | API 接口   | 后续支持       |        |
 
@@ -185,9 +185,20 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 
 进度跳转和音量控制通过网页现有的 Redux 播放器动作执行，音量读取播放器确认后的状态，关闭音量浮层也能操作。可以用 `playerctl -p NEMusicOnSteam position 60` 跳到第 60 秒，用 `playerctl -p NEMusicOnSteam volume 0.3` 调到 30%，再用 `playerctl -p NEMusicOnSteam volume` 查看回报。如果网页改版后无法找到播放器状态，插件设置页和 Steam 控制台会报告命令未执行
 
+## 歌词
+
+依赖 MPRIS 且仅 Linux，可以使用支持 MPRIS 的工具例如KDE小部件或其他软件
+
+- 通过标准 MPRIS 元数据通过 xesam:asText 暴露
+- 为避免元数据过大最多同步 32KB
+
+可能有些 MPRIS 客户端不显示 xesam:asText，播放器或桌面工具需要支持该字段
+
+如果不支持也最好换一个或叫作者支持
+
 ## 全局快捷键
 
-依赖 MPRIS 且仅 Linux，插件不自己抢键盘（Wayland 本来也不允许），利用了 MPIRS 媒体控制器
+依赖 MPRIS 且仅 Linux，插件不自己抢键盘（Wayland 本来也不允许），利用了 MPIRS + 媒体控制器
 
 <p align="center">
   <img src=".docs/p5.png" width="800">
@@ -196,6 +207,18 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 </p>
 
 ### 其他方式
+
+> 网上搜的问ai答的不一定准确，我只用过 KDE Niri 其他不知道
+
+| 桌面 | 在哪绑 |
+| :--- | :--- |
+| KDE | 系统设置 → 键盘 → 快捷键 → 添加 → 媒体控制器 |
+| Niri | `bind "Mod+Alt+P" { spawn "playerctl" "-p" "NEMusicOnSteam" "play-pause"; }` |
+| GNOME | 设置 → 键盘 → 查看及自定义快捷键 → 自定义快捷键 |
+| Xfce | 设置 → 键盘 → 应用程序快捷键 |
+| Cinnamon / MATE / LXQt | 各自的键盘设置里都有自定义快捷键 |
+| Sway | `bindsym --release Ctrl+Alt+p exec playerctl -p NEMusicOnSteam play-pause` |
+| Hyprland | `bind = CTRL ALT, P, exec, playerctl -p NEMusicOnSteam play-pause` |
 
 如您有其他需求或使用的桌面环境没有类似功能可以自己弄命令快捷键
 
@@ -209,17 +232,6 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 | 下一首 | `playerctl -p NEMusicOnSteam next` |
 | 上一首 | `playerctl -p NEMusicOnSteam previous` |
 
-**`-p NEMusicOnSteam` 不能省。** 不加的话 `playerctl` 会把命令发给最后活跃的播放器，浏览器里开着视频时就去控制那个视频了。设置页有这三条命令的可复制版本。
-
-| 桌面 | 在哪绑 |
-| :--- | :--- |
-| KDE | 系统设置 → 键盘 → 快捷键 → 添加 → 命令或脚本 |
-| GNOME | 设置 → 键盘 → 查看及自定义快捷键 → 自定义快捷键 |
-| Xfce | 设置 → 键盘 → 应用程序快捷键 |
-| Cinnamon / MATE / LXQt | 各自的键盘设置里都有自定义快捷键 |
-| Sway | `bindsym --release Ctrl+Alt+p exec playerctl -p NEMusicOnSteam play-pause` |
-| Hyprland | `bind = CTRL ALT, P, exec, playerctl -p NEMusicOnSteam play-pause` |
-| niri | `bind "Mod+Alt+P" { spawn "playerctl" "-p" "NEMusicOnSteam" "play-pause"; }` |
 
 键盘上那些多媒体键（播放/暂停/上一首/下一首）多数桌面会自动接管 MPRIS 客户端，通常不用自己绑；只有自定义组合键才需要上面这套。
 
