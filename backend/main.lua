@@ -13,22 +13,30 @@ end
 ---@ffi
 ---@return string
 function mpris_endpoint()
-    if mpris_dir == nil then
-        local script = millennium.assets.read("backend/mpris_helper.py")
-        if script == nil then return "" end
-        local recognition = millennium.assets.read("backend/recognition.py")
-        if recognition == nil then return "" end
-        local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
-        mpris_dir = base .. "/nemusic-mpris-" .. utils.uuid()
-        mpris_token = utils.uuid()
-        if not fs.create_directories(mpris_dir) then return "" end
-        utils.exec("chmod 700 " .. shell_quote(mpris_dir))
-        local path = mpris_dir .. "/helper.py"
-        if not utils.write_file(path, script) then return "" end
-        if not utils.write_file(mpris_dir .. "/recognition.py", recognition) then return "" end
-        if not utils.write_file(mpris_dir .. "/token", mpris_token) then return "" end
-        utils.exec("python3 " .. shell_quote(path) .. " " .. shell_quote(mpris_dir) .. " </dev/null >" .. shell_quote(mpris_dir .. "/helper.log") .. " 2>&1 &")
+    if mpris_dir ~= nil then
+        local port = utils.read_file(mpris_dir .. "/port")
+        if port ~= nil and port:match("^%d+$") then
+            return "http://127.0.0.1:" .. port .. "|" .. mpris_token
+        end
+        -- The helper deletes its runtime directory when it exits, so a missing
+        -- port file means the previous process is gone and a new one is needed.
+        mpris_dir = nil
+        mpris_token = nil
     end
+    local script = millennium.assets.read("backend/mpris_helper.py")
+    if script == nil then return "" end
+    local recognition = millennium.assets.read("backend/recognition.py")
+    if recognition == nil then return "" end
+    local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
+    mpris_dir = base .. "/nemusic-mpris-" .. utils.uuid()
+    mpris_token = utils.uuid()
+    if not fs.create_directories(mpris_dir) then return "" end
+    utils.exec("chmod 700 " .. shell_quote(mpris_dir))
+    local path = mpris_dir .. "/helper.py"
+    if not utils.write_file(path, script) then return "" end
+    if not utils.write_file(mpris_dir .. "/recognition.py", recognition) then return "" end
+    if not utils.write_file(mpris_dir .. "/token", mpris_token) then return "" end
+    utils.exec("python3 " .. shell_quote(path) .. " " .. shell_quote(mpris_dir) .. " </dev/null >" .. shell_quote(mpris_dir .. "/helper.log") .. " 2>&1 &")
     for _ = 1, 20 do
         local port = utils.read_file(mpris_dir .. "/port")
         if port ~= nil and port:match("^%d+$") then

@@ -72,6 +72,7 @@ export class PlayerChrome {
   private recognitionButton: HTMLButtonElement | null = null;
   private recognitionHost: HTMLElement | null = null;
   private recognitionObserver: MutationObserver | null = null;
+  private styledButtons = new WeakSet<HTMLElement>();
 
   mountedDocument(): Document | null {
     return this.doc;
@@ -248,6 +249,12 @@ export class PlayerChrome {
   private styleToolbar(host: HTMLElement | null): void {
     if (this.bar == null) return;
     for (const button of Array.from(this.bar.querySelectorAll("button"))) {
+      // Styling and hover listeners are applied once per button: this runs on
+      // every render (twice per 400ms tick), so re-attaching here leaked two
+      // listeners per button per render. It also kept resetting background and
+      // color, cancelling an in-progress hover highlight.
+      if (this.styledButtons.has(button)) continue;
+      this.styledButtons.add(button);
       button.className = "";
       button.style.display = "block";
       button.style.flex = "1 1 0";

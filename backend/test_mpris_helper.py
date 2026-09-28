@@ -114,6 +114,55 @@ class CommandDeliveryTests(ServiceTestCase):
         self.assertEqual(self.service.commands, [{"action": "next"}])
 
 
+class ReplyTests(ServiceTestCase):
+    def handler(self):
+        handler_type = self.service.make_handler()
+        handler = handler_type.__new__(handler_type)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.close_connection = False
+        return handler
+
+    def test_reply_writes_the_json_body(self):
+        handler = self.handler()
+        handler.wfile = SimpleNamespace(write=Mock())
+        handler.reply(200, {"ok": True})
+        handler.wfile.write.assert_called_once_with(b'{"ok": true}')
+        self.assertFalse(handler.close_connection)
+
+    def test_reply_ignores_a_client_that_already_left(self):
+        handler = self.handler()
+        handler.wfile = SimpleNamespace(write=Mock(side_effect=BrokenPipeError()))
+        handler.reply(200, [])
+        self.assertTrue(handler.close_connection)
+
+    def test_reply_ignores_a_reset_before_headers_finished(self):
+        handler = self.handler()
+        handler.end_headers = Mock(side_effect=ConnectionResetError())
+        handler.wfile = SimpleNamespace(write=Mock())
+        handler.reply(204, {})
+        self.assertTrue(handler.close_connection)
+
+
+class HttpServerTests(unittest.TestCase):
+    def server(self):
+        return helper.MprisHttpServer.__new__(helper.MprisHttpServer)
+
+    def test_client_gone_errors_are_not_logged(self):
+        with patch.object(helper.ThreadingHTTPServer, "handle_error") as base:
+            with patch.object(helper.sys, "exc_info", return_value=(BrokenPipeError, BrokenPipeError(), None)):
+                self.server().handle_error(None, None)
+            base.assert_not_called()
+
+    def test_other_errors_still_reach_the_base_handler(self):
+        error = RuntimeError("boom")
+        with patch.object(helper.ThreadingHTTPServer, "handle_error") as base:
+            with patch.object(helper.sys, "exc_info", return_value=(RuntimeError, error, None)):
+                self.server().handle_error(None, None)
+            base.assert_called_once_with(None, None)
+
+
 class RecognitionEndpointTests(ServiceTestCase):
     def post(self, path, payload, token="test-token"):
         handler_type = self.service.make_handler()

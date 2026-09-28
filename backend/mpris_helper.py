@@ -3,10 +3,12 @@ import html
 import ipaddress
 import json
 import os
+import shutil
 import socket
 import sys
 import threading
 import time
+import warnings
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.client import HTTPException
 from tempfile import TemporaryDirectory
@@ -16,11 +18,21 @@ from urllib.request import Request, urlopen
 from gi.repository import Gio, GLib
 from recognition import RecognitionService
 
+warnings.filterwarnings("ignore", message="Gio.DBusConnection.register_object is deprecated")
 
 OBJECT_PATH = "/org/mpris/MediaPlayer2"
 BUS_NAME = "org.mpris.MediaPlayer2.NEMusicOnSteam"
 POSITION_SEEK_THRESHOLD = 3.5
 SEEK_REANCHOR_WINDOW = 3.0
+CLIENT_GONE_ERRORS = (BrokenPipeError, ConnectionResetError)
+
+
+class MprisHttpServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        error = sys.exc_info()[1]
+        if isinstance(error, CLIENT_GONE_ERRORS):
+            return
+        super().handle_error(request, client_address)
 
 
 def cover_extension(data):
@@ -180,7 +192,7 @@ class MprisService:
         for interface in self.node.interfaces:
             self.connection.register_object(OBJECT_PATH, interface, self.on_method, self.on_property, self.on_set_property)
         self.owner = Gio.bus_own_name_on_connection(self.connection, BUS_NAME, Gio.BusNameOwnerFlags.NONE, None, None)
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), self.make_handler())
+        self.server = MprisHttpServer(("127.0.0.1", 0), self.make_handler())
         self.server.daemon_threads = True
 
     def make_handler(self):
@@ -192,17 +204,23 @@ class MprisService:
 
             def reply(self, code, payload):
                 body = b"" if code == 204 else json.dumps(payload).encode("utf-8")
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Headers", "X-NEMusic-Token, Content-Type")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                self.send_header("Access-Control-Allow-Private-Network", "true")
-                self.send_header("Access-Control-Max-Age", "600")
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.send_response(code)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Access-Control-Allow-Origin", "*")
+                    self.send_header("Access-Control-Allow-Headers", "X-NEMusic-Token, Content-Type")
+                    self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                    self.send_header("Access-Control-Allow-Private-Network", "true")
+                    self.send_header("Access-Control-Max-Age", "600")
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(body)
+                except CLIENT_GONE_ERRORS:
+                    # The /commands long-poll commonly replies after the caller has
+                    # already gone away (page reload, HMR, aborted fetch). Let the
+                    # connection close quietly instead of dumping a traceback.
+                    self.close_connection = True
 
             def do_OPTIONS(self):
                 self.reply(204, {})
@@ -670,6 +688,11 @@ class MprisService:
             self.server.shutdown()
             Gio.bus_unown_name(self.owner)
             self.cover_directory.cleanup()
+            # Nothing else removes the runtime directory, so every plugin reload
+            # and every Steam start used to strand one. Leaving the port file
+            # behind is what tells the plugin the helper is still alive.
+            if os.path.basename(os.path.normpath(self.runtime_dir)).startswith("nemusic-mpris-"):
+                shutil.rmtree(self.runtime_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
