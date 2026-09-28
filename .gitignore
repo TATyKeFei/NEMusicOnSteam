@@ -1,6 +1,1 @@
-node_modules/
-.millennium/
-dist/
-.millennium/lsp/
-*.star
-backend/__pycache__/*.pyc
+(empty)

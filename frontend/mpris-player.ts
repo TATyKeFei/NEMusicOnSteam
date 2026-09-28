@@ -116,29 +116,47 @@ export const LYRICS_SCRIPT = `(() => {
     const rect = element.getBoundingClientRect();
     return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
   };
+  const title = navigator.mediaSession?.metadata?.title || document.querySelector('.m-playbar .words .name, [class*="song-name"], [class*="songName"], [class*="SongName"]')?.textContent?.trim() || '';
+  const artist = navigator.mediaSession?.metadata?.artist || document.querySelector('.m-playbar .words .by a, [class*="artist-name"], [class*="artistName"]')?.textContent?.trim() || '';
+  const album = navigator.mediaSession?.metadata?.album || '';
+  const trackId = [title, artist, album].join('|');
   const roots = Array.from(document.querySelectorAll('.m-lycifo__content, .lyric-content, [class*="lyric-content"], [class*="lyricContent"]'))
     .filter(visible)
     .sort((left, right) => (right.textContent || '').length - (left.textContent || '').length);
   const root = roots[0];
-  if (!root) return '';
+  if (!root) return JSON.stringify({ trackId, lines: [] });
   const lineNodes = Array.from(root.querySelectorAll('li, p, [data-time]')).filter(visible);
-  const source = lineNodes.length > 1 ? lineNodes.map(node => node.textContent || '') : [root.textContent || ''];
+  const nodes = lineNodes.length > 1 ? lineNodes : [root];
+  const parseSeconds = value => {
+    const parts = String(value || '').split(':').map(Number);
+    if (!parts.length || parts.some(number => !Number.isFinite(number) || number < 0)) return null;
+    return parts.reduce((total, number) => total * 60 + number, 0);
+  };
+  const timeOf = node => {
+    const attribute = Number(node.getAttribute?.('data-time'));
+    if (Number.isFinite(attribute) && attribute >= 0) return attribute <= 86400 ? attribute / 1000 : attribute;
+    const clock = parseSeconds(node?.dataset?.time ?? node?.dataset?.second ?? node?.dataset?.seek ?? node?.dataset?.start);
+    if (clock !== null) return clock;
+    for (const child of Array.from(node?.children || [])) {
+      const value = Number(child.getAttribute?.('data-time'));
+      if (Number.isFinite(value) && value >= 0) return value <= 86400 ? value / 1000 : value;
+    }
+    return null;
+  };
+  const seen = new Set();
   const lines = [];
-  for (const value of source) {
-    const line = value.replace(/\\s+/g, ' ').trim();
-    if (line && lines[lines.length - 1] !== line) lines.push(line);
+  for (const node of nodes) {
+    const text = (node.textContent || '').replace(/\\s+/g, ' ').trim();
+    if (!text || seen.has(text)) continue;
+    seen.add(text);
+    lines.push({ time: timeOf(node), text });
   }
-  const text = lines.join('\\n');
-  const encoder = new TextEncoder();
-  let bytes = 0;
-  let end = 0;
-  for (const character of text) {
-    const size = encoder.encode(character).length;
-    if (bytes + size > 32768) break;
-    bytes += size;
-    end += character.length;
+  let payload = JSON.stringify({ trackId, lines });
+  while (payload.length > 32768 && lines.length > 1) {
+    lines.pop();
+    payload = JSON.stringify({ trackId, lines });
   }
-  return text.slice(0, end);
+  return payload.length > 32768 ? JSON.stringify({ trackId, lines: [] }) : payload;
 })()`;
 
 export function commandScript(command: Command): string {

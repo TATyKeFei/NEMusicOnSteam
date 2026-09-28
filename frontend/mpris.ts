@@ -2,6 +2,50 @@ import { ChromeDevToolsProtocol, ffi } from "millennium";
 import { isPlayerDocument } from "./constants.ts";
 import { commandScript, LYRICS_SCRIPT, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
 
+type LyricLine = { time: number; text: string };
+
+type TimedLyrics = { trackId: string; lines: LyricLine[] };
+
+const LYRIC_LINE_LIMIT = 1000;
+
+/**
+ * Pick the lyric line that should be highlighted at `position`, preferring the
+ * most recent line whose timestamp has already passed. Lines without usable
+ * timestamps are ignored so a malformed page never makes the selection jitter.
+ */
+export function currentLyricLine(lines: LyricLine[], position: number): string {
+  let best: LyricLine | null = null;
+  for (const line of lines) {
+    if (!Number.isFinite(line.time) || line.time < 0) continue;
+    if (line.time > position + 0.25) continue;
+    if (!best || line.time >= best.time) best = line;
+  }
+  return best?.text ?? "";
+}
+
+function parseTimedLyrics(raw: unknown): TimedLyrics | null {
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const value = raw as { trackId?: unknown; lines?: unknown };
+  if (typeof value.trackId !== "string" || !Array.isArray(value.lines)) return null;
+  const lines: LyricLine[] = [];
+  for (const entry of value.lines.slice(0, LYRIC_LINE_LIMIT)) {
+    if (!entry || typeof entry !== "object") continue;
+    const line = entry as { time?: unknown; text?: unknown };
+    const time = Number(line.time);
+    const text = typeof line.text === "string" ? line.text.replace(/\s+/g, " ").trim() : "";
+    if (!Number.isFinite(time) || time < 0 || !text) continue;
+    lines.push({ time, text });
+  }
+  return { trackId: value.trackId, lines };
+}
+
 type TrackState = {
   active: boolean;
   playbackStatus: "Playing" | "Paused" | "Stopped";
@@ -57,6 +101,8 @@ export class MprisBridge {
   private lastLyricsTrackId = "";
   private lastLyricsAttemptAt = 0;
   private lastSentLyrics: string | null = null;
+  private timedLyrics: TimedLyrics | null = null;
+  private readonly lyricListeners = new Set<(line: string) => void>();
   private status = "尚未连接";
   private commandError = "";
   private commandRequest: AbortController | null = null;
@@ -90,6 +136,7 @@ export class MprisBridge {
     this.endpoint = null;
     this.token = null;
     this.lastSentLyrics = null;
+    this.timedLyrics = null;
     await this.detach();
     if (endpoint && token) {
       try {
@@ -129,30 +176,56 @@ export class MprisBridge {
     });
   }
 
+  /**
+   * Subscribe to the lyric line that is active right now. The bridge keeps a
+   * timestamped copy of the lyrics and re-selects the current line on every
+   * poll, so listeners only get called when the song actually moves to the
+   * next (or previous) line instead of on every sync tick.
+   */
+  onLyricLineChange(listener: (line: string) => void): () => void {
+    this.lyricListeners.add(listener);
+    return () => this.lyricListeners.delete(listener);
+  }
+
+  private publishLyricLine(line: string): void {
+    if (line === this.state.lyrics) return;
+    for (const listener of this.lyricListeners) {
+      try {
+        listener(line);
+      } catch {}
+    }
+  }
+
   private async updateLyrics(snapshot: TrackState): Promise<void> {
     const trackId = snapshot.trackId;
     if (!trackId) {
       this.lastLyricsTrackId = "";
+      this.timedLyrics = null;
       snapshot.lyrics = "";
       return;
     }
     const now = Date.now();
     const trackChanged = trackId !== this.lastLyricsTrackId;
-    const retry = !this.state.lyrics && now - this.lastLyricsAttemptAt >= 1500;
-    if (!trackChanged && !retry) {
-      snapshot.lyrics = this.state.trackId === trackId ? this.state.lyrics : "";
+    const retry = !this.timedLyrics && now - this.lastLyricsAttemptAt >= 1500;
+    if (trackChanged || retry) {
+      this.lastLyricsTrackId = trackId;
+      this.lastLyricsAttemptAt = now;
+      let result: unknown = "";
+      try {
+        result = await this.evaluate(LYRICS_SCRIPT);
+      } catch {
+        result = "";
+      }
+      if (trackChanged || this.timedLyrics?.trackId !== trackId) this.timedLyrics = parseTimedLyrics(result);
+    }
+    // Re-pick the active line from the cached timestamps on every poll so the
+    // published text only changes when the song really moves to another line.
+    const timed = this.timedLyrics;
+    if (timed && timed.trackId === trackId && timed.lines.length) {
+      snapshot.lyrics = currentLyricLine(timed.lines, snapshot.position);
       return;
     }
-    this.lastLyricsTrackId = trackId;
-    this.lastLyricsAttemptAt = now;
-    let result: unknown = "";
-    try {
-      result = await this.evaluate(LYRICS_SCRIPT);
-    } catch {
-      result = "";
-    }
-    const lyrics = typeof result === "string" ? result.trim().slice(0, 32768) : "";
-    snapshot.lyrics = lyrics || (this.state.trackId === trackId ? this.state.lyrics : "");
+    snapshot.lyrics = this.state.trackId === trackId ? this.state.lyrics : "";
   }
 
   private async attach(): Promise<void> {
@@ -248,6 +321,7 @@ export class MprisBridge {
         snapshot.position = this.lastPosition;
       }
       await this.updateLyrics(snapshot);
+      this.publishLyricLine(snapshot.lyrics);
       this.state = snapshot;
       this.lastTrackId = snapshot.trackId;
       this.lastPosition = snapshot.position;
