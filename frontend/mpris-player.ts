@@ -3,6 +3,11 @@ export type Command = { action: string; value?: number };
 export const PLAYER_ACCESS_SCRIPT = `
   const findPlayerStore = () => {
     const seeds = document.querySelectorAll('#btn_pc_minibar_play, [aria-label="播放进度调节"], #root > *');
+    const cached = globalThis.__NEMusicOnSteamPlayerStore;
+    if (seeds.length && cached && typeof cached.getState === 'function' && typeof cached.dispatch === 'function') {
+      const playing = cached.getState()?.playing;
+      if (playing && ('playingVolume' in playing || 'resourceDuration' in playing)) return cached;
+    }
     for (const element of seeds) {
       const key = Object.keys(element).find(name => name.startsWith('__reactFiber$') || name.startsWith('__reactInternalInstance$'));
       let fiber = key ? element[key] : null;
@@ -18,7 +23,10 @@ export const PLAYER_ACCESS_SCRIPT = `
         for (const store of candidates) {
           if (typeof store?.getState !== 'function' || typeof store?.dispatch !== 'function') continue;
           const playing = store.getState()?.playing;
-          if (playing && ('playingVolume' in playing || 'resourceDuration' in playing)) return store;
+          if (playing && ('playingVolume' in playing || 'resourceDuration' in playing)) {
+            globalThis.__NEMusicOnSteamPlayerStore = store;
+            return store;
+          }
         }
         fiber = fiber.return;
       }
@@ -74,8 +82,6 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const title = metadata?.title || text('.m-playbar .words .name, [class*="song-name"], [class*="songName"], [class*="SongName"]');
   const artist = metadata?.artist || text('.m-playbar .words .by a, [class*="artist-name"], [class*="artistName"]');
   const album = metadata?.album || '';
-  const lyrics = text('.m-lycifo__content, .lyric-content, [class*="lyric-content"], [class*="lyricContent"]')
-    .replace(/\\s*\\n\\s*/g, '\\n').trim().slice(0, 32768);
   const artUrl = metadata?.artwork?.at(-1)?.src || playing?.resourceCoverUrl || document.querySelector('.m-playbar .head img')?.src || '';
   const progressSlider = slider('播放进度调节');
   const progress = sliderValue(sliderHandle('播放进度调节')) || sliderValue(progressSlider);
@@ -85,8 +91,9 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const pagePosition = timeValues[0] || 0;
   const pageDuration = timeValues.at(-1) || 0;
   const duration = playing?.resourceDuration || progress?.max || pageDuration || mediaDuration;
-  const position = progress?.max ? Math.max(0, Math.min(duration, progress.value)) : Number.isFinite(media?.currentTime) ? media.currentTime : pagePosition;
-  const controls = Array.from(document.querySelectorAll('button, a, [role="button"], [class*="next"], [class*="prev"], [class*="ply"], [class*="prv"], [class*="nxt"]')).map(element => [element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid'), element.className].filter(value => typeof value === 'string').join(' ').toLowerCase());
+  const mediaPosition = Number.isFinite(media?.currentTime) && (media?.readyState || 0) > 0 ? media.currentTime : null;
+  const position = mediaPosition !== null ? Math.max(0, Math.min(duration, mediaPosition)) : progress?.max ? Math.max(0, Math.min(duration, progress.value)) : pagePosition;
+  const controls = Array.from(document.querySelectorAll('.m-playbar button, .m-playbar a, .m-playbar [role="button"]')).map(element => [element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid'), element.className].filter(value => typeof value === 'string').join(' ').toLowerCase());
   const controlText = controls.join(' ');
   const loopStatus = /单曲循环|single.?loop|one.?song/.test(controlText) ? 'Track' : /列表循环|list.?loop|repeat/.test(controlText) ? 'Playlist' : 'None';
   const shuffle = /随机播放|shuffle/.test(controlText);
@@ -99,7 +106,39 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const controlClass = String(playControl?.className || '');
   const isPlayingButton = playControl?.classList.contains('play-pause-btn') || /\\bpas\\b/.test(controlClass) || /暂停|pause/.test(playControl?.querySelector('[title]')?.getAttribute('title') || '');
   const playbackStatus = media ? (media.ended ? 'Stopped' : media.paused ? 'Paused' : 'Playing') : playControl ? (isPlayingButton ? 'Playing' : 'Paused') : sessionState === 'playing' ? 'Playing' : sessionState === 'paused' ? 'Paused' : title ? 'Playing' : 'Stopped';
-  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, lyrics, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(visible('#btn_pc_next')) || controls.some(label => /下一首|下一曲|next|\\bnxt\\b/.test(label)), canGoPrevious: Boolean(visible('#btn_pc_previous')) || controls.some(label => /上一首|上一曲|prev|\\bprv\\b/.test(label)), volume, loopStatus, shuffle, rate };
+  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(visible('#btn_pc_next')) || controls.some(label => /下一首|下一曲|next|\\bnxt\\b/.test(label)), canGoPrevious: Boolean(visible('#btn_pc_previous')) || controls.some(label => /上一首|上一曲|prev|\\bprv\\b/.test(label)), volume, loopStatus, shuffle, rate };
+})()`;
+
+export const LYRICS_SCRIPT = `(() => {
+  const visible = element => {
+    if (!element || element.getAttribute('aria-hidden') === 'true') return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+  };
+  const roots = Array.from(document.querySelectorAll('.m-lycifo__content, .lyric-content, [class*="lyric-content"], [class*="lyricContent"]'))
+    .filter(visible)
+    .sort((left, right) => (right.textContent || '').length - (left.textContent || '').length);
+  const root = roots[0];
+  if (!root) return '';
+  const lineNodes = Array.from(root.querySelectorAll('li, p, [data-time]')).filter(visible);
+  const source = lineNodes.length > 1 ? lineNodes.map(node => node.textContent || '') : [root.textContent || ''];
+  const lines = [];
+  for (const value of source) {
+    const line = value.replace(/\\s+/g, ' ').trim();
+    if (line && lines[lines.length - 1] !== line) lines.push(line);
+  }
+  const text = lines.join('\\n');
+  const encoder = new TextEncoder();
+  let bytes = 0;
+  let end = 0;
+  for (const character of text) {
+    const size = encoder.encode(character).length;
+    if (bytes + size > 32768) break;
+    bytes += size;
+    end += character.length;
+  }
+  return text.slice(0, end);
 })()`;
 
 export function commandScript(command: Command): string {

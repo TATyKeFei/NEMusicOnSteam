@@ -306,7 +306,10 @@ class MprisService:
                     return
                 with service.lock:
                     previous = service.state
-                    if state.get("volume") is None:
+                    incoming = state
+                    state = dict(previous)
+                    state.update(incoming)
+                    if incoming.get("volume") is None:
                         state["volume"] = previous.get("volume")
                     service.state = state
                     service.last_seen = time.monotonic()
@@ -318,7 +321,7 @@ class MprisService:
                 changed = []
                 if any(previous.get(key) != state.get(key) for key in ("active", "playbackStatus")):
                     changed.append("PlaybackStatus")
-                if any(previous.get(key) != state.get(key) for key in ("active", "title", "artist", "album", "artUrl", "trackId", "duration")):
+                if any(previous.get(key) != state.get(key) for key in ("active", "title", "artist", "album", "artUrl", "trackId", "duration", "lyrics")):
                     changed.append("Metadata")
                 if previous.get("active") != state.get("active"):
                     changed.extend(("CanPlay", "CanPause", "CanControl"))

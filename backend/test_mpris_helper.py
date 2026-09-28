@@ -163,10 +163,25 @@ class VolumeFeedbackTests(ServiceTestCase):
             self.assertEqual(self.service.state["volume"], volume)
         repository.GLib.idle_add.assert_not_called()
 
+    def test_partial_state_updates_keep_cached_metadata(self):
+        self.post_state({"active": True, "title": "歌曲", "lyrics": "歌词", "position": 1})
+        self.post_state({"position": 2})
+        self.assertEqual(self.service.state["title"], "歌曲")
+        self.assertEqual(self.service.state["lyrics"], "歌词")
+        self.assertEqual(self.service.state["position"], 2)
+
     def test_player_confirmation_emits_volume_change(self):
         self.post_state({"volume": 0.25})
         self.assertEqual(self.service.state["volume"], 0.25)
         repository.GLib.idle_add.assert_called_once_with(self.service.emit_changed, ["Volume"])
+
+    def test_lyric_changes_emit_metadata_change(self):
+        self.post_state({"lyrics": "第一句"})
+        self.post_state({"lyrics": "第二句"})
+        self.assertEqual(
+            [call.args for call in repository.GLib.idle_add.call_args_list],
+            [(self.service.emit_changed, ["Metadata"]), (self.service.emit_changed, ["Metadata"])],
+        )
 
     def test_loop_shuffle_and_rate_writes_queue_mpris_commands(self):
         for name, value, expected in (

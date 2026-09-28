@@ -1,6 +1,6 @@
 import { ChromeDevToolsProtocol, ffi } from "millennium";
 import { isPlayerDocument } from "./constants.ts";
-import { commandScript, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
+import { commandScript, LYRICS_SCRIPT, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
 
 type TrackState = {
   active: boolean;
@@ -52,6 +52,11 @@ export class MprisBridge {
   private targetId: string | null = null;
   private sessionId: string | null = null;
   private state: TrackState = EMPTY_STATE;
+  private lastTrackId = "";
+  private lastPosition = 0;
+  private lastLyricsTrackId = "";
+  private lastLyricsAttemptAt = 0;
+  private lastSentLyrics: string | null = null;
   private status = "尚未连接";
   private commandError = "";
   private commandRequest: AbortController | null = null;
@@ -84,6 +89,7 @@ export class MprisBridge {
     const token = this.token;
     this.endpoint = null;
     this.token = null;
+    this.lastSentLyrics = null;
     await this.detach();
     if (endpoint && token) {
       try {
@@ -111,15 +117,42 @@ export class MprisBridge {
     }
     this.endpoint = result.slice(0, separator);
     this.token = result.slice(separator + 1);
+    this.lastSentLyrics = null;
     return true;
   }
 
-  private async request(path: string, body?: TrackState): Promise<Response> {
+  private async request(path: string, body?: Partial<TrackState>): Promise<Response> {
     return fetch(`${this.endpoint}${path}`, {
       method: body ? "POST" : "GET",
       headers: { "X-NEMusic-Token": this.token!, ...(body ? { "Content-Type": "application/json" } : {}) },
       body: body ? JSON.stringify(body) : undefined,
     });
+  }
+
+  private async updateLyrics(snapshot: TrackState): Promise<void> {
+    const trackId = snapshot.trackId;
+    if (!trackId) {
+      this.lastLyricsTrackId = "";
+      snapshot.lyrics = "";
+      return;
+    }
+    const now = Date.now();
+    const trackChanged = trackId !== this.lastLyricsTrackId;
+    const retry = !this.state.lyrics && now - this.lastLyricsAttemptAt >= 1500;
+    if (!trackChanged && !retry) {
+      snapshot.lyrics = this.state.trackId === trackId ? this.state.lyrics : "";
+      return;
+    }
+    this.lastLyricsTrackId = trackId;
+    this.lastLyricsAttemptAt = now;
+    let result: unknown = "";
+    try {
+      result = await this.evaluate(LYRICS_SCRIPT);
+    } catch {
+      result = "";
+    }
+    const lyrics = typeof result === "string" ? result.trim().slice(0, 32768) : "";
+    snapshot.lyrics = lyrics || (this.state.trackId === trackId ? this.state.lyrics : "");
   }
 
   private async attach(): Promise<void> {
@@ -204,10 +237,26 @@ export class MprisBridge {
           }
         }
       }
-      this.state = this.sessionId ? (await this.evaluate(SNAPSHOT_SCRIPT)) as TrackState : EMPTY_STATE;
+      const snapshot = this.sessionId ? (await this.evaluate(SNAPSHOT_SCRIPT)) as TrackState : EMPTY_STATE;
+      if (
+        snapshot.playbackStatus === "Playing" &&
+        this.state.playbackStatus === "Playing" &&
+        snapshot.trackId === this.lastTrackId &&
+        snapshot.position < this.lastPosition &&
+        this.lastPosition - snapshot.position < 1.5
+      ) {
+        snapshot.position = this.lastPosition;
+      }
+      await this.updateLyrics(snapshot);
+      this.state = snapshot;
+      this.lastTrackId = snapshot.trackId;
+      this.lastPosition = snapshot.position;
       if (!this.timer) return;
-      const update = await this.request("/state", this.state);
+      const payload: Partial<TrackState> = { ...this.state };
+      if (this.lastSentLyrics === this.state.lyrics) delete payload.lyrics;
+      const update = await this.request("/state", payload);
       if (!update.ok) throw new Error(`MPRIS state update failed: ${update.status}`);
+      this.lastSentLyrics = this.state.lyrics;
       this.status = this.commandError || "MPRIS 已连接";
     } catch (error) {
       console.warn("[NEMusic] MPRIS bridge", error);
