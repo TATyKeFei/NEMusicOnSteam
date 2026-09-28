@@ -34,6 +34,8 @@ class ServiceTestCase(unittest.TestCase):
         self.service.commands = []
         self.service.recognition = helper.RecognitionService()
         self.service.state = {"volume": 0.42}
+        self.service.position_anchor = None
+        self.service.reanchor_position_until = 0.0
         self.service.notification_serial = 0
         self.service.last_notified_track = None
         self.service.cover_files = {}
@@ -200,6 +202,122 @@ class VolumeFeedbackTests(ServiceTestCase):
             result = self.service.on_set_property(None, None, None, "org.mpris.MediaPlayer2.Player", name, SimpleNamespace(unpack=lambda value=value: value))
             self.assertFalse(result)
             self.assertEqual(self.service.commands, [])
+
+
+class PositionTrackingTests(ServiceTestCase):
+    def playing(self, **changes):
+        state = {"active": True, "playbackStatus": "Playing", "trackId": "track-1", "duration": 200, "rate": 1}
+        state.update(changes)
+        return state
+
+    def test_coarse_page_samples_do_not_drag_the_position_backwards(self):
+        self.service.track_position({}, self.playing(position=10.0), 100.0)
+        sample = self.playing(position=10.0)
+        position, seeked = self.service.track_position(sample, sample, 101.0)
+        self.assertAlmostEqual(position, 11.0)
+        self.assertFalse(seeked)
+        position, seeked = self.service.track_position(sample, sample, 101.5)
+        self.assertAlmostEqual(position, 11.5)
+        self.assertFalse(seeked)
+
+    def test_a_page_sample_that_catches_up_moves_the_anchor_forward(self):
+        self.service.track_position({}, self.playing(position=10.0), 100.0)
+        position, _ = self.service.track_position(self.playing(position=10.0), self.playing(position=13.0), 101.0)
+        self.assertEqual(position, 13.0)
+        position, _ = self.service.track_position(self.playing(position=13.0), self.playing(position=13.0), 102.0)
+        self.assertEqual(position, 14.0)
+
+    def test_a_backwards_seek_reanchors_and_reports_seeked(self):
+        self.service.track_position({}, self.playing(position=105.0), 100.0)
+        position, seeked = self.service.track_position(self.playing(position=105.0), self.playing(position=50.0), 101.0)
+        self.assertTrue(seeked)
+        self.assertEqual(position, 50.0)
+        position, _ = self.service.track_position(self.playing(position=50.0), self.playing(position=50.0), 102.0)
+        self.assertEqual(position, 51.0)
+
+    def test_a_forward_jump_reports_seeked_on_the_same_track(self):
+        self.service.track_position({}, self.playing(position=10.0), 100.0)
+        position, seeked = self.service.track_position(self.playing(position=10.0), self.playing(position=60.0), 101.0)
+        self.assertTrue(seeked)
+        self.assertEqual(position, 60.0)
+
+    def test_pausing_freezes_the_position_without_interpolating(self):
+        self.service.track_position({}, self.playing(position=30.0), 100.0)
+        paused = self.playing(position=30.4, playbackStatus="Paused")
+        position, _ = self.service.track_position(self.playing(position=30.0), paused, 101.0)
+        self.assertEqual(position, 30.4)
+        position, _ = self.service.track_position(paused, paused, 140.0)
+        self.assertEqual(position, 30.4)
+
+    def test_a_new_track_starts_from_the_page_sample(self):
+        self.service.track_position({}, self.playing(position=180.0), 100.0)
+        position, seeked = self.service.track_position(
+            self.playing(position=180.0), self.playing(trackId="track-2", position=2.0), 101.0
+        )
+        self.assertEqual(position, 2.0)
+        self.assertFalse(seeked)
+
+    def test_position_never_exceeds_the_track_duration(self):
+        self.service.track_position({}, self.playing(position=199.0), 100.0)
+        position, _ = self.service.track_position(self.playing(position=199.0), self.playing(position=199.0), 103.0)
+        self.assertEqual(position, 200.0)
+
+    def test_an_mpris_seek_reanchors_a_small_backwards_move(self):
+        self.service.track_position({}, self.playing(position=60.0), 100.0)
+        self.service.reanchor_position_until = 103.0
+        position, seeked = self.service.track_position(self.playing(position=60.0), self.playing(position=58.0), 101.0)
+        self.assertEqual(position, 58.0)
+        self.assertFalse(seeked)
+        self.assertEqual(self.service.reanchor_position_until, 0.0)
+
+    def test_seek_and_setposition_open_a_reanchor_window(self):
+        self.service.state = {"active": True, "title": "歌曲", "trackId": "track-1"}
+        self.service.on_method(
+            None, None, None, "org.mpris.MediaPlayer2.Player", "Seek",
+            SimpleNamespace(unpack=lambda: (-2000000,)), Mock(),
+        )
+        self.assertGreater(self.service.reanchor_position_until, time.monotonic())
+        self.assertEqual(self.service.commands, [{"action": "seek", "value": -2000000}])
+        self.service.reanchor_position_until = 0.0
+        self.service.commands = []
+        with patch.object(self.service, "metadata", return_value={"mpris:trackid": SimpleNamespace(unpack=lambda: "/track")}):
+            self.service.on_method(
+                None, None, None, "org.mpris.MediaPlayer2.Player", "SetPosition",
+                SimpleNamespace(unpack=lambda: ("/track", 60000000)), Mock(),
+            )
+        self.assertGreater(self.service.reanchor_position_until, time.monotonic())
+        self.assertEqual(self.service.commands, [{"action": "setposition", "value": 60000000}])
+
+    def test_polls_without_a_seek_do_not_report_seeked(self):
+        self.post_state(self.playing(position=10.0))
+        self.post_state(self.playing(position=10.0))
+        self.post_state(self.playing(position=11.0))
+        self.assertEqual([call for call in repository.GLib.idle_add.call_args_list if call.args[0] == self.service.emit_seeked], [])
+
+    def test_a_reported_seek_reaches_the_dbus_signal(self):
+        self.post_state(self.playing(position=100.0))
+        repository.GLib.idle_add.reset_mock()
+        self.post_state(self.playing(position=20.0))
+        seeks = [call for call in repository.GLib.idle_add.call_args_list if call.args[0] == self.service.emit_seeked]
+        self.assertEqual([call.args[1] for call in seeks], [20000000])
+
+    def test_the_state_endpoint_publishes_an_advancing_position(self):
+        self.post_state(self.playing(position=10.0))
+        first = self.service.state["position"]
+        self.assertEqual(first, 10.0)
+        self.post_state(self.playing(position=10.0))
+        self.assertGreaterEqual(self.service.state["position"], first)
+
+    def test_reading_position_between_pushes_interpolates(self):
+        self.service.track_position({}, self.playing(position=10.0), 100.0)
+        variant = Mock(side_effect=lambda _signature, value: value)
+        with patch.object(repository.GLib, "Variant", variant, create=True), patch.object(helper.time, "monotonic", return_value=102.0):
+            position = self.service.on_property(None, None, None, "org.mpris.MediaPlayer2.Player", "Position")
+        self.assertEqual(position, 12000000)
+
+    def test_an_unknown_volume_does_not_break_position_tracking(self):
+        self.post_state({"active": True, "playbackStatus": "Playing", "trackId": "track-1", "duration": 200, "volume": None})
+        self.assertEqual(self.service.state["position"], 0.0)
 
 
 class PlaybackNotificationTests(ServiceTestCase):

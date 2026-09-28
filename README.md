@@ -189,8 +189,19 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 
 依赖 MPRIS 且仅 Linux，可以使用支持 MPRIS 的工具例如KDE小部件或其他软件
 
+<p align="center">
+  <img src=".docs/p6.png" width="800">
+  <br>
+  <sub>MPRIS 歌词支持，顶部栏中间和桌面上的那个<br>此处演示使用部件为 <a href="https://github.com/swim233/plasma-lyrics">Plasma Lyrics</a></sub>
+</p>
+
+### 限制
+
+- 在播放器页面内直接向网易云接口取歌词，原文和翻译按时间戳合并成纯文本（不带时间戳）
 - 通过标准 MPRIS 元数据通过 xesam:asText 暴露
-- 为避免元数据过大最多同步 32KB
+- 为避免元数据过大卡顿最多只同步 32KB
+- 没有歌词的歌（纯音乐、播客之类）只会请求一次，不会反复请求；接口取不到时回退为读取页面上显示的歌词
+- 逐字高亮（卡拉OK）和罗马音传不出去，MPRIS 的歌词只有 asText 一个纯文本字段。但也不必太伤心，有支持逐字高亮的比如这个 KDE 小部件 [Plasma Lyrics](https://github.com/swim233/plasma-lyrics)，支持的歌可以显示逐字高亮
 
 可能有些 MPRIS 客户端不显示 xesam:asText，播放器或桌面工具需要支持该字段
 
@@ -213,7 +224,7 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 | 桌面 | 在哪绑 |
 | :--- | :--- |
 | KDE | 系统设置 → 键盘 → 快捷键 → 添加 → 媒体控制器 |
-| Niri | `bind "Mod+Alt+P" { spawn "playerctl" "-p" "NEMusicOnSteam" "play-pause"; }` |
+| Niri | `bind "Mod+Alt+P" { spawn "playerctl" "-p" "NEMusicOnSteam" "play-pause"; }` 此处使用 playerctl 演示 |
 | GNOME | 设置 → 键盘 → 查看及自定义快捷键 → 自定义快捷键 |
 | Xfce | 设置 → 键盘 → 应用程序快捷键 |
 | Cinnamon / MATE / LXQt | 各自的键盘设置里都有自定义快捷键 |
@@ -222,7 +233,7 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 
 如您有其他需求或使用的桌面环境没有类似功能可以自己弄命令快捷键
 
-> 需要 playerctl 或其他 MPIRS 控制器
+> 需要 MPIRS 客户端，推荐 playerctl
 >
 > sudo pacman -S playerctl
 
@@ -249,7 +260,7 @@ Steam 没开着的时候按了没反应是正常的，辅助进程跟着 Steam �
 ```bash
 npm install
 npm test
-npm run build
+npm run build      # 测试开发时: npm run dev 
 ```
 
 构建产物在 `dist/<插件 id>-<版本号>.star`，例如 `dist/icu.tatyrealms.nemos-0.1.0.star`，版本号取自 `millennium.toml` 的 `[plugin].version`
@@ -258,17 +269,9 @@ npm run build
 cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 ```
 
-Millennium 已经装好的话，可以把 `millennium.toml` 里的 `output_path` 改成 `auto` 再构建一次
+不建议把 `millennium.toml` 里的 `output_path` 改成 `auto` 构建
 
-starlight 会自己放进插件目录并重启 Steam 重载插件
-
-### 测试开发时：
-
-//todo 有空再写
-
-```bash
-npm run dev
-```
+由于使用了[脚本](scripts/build.mjs)自动添加版本号后缀，为 auto 时 Millennium 会重启 Steam 热重载棍母插件浪费时间
 
 # 项目结构
 

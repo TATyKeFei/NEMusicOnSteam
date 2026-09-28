@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
-import { commandScript, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
+import { commandScript, LYRICS_SCRIPT, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
 
 function playerFixture() {
   const state = {
@@ -139,5 +139,126 @@ describe("NetEase MPRIS player control", () => {
     assert.equal(completed, true);
     assert.equal(await player.command({ action: "volume", value: NaN }), false);
     assert.equal(await player.command({ action: "seek", value: NaN }), false);
+  });
+});
+
+type LyricsResult = { lyric: string; resolved: boolean };
+
+function lyricsFixture(config: {
+  trackId?: string;
+  ok?: boolean;
+  networkError?: boolean;
+  payload?: unknown;
+  domLines?: string[];
+} = {}) {
+  const state = {
+    playing: {
+      playingVolume: 0.42,
+      resourceDuration: 240,
+      resourceTrackId: config.trackId ?? "1900172235",
+      freeTrialInfo: null,
+    },
+  };
+  const store = { getState: () => state, dispatch: async () => undefined };
+  const seed = {
+    __reactFiber$test: { return: { memoizedProps: { value: { store } }, return: null } },
+    getBoundingClientRect: () => ({ width: 24, height: 24 }),
+  };
+  const lineNodes = (config.domLines ?? []).map(text => ({
+    textContent: text,
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({ width: 120, height: 20 }),
+  }));
+  const lyricRoot = {
+    textContent: lineNodes.map(node => node.textContent).join("\n"),
+    getAttribute: () => null,
+    getBoundingClientRect: () => ({ width: 320, height: 200 }),
+    querySelectorAll: (selector: string) => (selector === "li, p, [data-time]" ? lineNodes : []),
+  };
+  const fetches: string[] = [];
+  const context = {
+    document: {
+      querySelectorAll: (selector: string) => {
+        if (selector.includes("#root > *") || selector.includes("#btn_pc_minibar_play")) return [seed];
+        if (selector.startsWith(".m-lycifo__content")) return lineNodes.length ? [lyricRoot] : [];
+        return [];
+      },
+    },
+    getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+    fetch: (url: string) => {
+      fetches.push(String(url));
+      if (config.networkError) return Promise.reject(new Error("offline"));
+      return Promise.resolve({ ok: config.ok ?? true, json: () => Promise.resolve(config.payload ?? { lrc: { lyric: "" }, tlyric: { lyric: "" } }) });
+    },
+    TextEncoder,
+    AbortController,
+    setTimeout,
+    clearTimeout,
+  };
+  return {
+    fetches,
+    run: async (): Promise<LyricsResult> => {
+      const raw = await (runInNewContext(LYRICS_SCRIPT, context) as Promise<LyricsResult>);
+      return JSON.parse(JSON.stringify(raw)) as LyricsResult;
+    },
+  };
+}
+
+describe("NetEase MPRIS lyrics", () => {
+  it("merges the translation into the line it shares a timestamp with", async () => {
+    const player = lyricsFixture({
+      payload: { lrc: { lyric: "[00:00.67]original one\n[00:05.82]original two" }, tlyric: { lyric: "[00:00.67]译文一\n[00:05.82]译文二" } },
+    });
+    assert.deepEqual(await player.run(), { lyric: "original one\n译文一\noriginal two\n译文二", resolved: true });
+    assert.equal(player.fetches.length, 1);
+    assert.match(player.fetches[0], /id=1900172235/);
+    assert.ok(!player.fetches[0].includes("kv="));
+  });
+
+  it("drops a translation whose timestamp matches no original line", async () => {
+    const player = lyricsFixture({
+      payload: { lrc: { lyric: "[00:00.67]original one" }, tlyric: { lyric: "[00:09.99]译文" } },
+    });
+    assert.deepEqual(await player.run(), { lyric: "original one", resolved: true });
+  });
+
+  it("reports a song the API knows has no lyrics as settled so it is not retried", async () => {
+    const player = lyricsFixture({ payload: { uncollected: true, lrc: { lyric: "" } } });
+    assert.deepEqual(await player.run(), { lyric: "", resolved: true });
+  });
+
+  it("falls back to the page when the API is unreachable", async () => {
+    const player = lyricsFixture({ networkError: true, domLines: ["页面第一句", "页面第二句"] });
+    assert.deepEqual(await player.run(), { lyric: "页面第一句\n页面第二句", resolved: true });
+  });
+
+  it("keeps the song retryable when neither the API nor the page produced lyrics", async () => {
+    const player = lyricsFixture({ networkError: true });
+    assert.deepEqual(await player.run(), { lyric: "", resolved: false });
+  });
+
+  it("reads only the page for a track id without a song number", async () => {
+    const player = lyricsFixture({ trackId: "episode-abc", domLines: ["播客内容", "第二句"] });
+    assert.deepEqual(await player.run(), { lyric: "播客内容\n第二句", resolved: true });
+    assert.equal(player.fetches.length, 0);
+  });
+
+  it("caps the synchronized lyrics at 32768 bytes", async () => {
+    const lines = Array.from({ length: 400 }, (_unused, index) => {
+      const stamp = `[${String(Math.floor(index / 60)).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.00]`;
+      return `${stamp}${"词".repeat(38)}${String(index).padStart(2, "0")}`;
+    });
+    const full = lines.join("\n");
+    assert.ok(new TextEncoder().encode(full).length > 32768);
+    const player = lyricsFixture({ payload: { lrc: { lyric: full } } });
+    const result = await player.run();
+    assert.equal(result.resolved, true);
+    assert.ok(new TextEncoder().encode(result.lyric).length <= 32768);
+    assert.ok(result.lyric.length > 0);
+  });
+
+  it("does not repeat a line that follows itself", async () => {
+    const player = lyricsFixture({ payload: { lrc: { lyric: "[00:01.00]same\n[00:02.00]same\n[00:03.00]different" } } });
+    assert.deepEqual(await player.run(), { lyric: "same\ndifferent", resolved: true });
   });
 });

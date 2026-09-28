@@ -52,9 +52,8 @@ export class MprisBridge {
   private targetId: string | null = null;
   private sessionId: string | null = null;
   private state: TrackState = EMPTY_STATE;
-  private lastTrackId = "";
-  private lastPosition = 0;
   private lastLyricsTrackId = "";
+  private settledLyricsTrackId = "";
   private lastLyricsAttemptAt = 0;
   private lastSentLyrics: string | null = null;
   private status = "尚未连接";
@@ -133,25 +132,29 @@ export class MprisBridge {
     const trackId = snapshot.trackId;
     if (!trackId) {
       this.lastLyricsTrackId = "";
+      this.settledLyricsTrackId = "";
       snapshot.lyrics = "";
       return;
     }
     const now = Date.now();
     const trackChanged = trackId !== this.lastLyricsTrackId;
-    const retry = !this.state.lyrics && now - this.lastLyricsAttemptAt >= 1500;
+    const settled = this.settledLyricsTrackId === trackId;
+    const retry = !settled && !this.state.lyrics && now - this.lastLyricsAttemptAt >= 1500;
     if (!trackChanged && !retry) {
       snapshot.lyrics = this.state.trackId === trackId ? this.state.lyrics : "";
       return;
     }
     this.lastLyricsTrackId = trackId;
     this.lastLyricsAttemptAt = now;
-    let result: unknown = "";
+    let result: unknown = null;
     try {
       result = await this.evaluate(LYRICS_SCRIPT);
     } catch {
-      result = "";
+      result = null;
     }
-    const lyrics = typeof result === "string" ? result.trim().slice(0, 32768) : "";
+    const payload = result as { lyric?: unknown; resolved?: unknown } | null;
+    const lyrics = typeof payload?.lyric === "string" ? payload.lyric.trim() : "";
+    if (payload?.resolved === true) this.settledLyricsTrackId = trackId;
     snapshot.lyrics = lyrics || (this.state.trackId === trackId ? this.state.lyrics : "");
   }
 
@@ -238,19 +241,8 @@ export class MprisBridge {
         }
       }
       const snapshot = this.sessionId ? (await this.evaluate(SNAPSHOT_SCRIPT)) as TrackState : EMPTY_STATE;
-      if (
-        snapshot.playbackStatus === "Playing" &&
-        this.state.playbackStatus === "Playing" &&
-        snapshot.trackId === this.lastTrackId &&
-        snapshot.position < this.lastPosition &&
-        this.lastPosition - snapshot.position < 1.5
-      ) {
-        snapshot.position = this.lastPosition;
-      }
       await this.updateLyrics(snapshot);
       this.state = snapshot;
-      this.lastTrackId = snapshot.trackId;
-      this.lastPosition = snapshot.position;
       if (!this.timer) return;
       const payload: Partial<TrackState> = { ...this.state };
       if (this.lastSentLyrics === this.state.lyrics) delete payload.lyrics;

@@ -19,6 +19,8 @@ from recognition import RecognitionService
 
 OBJECT_PATH = "/org/mpris/MediaPlayer2"
 BUS_NAME = "org.mpris.MediaPlayer2.NEMusicOnSteam"
+POSITION_SEEK_THRESHOLD = 3.5
+SEEK_REANCHOR_WINDOW = 3.0
 
 
 def cover_extension(data):
@@ -162,6 +164,8 @@ class MprisService:
         self.lock = threading.Lock()
         self.command_ready = threading.Condition(self.lock)
         self.state = {}
+        self.position_anchor = None
+        self.reanchor_position_until = 0.0
         self.commands = []
         self.download = None
         self.recognition = RecognitionService()
@@ -311,8 +315,12 @@ class MprisService:
                     state.update(incoming)
                     if incoming.get("volume") is None:
                         state["volume"] = previous.get("volume")
+                    now = time.monotonic()
+                    state["position"], seeked = service.track_position(previous, state, now)
                     service.state = state
-                    service.last_seen = time.monotonic()
+                    service.last_seen = now
+                    if seeked:
+                        GLib.idle_add(service.emit_seeked, int(state["position"] * 1000000))
                     if state.get("active") and state.get("playbackStatus") == "Playing" and state.get("title"):
                         track = (state.get("trackId"), state.get("title"), state.get("artist"))
                         if track != service.last_notified_track:
@@ -340,11 +348,6 @@ class MprisService:
                     changed.append("Position")
                 if changed:
                     GLib.idle_add(service.emit_changed, changed)
-                if previous.get("trackId") == state.get("trackId") and previous.get("active") and state.get("active"):
-                    old_position = float(previous.get("position") or 0)
-                    new_position = float(state.get("position") or 0)
-                    if abs(new_position - old_position) > 3.5:
-                        GLib.idle_add(service.emit_seeked, int(new_position * 1000000))
                 self.reply(200, {})
 
         return Handler
@@ -430,6 +433,42 @@ class MprisService:
             self.commands.append(command)
             self.command_ready.notify()
 
+    def allow_position_reanchor(self):
+        with self.lock:
+            self.reanchor_position_until = time.monotonic() + SEEK_REANCHOR_WINDOW
+
+    def interpolated_position(self, now, duration=None):
+        anchor = self.position_anchor
+        position = 0.0 if anchor is None else max(0.0, anchor[1] + max(0.0, now - anchor[2]) * anchor[3])
+        if isinstance(duration, (int, float)) and duration > 0:
+            position = min(position, float(duration))
+        return max(0.0, position)
+
+    def track_position(self, previous, state, now):
+        # The page reports Position in coarse steps, but every push is a
+        # PropertiesChanged that makes clients such as plasma-lyrics re-anchor
+        # their own interpolation to the value they are handed. Publishing the
+        # coarse sample verbatim therefore drags them backwards between page
+        # updates, which shows up as lyrics flipping back to the previous line.
+        # Keep advancing from a monotonic anchor unless the page is genuinely
+        # ahead, playback stopped, a seek happened, or a seek was just commanded.
+        track = state.get("trackId")
+        playing = bool(state.get("active")) and state.get("playbackStatus") == "Playing"
+        incoming = max(0.0, float(state.get("position") or 0))
+        rate = state.get("rate")
+        rate = float(rate) if isinstance(rate, (int, float)) and 0.1 <= float(rate) <= 4 else 1.0
+        anchor = self.position_anchor
+        duration = state.get("duration")
+        same_track = anchor is not None and anchor[0] == track
+        expected = self.interpolated_position(now, duration) if same_track else incoming
+        drifted = same_track and abs(incoming - expected) > POSITION_SEEK_THRESHOLD
+        commanded = same_track and playing and now < self.reanchor_position_until and incoming != anchor[1]
+        if not same_track or drifted or not playing or incoming >= expected or commanded:
+            self.position_anchor = (track, incoming, now, rate if playing else 0.0)
+            self.reanchor_position_until = 0.0
+        seeked = drifted and bool(state.get("active")) and bool(previous.get("active"))
+        return self.interpolated_position(now, duration), seeked
+
     def on_method(self, _connection, _sender, _path, interface, method, parameters, invocation):
         if interface == "org.mpris.MediaPlayer2":
             if method == "Raise":
@@ -437,12 +476,14 @@ class MprisService:
         elif method in ("Next", "Previous", "Pause", "PlayPause", "Stop", "Play"):
             self.queue({"action": method.lower()})
         elif method == "Seek":
+            self.allow_position_reanchor()
             self.queue({"action": "seek", "value": parameters.unpack()[0]})
         elif method == "SetPosition":
             track_id, position = parameters.unpack()
             with self.lock:
                 current = self.metadata(self.state).get("mpris:trackid")
             if current is not None and current.unpack() == track_id:
+                self.allow_position_reanchor()
                 self.queue({"action": "setposition", "value": position})
         invocation.return_value(None)
 
@@ -509,7 +550,7 @@ class MprisService:
         player = {
             "PlaybackStatus": GLib.Variant("s", state.get("playbackStatus") if active else "Stopped"),
             "Metadata": GLib.Variant("a{sv}", self.metadata(state) if active else {}),
-            "Position": GLib.Variant("x", int(float(state.get("position") or 0) * 1000000)),
+            "Position": GLib.Variant("x", int(self.interpolated_position(time.monotonic(), state.get("duration")) * 1000000)),
             "CanGoNext": GLib.Variant("b", active and bool(state.get("canGoNext"))),
             "CanGoPrevious": GLib.Variant("b", active and bool(state.get("canGoPrevious"))),
             "CanPlay": GLib.Variant("b", active),

@@ -11,13 +11,15 @@ const source = stripTypeScriptTypes(
 );
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function setup() {
+function setup(options: { trackId?: string; lyric?: unknown } = {}) {
   const evaluations: string[] = [];
   const polls: { signal: AbortSignal; deliver: (commands: unknown[]) => void; fail: () => void }[] = [];
   let interval: () => void = () => {};
   let holdSnapshot: Promise<void> | null = null;
   let stateUpdates = 0;
   let targetQueries = 0;
+  let lyricCalls = 0;
+  const clock = { now: 0 };
   const Bridge = runInNewContext(`${source}; MprisBridge`, {
     navigator: { platform: "Linux" },
     window: {
@@ -25,11 +27,13 @@ function setup() {
       clearInterval() {},
     },
     AbortController,
+    Date: class { static now() { return clock.now; } },
     console: { warn() {} },
     ffi: () => async () => "http://localhost|test-token",
     isPlayerDocument: () => true,
     commandScript: (command: { action: string }) => command.action,
     SNAPSHOT_SCRIPT: "snapshot",
+    LYRICS_SCRIPT: "lyrics",
     ChromeDevToolsProtocol: {
       async send(method: string, params: { expression: string }) {
         if (method === "Target.getTargets") {
@@ -39,8 +43,18 @@ function setup() {
         if (method === "Target.attachToTarget") return { sessionId: "session" };
         if (method === "Runtime.evaluate") {
           evaluations.push(params.expression);
-          if (params.expression === "snapshot") await holdSnapshot;
-          return { result: { value: params.expression === "snapshot" ? { active: true } : true } };
+          if (params.expression === "snapshot") {
+            await holdSnapshot;
+            const snapshot = options.trackId
+              ? { active: true, playbackStatus: "Playing", title: "歌名", artist: "歌手", trackId: options.trackId, duration: 100, position: 0 }
+              : { active: true };
+            return { result: { value: snapshot } };
+          }
+          if (params.expression === "lyrics") {
+            lyricCalls++;
+            return { result: { value: options.lyric ?? { lyric: "", resolved: true } } };
+          }
+          return { result: { value: true } };
         }
         return {};
       },
@@ -69,6 +83,8 @@ function setup() {
     holdSnapshot: (promise: Promise<void>) => { holdSnapshot = promise; },
     stateUpdates: () => stateUpdates,
     targetQueries: () => targetQueries,
+    lyricCalls: () => lyricCalls,
+    advance: (ms: number) => { clock.now += ms; },
   };
 }
 
@@ -142,5 +158,50 @@ describe("MPRIS command delivery", () => {
     release();
     await flush();
     assert.equal(player.stateUpdates(), 1);
+  });
+});
+
+describe("MPRIS lyric lookup", () => {
+  it("asks once for a song the API reported as having no lyrics", async () => {
+    const player = setup({ trackId: "t1", lyric: { lyric: "", resolved: true } });
+    await flush();
+    player.tick();
+    await flush();
+    assert.equal(player.lyricCalls(), 1);
+    player.advance(30000);
+    player.tick();
+    await flush();
+    player.tick();
+    await flush();
+    assert.equal(player.lyricCalls(), 1);
+    await player.bridge.stop();
+  });
+
+  it("keeps asking while the API has not answered", async () => {
+    const player = setup({ trackId: "t1", lyric: { lyric: "", resolved: false } });
+    await flush();
+    player.tick();
+    await flush();
+    assert.equal(player.lyricCalls(), 1);
+    player.tick();
+    await flush();
+    assert.equal(player.lyricCalls(), 1);
+    player.advance(2000);
+    player.tick();
+    await flush();
+    assert.equal(player.lyricCalls(), 2);
+    await player.bridge.stop();
+  });
+
+  it("reuses fetched lyrics for a track that keeps playing", async () => {
+    const player = setup({ trackId: "t1", lyric: { lyric: "第一句\n第二句", resolved: true } });
+    await flush();
+    player.tick();
+    await flush();
+    player.advance(30000);
+    player.tick();
+    await flush();
+    assert.equal(player.lyricCalls(), 1);
+    await player.bridge.stop();
   });
 });

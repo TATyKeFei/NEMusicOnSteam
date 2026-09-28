@@ -109,36 +109,95 @@ export const SNAPSHOT_SCRIPT = `(() => {
   return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(visible('#btn_pc_next')) || controls.some(label => /下一首|下一曲|next|\\bnxt\\b/.test(label)), canGoPrevious: Boolean(visible('#btn_pc_previous')) || controls.some(label => /上一首|上一曲|prev|\\bprv\\b/.test(label)), volume, loopStatus, shuffle, rate };
 })()`;
 
-export const LYRICS_SCRIPT = `(() => {
-  const visible = element => {
-    if (!element || element.getAttribute('aria-hidden') === 'true') return false;
-    const style = getComputedStyle(element);
-    const rect = element.getBoundingClientRect();
-    return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+export const LYRICS_SCRIPT = `(async () => {
+  ${PLAYER_ACCESS_SCRIPT}
+  const limitBytes = text => {
+    const value = String(text || '').trim();
+    const encoder = new TextEncoder();
+    let bytes = 0;
+    let end = 0;
+    for (const character of value) {
+      const size = encoder.encode(character).length;
+      if (bytes + size > 32768) break;
+      bytes += size;
+      end += character.length;
+    }
+    return value.slice(0, end);
   };
-  const roots = Array.from(document.querySelectorAll('.m-lycifo__content, .lyric-content, [class*="lyric-content"], [class*="lyricContent"]'))
-    .filter(visible)
-    .sort((left, right) => (right.textContent || '').length - (left.textContent || '').length);
-  const root = roots[0];
-  if (!root) return '';
-  const lineNodes = Array.from(root.querySelectorAll('li, p, [data-time]')).filter(visible);
-  const source = lineNodes.length > 1 ? lineNodes.map(node => node.textContent || '') : [root.textContent || ''];
-  const lines = [];
-  for (const value of source) {
-    const line = value.replace(/\\s+/g, ' ').trim();
-    if (line && lines[lines.length - 1] !== line) lines.push(line);
+  const timestampPattern = /^\\[(\\d{1,3}):([0-5]\\d)(?:[.:](\\d{1,3}))?\\](.*)$/;
+  const parseLrc = value => {
+    const lines = [];
+    for (const raw of String(value || '').split('\\n')) {
+      const match = timestampPattern.exec(raw.trim());
+      if (!match) continue;
+      const text = match[4].replace(/\\s+/g, ' ').trim();
+      if (!text) continue;
+      lines.push({
+        at: Number(match[1]) * 60000 + Number(match[2]) * 1000 + Number((match[3] || '0').padEnd(3, '0').slice(0, 3)),
+        text,
+      });
+    }
+    return lines;
+  };
+  const mergeLyrics = (original, translation) => {
+    const translated = new Map();
+    for (const line of parseLrc(translation)) {
+      if (!translated.has(line.at)) translated.set(line.at, line.text);
+    }
+    const output = [];
+    const push = text => { if (output[output.length - 1] !== text) output.push(text); };
+    for (const line of parseLrc(original)) {
+      push(line.text);
+      const second = translated.get(line.at);
+      if (second) push(second);
+    }
+    return output.join('\\n');
+  };
+  const fromDom = () => {
+    const visible = element => {
+      if (!element || element.getAttribute('aria-hidden') === 'true') return false;
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+    };
+    const roots = Array.from(document.querySelectorAll('.m-lycifo__content, .lyric-content, [class*="lyric-content"], [class*="lyricContent"]'))
+      .filter(visible)
+      .sort((left, right) => (right.textContent || '').length - (left.textContent || '').length);
+    const root = roots[0];
+    if (!root) return '';
+    const lineNodes = Array.from(root.querySelectorAll('li, p, [data-time]')).filter(visible);
+    const source = lineNodes.length > 1 ? lineNodes.map(node => node.textContent || '') : [root.textContent || ''];
+    const lines = [];
+    for (const value of source) {
+      const line = value.replace(/\\s+/g, ' ').trim();
+      if (line && lines[lines.length - 1] !== line) lines.push(line);
+    }
+    return lines.join('\\n');
+  };
+  const rawId = playing?.resourceTrackId || playing?.curPlaying?.resourceId;
+  const songId = String(rawId || '').match(/\\d+/)?.[0];
+  let answered = false;
+  let lyric = '';
+  if (songId) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    try {
+      const response = await fetch('/api/song/lyric?id=' + encodeURIComponent(songId) + '&lv=-1&tv=-1&os=pc', {
+        credentials: 'include',
+        signal: controller.signal,
+      });
+      if (response.ok) {
+        const payload = await response.json();
+        answered = true;
+        if (!payload?.uncollected && !payload?.nolyric) lyric = mergeLyrics(payload?.lrc?.lyric, payload?.tlyric?.lyric);
+      }
+    } catch {}
+    finally { clearTimeout(timeout); }
   }
-  const text = lines.join('\\n');
-  const encoder = new TextEncoder();
-  let bytes = 0;
-  let end = 0;
-  for (const character of text) {
-    const size = encoder.encode(character).length;
-    if (bytes + size > 32768) break;
-    bytes += size;
-    end += character.length;
-  }
-  return text.slice(0, end);
+  if (lyric.trim()) return { lyric: limitBytes(lyric), resolved: true };
+  const fallback = fromDom();
+  if (fallback.trim()) return { lyric: limitBytes(fallback), resolved: true };
+  return { lyric: '', resolved: answered };
 })()`;
 
 export function commandScript(command: Command): string {
