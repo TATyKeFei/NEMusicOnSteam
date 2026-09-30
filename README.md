@@ -26,7 +26,7 @@
 | 系统    | 可用性                 | 备注及注意事项       |
 | :---    | :---                   | :---                 |
 | Linux   | 支持                   | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不爆改应该都支持                       |
-| Windows | 未知                   | 我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份     |
+| Windows | 残废，只能听歌         | 本项目依赖MPRIS实现大部分功能，由于Windows没有MPRIS且我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份  |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
 | Mac OS  | 不支持                 | 我是穷鬼安卓人没钱买苹果测试，不过Millennium好像也没支持MacOS                          |
 
@@ -40,11 +40,11 @@
 | 通知       | 支持发送系统通知显示歌曲信息、封面                    | Mako、Windows未测试，仅测试了KDE通知        |
 | 音质设置   | 支持           | 在**Steam → 设置 → 网易云音乐**里可以设置。但要注意账号是否有vip不然开不了高音质 |
 | 后台播放   | 支持  | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
-| Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | 下载歌曲   | 支持           | 列表里的歌曲更多菜单里新增了“下载”按钮，在**Steam → 设置 → 网易云音乐**里可以选下载音质和目录，默认路径 `~/Music/网易云音乐` |
 | 听歌识曲   | 仅 Linux 支持  | 支持桌面音频、麦克风输入录制                     |
-| 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[下文](#歌词)       |
-| 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[下文](#全局快捷键)       |
+| 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#歌词](#歌词)       |
+| 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#全局快捷键](#全局快捷键)       |
+| Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | API 接口   | 后续支持       |        |
 
 # 不支持功能
@@ -92,7 +92,7 @@
 ## 需求
 
 - 需要 [Millennium](https://github.com/SteamClientHomebrew/Millennium) **3.4.0+**
-- 不支持通过 Flatpak / Snap 安装的 Steam (本来就不建议通过这两安装Steam)
+- 不支持通过 Flatpak / Snap / Linyaps 等第三方包管理器安装的 Steam (本来也不建议通过第三方包管理器安装Steam)
 
 ### Arch系发行版
 
@@ -219,8 +219,6 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 
 ### 其他方式
 
-> 网上搜的问ai答的不一定准确，我只用过 KDE Niri 其他不知道
-
 | 桌面 | 在哪绑 |
 | :--- | :--- |
 | KDE | 系统设置 → 键盘 → 快捷键 → 添加 → 媒体控制器 |
@@ -231,7 +229,9 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 | Sway | `bindsym --release Ctrl+Alt+p exec playerctl -p NEMusicOnSteam play-pause` |
 | Hyprland | `bind = CTRL ALT, P, exec, playerctl -p NEMusicOnSteam play-pause` |
 
-如您有其他需求或使用的桌面环境没有类似功能可以自己弄命令快捷键
+> 网上搜的问ai答的不一定准确，我只用过 KDE Niri 其他不知道
+
+#### 如您有其他需求或使用的桌面环境没有类似功能可以自己弄命令快捷键
 
 > 需要 MPIRS 客户端，推荐 playerctl
 >
@@ -298,7 +298,6 @@ cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 - 播放器页面使用 Steam 的 BrowserView 承载网页；Steam 本身没有供插件注册独立主窗口路由的稳定接口
 - Steam 更新可能改掉 `BrowserView` 或主窗口名字 `SP Desktop`可能导致打不开，需要时间适配
 - MPRIS 通过 DevTools 在网易云页面读取状态并调用现有播放器动作，依赖网页的 React/Redux 结构；网易云音乐Web版改版可能需要时间更新适配
-- 全局快捷键不自己抢键盘，靠桌面把组合键绑到 MPRIS 命令，所以每个桌面都得手动设一次，插件替你做不了
 - 后台播放依赖 Steam 的通话功能，会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`函数。如果你正在通话时暂停播放音乐可能导致通话出问题
 - 检测「Steam 有没有打开自己的网页」靠的是网页容器的类名，Steam 大更新后类名会变，判断可能失效。失效时 Steam 的网页会盖住播放器，手动点「收起」一样能看
 
@@ -312,7 +311,7 @@ cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 | :--- | :--- | :--- |
 | Millennium | [Github仓库](https://github.com/SteamClientHomebrew/Millennium)  | 用于加载本插件                                      |
 | MusicFox   | [Github仓库](https://github.com/go-musicfox/go-musicfox)         | 好用的网易云终端工具，本项目的MPIRS功能参考了此项目 |
-| open orpheus | [Github仓库](https://github.com/YUCLing/open-orpheus)          | 能让Linux运行网易云客户端，部分地方参考了他         |
+| open orpheus | [Github仓库](https://github.com/YUCLing/open-orpheus)          | 能让Linux运行网易云客户端，听歌识曲功能参考了此项目 |
 
 # 为什么有网易云客户端还要去写这个？
 

@@ -667,7 +667,9 @@ class MprisService:
         self.recognition.expire()
         with self.lock:
             downloading = self.download is not None and self.download.get("active")
-            expired = time.monotonic() - self.last_seen > 15
+            # The frontend polls every 500ms, so 15s meant any hiccup in the Steam client
+            # killed the helper and forced a fresh python3 boot; give it real slack.
+            expired = time.monotonic() - self.last_seen > 60
         if downloading or self.recognition.active():
             return True
         if expired:

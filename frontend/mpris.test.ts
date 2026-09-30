@@ -9,6 +9,13 @@ const source = stripTypeScriptTypes(
     .replace(/^import .*;\n/gm, "")
     .replace("export class MprisBridge", "class MprisBridge"),
 );
+// mpris.ts imports its CDP session from player-target.ts, and the harness strips imports,
+// so run the real module body alongside it instead of stubbing the session out.
+const targetSource = stripTypeScriptTypes(
+  readFileSync(new URL("./player-target.ts", import.meta.url), "utf8")
+    .replace(/^import .*;\n/gm, "")
+    .replace(/^export /gm, ""),
+);
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function setup(options: { trackId?: string; lyric?: unknown } = {}) {
@@ -20,7 +27,7 @@ function setup(options: { trackId?: string; lyric?: unknown } = {}) {
   let targetQueries = 0;
   let lyricCalls = 0;
   const clock = { now: 0 };
-  const Bridge = runInNewContext(`${source}; MprisBridge`, {
+  const Bridge = runInNewContext(`${targetSource}\n${source}; MprisBridge`, {
     navigator: { platform: "Linux" },
     window: {
       setInterval(callback: () => void) { interval = callback; return 1; },
@@ -125,6 +132,8 @@ describe("MPRIS command delivery", () => {
     await flush();
     assert.equal(player.stateUpdates(), 2);
     assert.equal(player.polls.length, 1);
+    // The player page is attached once and reused; polling state must not re-query targets.
+    assert.equal(player.targetQueries(), 1);
     await player.bridge.stop();
     assert.equal(player.polls[0].signal.aborted, true);
     player.polls[0].deliver([{ action: "next" }]);

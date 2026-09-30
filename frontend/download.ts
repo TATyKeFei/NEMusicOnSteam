@@ -1,5 +1,5 @@
-import { ChromeDevToolsProtocol, ffi } from "millennium";
-import { isPlayerDocument } from "./constants.ts";
+import { ffi } from "millennium";
+import { evaluateInPlayer } from "./player-target.ts";
 import { downloadScript, songFileName, type DownloadSong, type DownloadTrack } from "./download-player.ts";
 import { MENU_TICK_SCRIPT, menuToastScript } from "./menu-player.ts";
 
@@ -209,25 +209,9 @@ export class DownloadBridge {
     return track;
   }
 
-  /** One attach/evaluate/detach round trip against the player page. */
+  /** Evaluates against the shared player session, which is attached once and reused. */
   private async evaluate(expression: string): Promise<unknown> {
-    const targets = await ChromeDevToolsProtocol.send("Target.getTargets");
-    const target = targets.targetInfos.find((item: { url: string }) => isPlayerDocument(item.url));
-    if (!target) throw new Error("等待网易云播放器加载");
-    const attached = await ChromeDevToolsProtocol.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-    try {
-      const result = await ChromeDevToolsProtocol.send(
-        "Runtime.evaluate",
-        { expression, returnByValue: true, awaitPromise: true },
-        attached.sessionId,
-      );
-      if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
-      return result.result.value;
-    } finally {
-      try {
-        await ChromeDevToolsProtocol.send("Target.detachFromTarget", { sessionId: attached.sessionId });
-      } catch {}
-    }
+    return evaluateInPlayer(expression, { awaitPromise: true });
   }
 
   private async connect(): Promise<boolean> {

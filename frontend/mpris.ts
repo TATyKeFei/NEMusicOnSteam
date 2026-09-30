@@ -1,5 +1,5 @@
-import { ChromeDevToolsProtocol, ffi } from "millennium";
-import { isPlayerDocument } from "./constants.ts";
+import { ffi } from "millennium";
+import { releasePlayerSession, tryEvaluateInPlayer } from "./player-target.ts";
 import { commandScript, LYRICS_SCRIPT, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
 
 type TrackState = {
@@ -23,6 +23,28 @@ type TrackState = {
 };
 
 const getEndpoint = ffi<[], string>("mpris_endpoint");
+
+const FAILURE_REASONS: Record<string, string> = {
+  retry: "MPRIS 辅助进程启动失败，正在重试",
+  "asset-helper": "插件包缺少 backend/mpris_helper.py",
+  "asset-recognition": "插件包缺少 backend/recognition.py",
+  "write-helper": "无法写入辅助进程脚本",
+  "write-recognition": "无法写入识曲模块",
+  "write-token": "无法写入辅助进程令牌",
+  spawn: "辅助进程启动后没有监听端口",
+};
+
+/** mpris_endpoint returns "!<code>:<detail>" when the helper cannot start. */
+function describeFailure(result: string): string {
+  const match = /^!([a-z-]+)(?::(.*))?$/.exec(result);
+  const code = match?.[1] ?? "";
+  const detail = match?.[2] ?? "";
+  if (code === "mkdir") return `MPRIS 不可用：无法创建运行目录 ${detail}`;
+  const reason = FAILURE_REASONS[code];
+  if (reason) return `MPRIS 不可用：${reason}${detail ? `（${detail}）` : ""}`;
+  return "MPRIS 不可用；请检查 Python 3、PyGObject 和用户会话 D-Bus";
+}
+
 const EMPTY_STATE: TrackState = {
   active: false,
   playbackStatus: "Stopped",
@@ -49,8 +71,6 @@ export class MprisBridge {
   private enabled = false;
   private endpoint: string | null = null;
   private token: string | null = null;
-  private targetId: string | null = null;
-  private sessionId: string | null = null;
   private state: TrackState = EMPTY_STATE;
   private lastLyricsTrackId = "";
   private settledLyricsTrackId = "";
@@ -89,7 +109,7 @@ export class MprisBridge {
     this.endpoint = null;
     this.token = null;
     this.lastSentLyrics = null;
-    await this.detach();
+    releasePlayerSession();
     if (endpoint && token) {
       try {
         await fetch(`${endpoint}/shutdown`, { method: "POST", headers: { "X-NEMusic-Token": token } });
@@ -111,7 +131,7 @@ export class MprisBridge {
     if (!this.timer) return false;
     const separator = result.lastIndexOf("|");
     if (separator < 0) {
-      this.status = "MPRIS 不可用；请检查 Python 3、PyGObject 和用户会话 D-Bus";
+      this.status = describeFailure(result);
       return false;
     }
     this.endpoint = result.slice(0, separator);
@@ -148,7 +168,7 @@ export class MprisBridge {
     this.lastLyricsAttemptAt = now;
     let result: unknown = null;
     try {
-      result = await this.evaluate(LYRICS_SCRIPT);
+      result = await tryEvaluateInPlayer(LYRICS_SCRIPT, { awaitPromise: true });
     } catch {
       result = null;
     }
@@ -156,39 +176,6 @@ export class MprisBridge {
     const lyrics = typeof payload?.lyric === "string" ? payload.lyric.trim() : "";
     if (payload?.resolved === true) this.settledLyricsTrackId = trackId;
     snapshot.lyrics = lyrics || (this.state.trackId === trackId ? this.state.lyrics : "");
-  }
-
-  private async attach(): Promise<void> {
-    if (!this.enabled) {
-      await this.detach();
-      return;
-    }
-    const targets = await ChromeDevToolsProtocol.send("Target.getTargets");
-    const target = targets.targetInfos.find((item) => isPlayerDocument(item.url));
-    if (target?.targetId === this.targetId) return;
-    await this.detach();
-    if (!target) return;
-    const attached = await ChromeDevToolsProtocol.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-    this.targetId = target.targetId;
-    this.sessionId = attached.sessionId;
-  }
-
-  private async detach(): Promise<void> {
-    const sessionId = this.sessionId;
-    this.targetId = null;
-    this.sessionId = null;
-    if (sessionId) {
-      try {
-        await ChromeDevToolsProtocol.send("Target.detachFromTarget", { sessionId });
-      } catch {}
-    }
-  }
-
-  private async evaluate(expression: string, userGesture = false): Promise<unknown> {
-    if (!this.sessionId) return null;
-    const result = await ChromeDevToolsProtocol.send("Runtime.evaluate", { expression, returnByValue: true, userGesture, awaitPromise: true }, this.sessionId);
-    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
-    return result.result.value;
   }
 
   private async listenForCommands(): Promise<void> {
@@ -223,24 +210,22 @@ export class MprisBridge {
       if (!(await this.connect())) return;
       if (!this.timer) return;
       void this.listenForCommands();
-      if (!this.sessionId || !this.pendingCommands.length || !this.enabled) await this.attach();
-      if (!this.timer) {
-        await this.detach();
-        return;
-      }
       while (this.pendingCommands.length) {
         const command = this.pendingCommands.shift()!;
         if (command.action === "open") this.open();
         else if (command.action === "close") this.close();
-        else if (this.sessionId) {
-          const handled = await this.evaluate(commandScript(command), true);
+        else {
+          const handled = await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true });
           if (["volume", "seek", "setposition"].includes(command.action)) {
             this.commandError = handled ? "" : `MPRIS ${command.action} 未执行；未找到可用的网易云播放器状态`;
             if (!handled) console.warn("[NEMusic] MPRIS command not handled", command.action);
           }
         }
       }
-      const snapshot = this.sessionId ? (await this.evaluate(SNAPSHOT_SCRIPT)) as TrackState : EMPTY_STATE;
+      // A closed player has no page to read; report Stopped without a CDP round trip per tick.
+      const snapshot = this.enabled
+        ? ((await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null) ?? EMPTY_STATE
+        : EMPTY_STATE;
       await this.updateLyrics(snapshot);
       this.state = snapshot;
       if (!this.timer) return;
@@ -254,7 +239,6 @@ export class MprisBridge {
       console.warn("[NEMusic] MPRIS bridge", error);
       this.status = "MPRIS 连接失败；请检查 Steam 控制台和辅助进程日志或去Github反馈";
       this.commandRequest?.abort();
-      await this.detach();
       this.endpoint = null;
       this.token = null;
     } finally {

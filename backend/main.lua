@@ -6,8 +6,32 @@ local fs = require("fs")
 local mpris_dir = nil
 local mpris_token = nil
 
+-- The frontend polls every 500ms, and a spawn attempt forks python3 and blocks this process for
+-- up to a second while it boots. Without a breather a helper that cannot start at all stacked
+-- those stalls back to back. Count skipped polls instead of reading a clock: utils.time_ms()
+-- reports a negative value in this 32-bit Lua host, and an earlier deadline-based gate treated
+-- its 0 sentinel as still in the future, so mpris_endpoint returned "" forever and never retried.
+local RESPAWN_SKIP_POLLS = { 2, 4, 10, 30, 60, 120 }
+local respawn_failures = 0
+local respawn_skip = 0
+
 local function shell_quote(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+-- Every failure used to return "" and the frontend turned that into one message blaming
+-- Python/PyGObject/D-Bus, which sent users installing packages they already had. Return a
+-- "!<code>:<detail>" reason instead so the settings page can name the step that failed.
+local function last_log_line(path)
+    local text = utils.read_file(path)
+    if text == nil then return "" end
+    local line = ""
+    for candidate in text:gmatch("[^\r\n]+") do
+        line = candidate
+    end
+    line = line:gsub("|", "/"):gsub("%s+$", "")
+    if #line > 200 then line = line:sub(-200) end
+    return line
 end
 
 ---@ffi
@@ -16,6 +40,8 @@ function mpris_endpoint()
     if mpris_dir ~= nil then
         local port = utils.read_file(mpris_dir .. "/port")
         if port ~= nil and port:match("^%d+$") then
+            respawn_failures = 0
+            respawn_skip = 0
             return "http://127.0.0.1:" .. port .. "|" .. mpris_token
         end
         -- The helper deletes its runtime directory when it exits, so a missing
@@ -23,28 +49,44 @@ function mpris_endpoint()
         mpris_dir = nil
         mpris_token = nil
     end
+    if respawn_skip > 0 then
+        respawn_skip = respawn_skip - 1
+        return "!retry"
+    end
+    respawn_failures = respawn_failures + 1
+    respawn_skip = RESPAWN_SKIP_POLLS[math.min(respawn_failures, #RESPAWN_SKIP_POLLS)]
     local script = millennium.assets.read("backend/mpris_helper.py")
-    if script == nil then return "" end
+    if script == nil then return "!asset-helper" end
     local recognition = millennium.assets.read("backend/recognition.py")
-    if recognition == nil then return "" end
+    if recognition == nil then return "!asset-recognition" end
     local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
-    mpris_dir = base .. "/nemusic-mpris-" .. utils.uuid()
-    mpris_token = utils.uuid()
-    if not fs.create_directories(mpris_dir) then return "" end
-    utils.exec("chmod 700 " .. shell_quote(mpris_dir))
-    local path = mpris_dir .. "/helper.py"
-    if not utils.write_file(path, script) then return "" end
-    if not utils.write_file(mpris_dir .. "/recognition.py", recognition) then return "" end
-    if not utils.write_file(mpris_dir .. "/token", mpris_token) then return "" end
-    utils.exec("python3 " .. shell_quote(path) .. " " .. shell_quote(mpris_dir) .. " </dev/null >" .. shell_quote(mpris_dir .. "/helper.log") .. " 2>&1 &")
+    local dir = base .. "/nemusic-mpris-" .. utils.uuid()
+    local token = utils.uuid()
+    if not fs.create_directories(dir) then return "!mkdir:" .. base end
+    utils.exec("chmod 700 " .. shell_quote(dir))
+    local path = dir .. "/helper.py"
+    if not utils.write_file(path, script) then return "!write-helper" end
+    if not utils.write_file(dir .. "/recognition.py", recognition) then return "!write-recognition" end
+    if not utils.write_file(dir .. "/token", token) then return "!write-token" end
+    -- Keep the log outside the runtime directory: the helper wipes that directory on exit,
+    -- so a helper that dies before announcing its port would take its own traceback with it.
+    local log_path = base .. "/nemusic-mpris.log"
+    utils.exec("python3 " .. shell_quote(path) .. " " .. shell_quote(dir) .. " </dev/null >" .. shell_quote(log_path) .. " 2>&1 &")
     for _ = 1, 20 do
-        local port = utils.read_file(mpris_dir .. "/port")
+        local port = utils.read_file(dir .. "/port")
         if port ~= nil and port:match("^%d+$") then
-            return "http://127.0.0.1:" .. port .. "|" .. mpris_token
+            mpris_dir = dir
+            mpris_token = token
+            respawn_failures = 0
+            respawn_skip = 0
+            fs.remove(log_path)
+            return "http://127.0.0.1:" .. port .. "|" .. token
         end
         utils.sleep(50)
     end
-    return ""
+    local detail = last_log_line(log_path)
+    if detail == "" then return "!spawn" end
+    return "!spawn:" .. detail
 end
 
 local function on_load()

@@ -1,5 +1,5 @@
-import { ChromeDevToolsProtocol, ffi } from "millennium";
-import { isPlayerDocument } from "./constants.ts";
+import { ffi } from "millennium";
+import { evaluateInPlayer, PLAYER_TARGET_MISSING } from "./player-target.ts";
 import { recognitionScript } from "./recognition-player.ts";
 
 const getEndpoint = ffi<[], string>("mpris_endpoint");
@@ -47,7 +47,6 @@ export class RecognitionBridge {
   private async install(): Promise<void> {
     if (this.busy || !this.timer) return;
     this.busy = true;
-    let sessionId: string | null = null;
     try {
       if (!this.endpoint) {
         const result = await getEndpoint();
@@ -56,26 +55,22 @@ export class RecognitionBridge {
         this.endpoint = result.slice(0, separator);
         this.token = result.slice(separator + 1);
       }
-      const targets = await ChromeDevToolsProtocol.send("Target.getTargets");
-      const target = targets.targetInfos.find(item => isPlayerDocument(item.url));
-      if (!target || !this.timer) return;
-      const attached = await ChromeDevToolsProtocol.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-      sessionId = attached.sessionId;
-      if (!this.timer) return;
       const open = this.pendingOpen;
+      try {
+        await evaluateInPlayer(recognitionScript(this.endpoint, this.token, open));
+      } catch (error) {
+        // No player page yet is the normal state before the user opens one: stay quiet
+        // and keep the pending request queued for a later tick.
+        if (error instanceof Error && error.message === PLAYER_TARGET_MISSING) return;
+        throw error;
+      }
+      if (!this.timer) return;
       this.pendingOpen = false;
-      const result = await ChromeDevToolsProtocol.send("Runtime.evaluate", {
-        expression: recognitionScript(this.endpoint, this.token, open), returnByValue: true,
-      }, sessionId);
-      if (result.exceptionDetails) throw new Error(result.exceptionDetails.text);
       this.status = "可以识别系统声音或麦克风；首次使用需联网加载识曲引擎";
     } catch (error) {
       this.status = error instanceof Error ? error.message : String(error);
       console.warn("[NEMusic] recognition", error);
     } finally {
-      if (sessionId) {
-        try { await ChromeDevToolsProtocol.send("Target.detachFromTarget", { sessionId }); } catch {}
-      }
       this.busy = false;
     }
   }

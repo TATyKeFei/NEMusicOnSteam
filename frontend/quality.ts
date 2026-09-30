@@ -1,5 +1,4 @@
-import { ChromeDevToolsProtocol } from "millennium";
-import { isPlayerDocument } from "./constants.ts";
+import { evaluateInPlayer } from "./player-target.ts";
 import { QUALITY_OPTIONS, QUALITY_SNAPSHOT_SCRIPT, qualityCommandScript, type QualityState } from "./quality-player.ts";
 
 export type QualitySnapshot = QualityState & { updating: boolean; status: string };
@@ -48,28 +47,17 @@ export class QualityBridge {
     if (!this.timer || this.busy) return;
     this.busy = true;
     const generation = this.generation;
-    let sessionId: string | null = null;
     let value: number | null = null;
     try {
-      const targets = await ChromeDevToolsProtocol.send("Target.getTargets");
-      if (generation !== this.generation) return;
-      const target = targets.targetInfos.find((item: { url: string; targetId: string }) => isPlayerDocument(item.url));
-      if (!target) throw new Error("等待网易云播放器加载");
-      const attached = await ChromeDevToolsProtocol.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
-      sessionId = attached.sessionId;
-      if (generation !== this.generation) return;
       value = this.pending;
       this.pending = null;
-      const result = await ChromeDevToolsProtocol.send("Runtime.evaluate", {
-        expression: value == null ? QUALITY_SNAPSHOT_SCRIPT : qualityCommandScript(value),
-        returnByValue: true,
+      const result = await evaluateInPlayer(value == null ? QUALITY_SNAPSHOT_SCRIPT : qualityCommandScript(value), {
         awaitPromise: true,
         userGesture: value != null,
-      }, attached.sessionId);
+      });
       if (generation !== this.generation) return;
-      if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text);
       if (value == null) {
-        this.state = result.result.value as QualityState;
+        this.state = result as QualityState;
         if (!this.state?.available) {
           this.state = EMPTY_QUALITY;
           this.status = "网易云音质设置尚未就绪";
@@ -77,7 +65,7 @@ export class QualityBridge {
           this.status = "音质设置保存在网易云播放器中";
         }
       } else {
-        const response = result.result.value as { state: QualityState; message: string };
+        const response = result as { state: QualityState; message: string };
         this.state = response.state;
         this.status = response.message;
       }
@@ -89,11 +77,6 @@ export class QualityBridge {
         this.updating = false;
       }
     } finally {
-      if (sessionId) {
-        try {
-          await ChromeDevToolsProtocol.send("Target.detachFromTarget", { sessionId });
-        } catch {}
-      }
       if (generation === this.generation && value != null) this.updating = false;
       this.busy = false;
     }

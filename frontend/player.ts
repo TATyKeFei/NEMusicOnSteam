@@ -4,6 +4,7 @@ import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "./constants.ts"
 import { DownloadBridge, type DownloadSnapshot } from "./download.ts";
 import { sameBounds, type Bounds } from "./layout.ts";
 import { MprisBridge } from "./mpris.ts";
+import { releasePlayerSession } from "./player-target.ts";
 import { RecognitionBridge } from "./recognition.ts";
 import { QualityBridge, type QualitySnapshot } from "./quality.ts";
 import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "./settings.ts";
@@ -358,6 +359,7 @@ export class PlayerController {
     this.recognition.setEnabled(false);
     this.quality.setEnabled(false);
     this.download.setEnabled(false);
+    releasePlayerSession();
     this.parentId = null;
     this.client = null;
     this.loaded = false;
@@ -470,6 +472,7 @@ export class PlayerController {
     this.recognition.setEnabled(false);
     this.quality.setEnabled(false);
     this.download.setEnabled(false);
+    releasePlayerSession();
     this.parentId = null;
     this.client = null;
     this.loaded = false;
