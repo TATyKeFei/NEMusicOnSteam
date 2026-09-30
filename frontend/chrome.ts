@@ -293,6 +293,14 @@ export class PlayerChrome {
     }, 120) ?? 0;
   };
 
+  /** A window that loses focus or gets minimized never delivers the bar's mouseleave. */
+  dismissToolbar(): void {
+    this.clearToolbarTimer();
+    if (!this.toolbarOpen) return;
+    this.toolbarOpen = false;
+    this.handlers?.onToolbarChange();
+  }
+
   private restoreSelection(): void {
     for (const [item, classes] of this.deselected) item.classList.add(...classes);
     this.deselected.clear();

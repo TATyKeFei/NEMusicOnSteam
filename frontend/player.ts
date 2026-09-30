@@ -80,6 +80,7 @@ export class PlayerController {
   private lastThrottleAt = 0;
   private timer = 0;
   private resizeTarget: Window | null = null;
+  private visibilityTarget: Document | null = null;
   private unregisterChild: (() => void) | null = null;
   private destroying = false;
 
@@ -97,7 +98,7 @@ export class PlayerController {
   shutdown(): void {
     window.clearInterval(this.timer);
     this.timer = 0;
-    this.unbindResize();
+    this.unbindWindow();
     this.pendingOpen = false;
     this.destroyView();
     void this.mpris.stop();
@@ -252,22 +253,65 @@ export class PlayerController {
       onReload: () => this.reload(),
       onClose: () => this.close(),
     });
+    this.bindWindowEvents(win);
+  }
+
+  private bindWindowEvents(win: SteamWindow): void {
     if (this.resizeTarget !== win) {
-      this.unbindResize();
+      this.unbindWindow();
       this.resizeTarget = win;
       win.addEventListener("resize", this.onResize);
+      win.addEventListener("blur", this.onWindowBlur);
+    }
+    const doc = win.document;
+    if (this.visibilityTarget !== doc) {
+      this.visibilityTarget?.removeEventListener("visibilitychange", this.onVisibilityChange);
+      this.visibilityTarget = doc;
+      doc.addEventListener("visibilitychange", this.onVisibilityChange);
     }
   }
 
-  private unbindResize(): void {
+  private unbindWindow(): void {
     this.resizeTarget?.removeEventListener("resize", this.onResize);
+    this.resizeTarget?.removeEventListener("blur", this.onWindowBlur);
     this.resizeTarget = null;
+    this.visibilityTarget?.removeEventListener("visibilitychange", this.onVisibilityChange);
+    this.visibilityTarget = null;
   }
 
   private onResize = (): void => {
     this.chrome.invalidateHeader();
     this.syncView(false, this.render());
   };
+
+  private onWindowBlur = (): void => {
+    this.chrome.dismissToolbar();
+  };
+
+  /**
+   * Minimizing takes the child BrowserView's surface with it and Steam does not put it back on
+   * restore, so the client shows our chrome over an empty page — and the toolbar stays up because
+   * the bar never sees the mouseleave that would have closed it.
+   */
+  private onVisibilityChange = (): void => {
+    this.chrome.dismissToolbar();
+    if (this.visibilityTarget?.hidden === true) return;
+    this.reattachView();
+  };
+
+  /** A hide/show cycle is what makes Steam rebuild the surface; another SetVisible(true) is not. */
+  private reattachView(): void {
+    const view = this.view;
+    if (view == null) return;
+    this.lastBounds = null;
+    try {
+      view.SetVisible(false);
+      view.SetVisible(true);
+    } catch (error) {
+      console.warn("[NEMusic] reattach failed", error);
+    }
+    this.syncView(true, this.render());
+  }
 
   private ensureView(win: SteamWindow, popup: SteamPopup | null): void {
     const client = win.SteamClient?.BrowserView?.Create != null ? win.SteamClient : sharedSteamClient();

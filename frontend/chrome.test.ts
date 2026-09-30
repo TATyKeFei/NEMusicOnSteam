@@ -187,4 +187,15 @@ describe("Player chrome layout cost", () => {
     player.open();
     assert.equal(player.bar().style.display, "flex");
   });
+
+  it("closes the command bar when the window goes away instead of leaving it stuck open", () => {
+    const player = chromeFixture();
+    player.open();
+    player.bar().dispatch("mouseenter");
+    player.open();
+    assert.equal(player.bar().style.display, "flex");
+    player.chrome.dismissToolbar();
+    player.open();
+    assert.equal(player.bar().style.display, "none");
+  });
 });
