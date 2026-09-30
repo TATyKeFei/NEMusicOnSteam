@@ -44,9 +44,29 @@ function playerFixture() {
     getBoundingClientRect: () => ({ width: 400, height: 8 }),
     dispatchEvent: () => { throw new Error("Playback must not depend on synthetic dragging"); },
   };
+  const transport: { element: Record<string, unknown>; clicks: number }[] = [];
+  const addControl = (title: string, disabled = false) => {
+    const entry = {
+      clicks: 0,
+      element: {
+        title,
+        className: "",
+        parentElement: null,
+        getAttribute: (name: string) => (name === "aria-disabled" ? String(disabled) : null),
+        click: () => { entry.clicks += 1; },
+      } as Record<string, unknown>,
+    };
+    transport.push(entry);
+    return entry;
+  };
+  const matchControl = (selector: string) => {
+    const prefix = /^\[title\^="(.+)"\]$/.exec(selector)?.[1];
+    if (!prefix) return null;
+    return transport.find(entry => String(entry.element.title).startsWith(prefix))?.element ?? null;
+  };
   const context = {
     document: {
-      querySelector: () => null,
+      querySelector: (selector: string) => (selector === "#page_pc_mini_bar" ? { querySelector: matchControl } : matchControl(selector)),
       querySelectorAll: (selector: string) => {
         if (selector.includes("#root > *")) return [button];
         if (selector === "audio, video") return [media];
@@ -60,7 +80,7 @@ function playerFixture() {
     getComputedStyle: () => ({ display: "block", visibility: "visible" }),
   };
   return {
-    state, media, store, provider, commands,
+    state, media, store, provider, commands, addControl,
     confirmVolume: () => confirmVolume?.(),
     snapshot: () => runInNewContext(SNAPSHOT_SCRIPT, context),
     command: (command: Command): Promise<boolean> => runInNewContext(commandScript(command), context),
@@ -125,8 +145,41 @@ describe("NetEase MPRIS player control", () => {
     assert.equal(player.media.currentTime, 60);
   });
 
-  it("waits for the application's command and rejects invalid values", async () => {
+  it("reads next and previous from the transport controls the player itself renders", () => {
     const player = playerFixture();
+    player.addControl("下一首（Ctrl+→）");
+    player.addControl("上一首（Ctrl+←）");
+    const snapshot = player.snapshot();
+    assert.equal(snapshot.canGoNext, true);
+    assert.equal(snapshot.canGoPrevious, true);
+  });
+
+  it("withholds previous while the player marks it disabled", () => {
+    const player = playerFixture();
+    player.addControl("下一首");
+    player.addControl("上一首", true);
+    assert.equal(player.snapshot().canGoNext, true);
+    assert.equal(player.snapshot().canGoPrevious, false);
+  });
+
+  it("claims no capability when the player exposes no titled controls", () => {
+    const player = playerFixture();
+    const snapshot = player.snapshot();
+    assert.equal(snapshot.canGoNext, false);
+    assert.equal(snapshot.canGoPrevious, false);
+  });
+
+  it("clicks the labelled control for next and refuses a disabled previous", async () => {
+    const player = playerFixture();
+    const next = player.addControl("下一首（Ctrl+→）");
+    const previous = player.addControl("上一首（Ctrl+←）", true);
+    assert.equal(await player.command({ action: "next" }), true);
+    assert.equal(await player.command({ action: "previous" }), false);
+    assert.equal(next.clicks, 1);
+    assert.equal(previous.clicks, 0);
+  });
+
+  it("waits for the application's command and rejects invalid values", async () => {    const player = playerFixture();
     let finish: (() => void) | undefined;
     player.store.dispatch = () => new Promise<void>(resolve => { finish = resolve; });
     let completed = false;

@@ -54,8 +54,42 @@ export const PLAYER_ACCESS_SCRIPT = `
   };
 `;
 
+// The st/webplayer transport buttons render from React components: neither previous nor next has
+// an id, and the old .m-playbar markup is gone. The stable hook left is the icon's title
+// attribute, which carries the Chinese label plus a shortcut suffix. Labels are spelled as code
+// points because the plugin packer corrupts raw non-ASCII and backslash escapes in the bundle.
+export const TRANSPORT_SCRIPT = `
+  const NEXT_LABELS = [String.fromCharCode(0x4e0b, 0x4e00, 0x9996), String.fromCharCode(0x4e0b, 0x4e00, 0x66f2)];
+  const PREV_LABELS = [String.fromCharCode(0x4e0a, 0x4e00, 0x9996), String.fromCharCode(0x4e0a, 0x4e00, 0x66f2)];
+  const findControl = labels => {
+    for (const root of [document.querySelector('#page_pc_mini_bar'), document]) {
+      if (!root) continue;
+      for (const prefix of labels) {
+        const match = root.querySelector('[title^="' + prefix + '"]');
+        if (match) return match;
+      }
+    }
+    return null;
+  };
+  const isDisabled = element => {
+    for (let node = element; node; node = node.parentElement) {
+      if (node.getAttribute?.('aria-disabled') === 'true') return true;
+      if ('disabled' in node && node.disabled) return true;
+      if (/\\bdisabled\\b/.test(String(node.className || ''))) return true;
+    }
+    return false;
+  };
+  const clickControl = labels => {
+    const control = findControl(labels);
+    if (!control || isDisabled(control)) return false;
+    control.click();
+    return true;
+  };
+`;
+
 export const SNAPSHOT_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
+  ${TRANSPORT_SCRIPT}
   const visible = selector => Array.from(document.querySelectorAll(selector)).find(element => {
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
@@ -106,7 +140,9 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const controlClass = String(playControl?.className || '');
   const isPlayingButton = playControl?.classList.contains('play-pause-btn') || /\\bpas\\b/.test(controlClass) || /暂停|pause/.test(playControl?.querySelector('[title]')?.getAttribute('title') || '');
   const playbackStatus = media ? (media.ended ? 'Stopped' : media.paused ? 'Paused' : 'Playing') : playControl ? (isPlayingButton ? 'Playing' : 'Paused') : sessionState === 'playing' ? 'Playing' : sessionState === 'paused' ? 'Paused' : title ? 'Playing' : 'Stopped';
-  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(visible('#btn_pc_next')) || controls.some(label => /下一首|下一曲|next|\\bnxt\\b/.test(label)), canGoPrevious: Boolean(visible('#btn_pc_previous')) || controls.some(label => /上一首|上一曲|prev|\\bprv\\b/.test(label)), volume, loopStatus, shuffle, rate };
+  const nextControl = findControl(NEXT_LABELS);
+  const previousControl = findControl(PREV_LABELS);
+  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(nextControl) && !isDisabled(nextControl), canGoPrevious: Boolean(previousControl) && !isDisabled(previousControl), volume, loopStatus, shuffle, rate };
 })()`;
 
 export const LYRICS_SCRIPT = `(async () => {
@@ -203,6 +239,7 @@ export const LYRICS_SCRIPT = `(async () => {
 export function commandScript(command: Command): string {
   return `(async () => {
     ${PLAYER_ACCESS_SCRIPT}
+    ${TRANSPORT_SCRIPT}
     const command = ${JSON.stringify(command)};
     const visible = selector => Array.from(document.querySelectorAll(selector)).find(element => {
       const style = getComputedStyle(element);
@@ -244,8 +281,8 @@ export function commandScript(command: Command): string {
       case 'pause': if (playButton && playButtonIsPlaying) return clickSelector('#btn_pc_minibar_play'); if (!playButton && click(['暂停', 'pause', 'pas'], ['下一', 'next', 'nxt', 'ply'])) return true; if (!playButton && media && !media.paused) { media.pause(); return true; } return false;
       case 'playpause': if (playButton) return clickSelector('#btn_pc_minibar_play'); if (media && !media.paused) { media.pause(); return true; } if (media?.paused) { media.play(); return true; } return click(['播放', '暂停', 'play', 'pause']);
       case 'stop': { const paused = playButton && playButtonIsPlaying ? clickSelector('#btn_pc_minibar_play') : !playButton && media ? (media.pause(), true) : false; if (await playerControl.seek(0)) return true; return paused; }
-      case 'next': return clickSelector('#btn_pc_next') || click(['下一首', '下一曲', 'next', 'nxt']);
-      case 'previous': return clickSelector('#btn_pc_previous') || click(['上一首', '上一曲', 'previous', 'prev', 'prv']);
+      case 'next': return clickControl(NEXT_LABELS) || clickSelector('#btn_pc_next');
+      case 'previous': return clickControl(PREV_LABELS) || clickSelector('#btn_pc_previous');
       case 'volume': return Number.isFinite(command.value) && playerControl.volume(command.value);
       case 'rate': if (media && Number.isFinite(command.value) && command.value > 0) { media.playbackRate = command.value; return true; } return false;
       case 'shuffle': return click(['随机播放', 'shuffle']);
