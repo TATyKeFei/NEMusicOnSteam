@@ -35,7 +35,20 @@ function buttonStyle(button: HTMLButtonElement): void {
   button.style.pointerEvents = "auto";
 }
 
-function place(element: HTMLElement, bounds: Bounds, hidden: boolean): void {
+type Display = "block" | "flex" | "none";
+
+const placed = new WeakMap<HTMLElement, { box: string; display: Display }>();
+
+/**
+ * Writing a style property dirties layout, and the next getBoundingClientRect in the same tick
+ * then pays for a full style/layout pass over the whole Steam client document. render() runs
+ * several times per tick, so leave anything that has not actually moved untouched.
+ */
+function place(element: HTMLElement, bounds: Bounds, display: Display): void {
+  const box = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`;
+  const previous = placed.get(element);
+  if (previous != null && previous.box === box && previous.display === display) return;
+  placed.set(element, { box, display });
   element.style.position = "fixed";
   element.style.left = `${bounds.x}px`;
   element.style.top = `${bounds.y}px`;
@@ -43,7 +56,7 @@ function place(element: HTMLElement, bounds: Bounds, hidden: boolean): void {
   element.style.height = `${bounds.height}px`;
   element.style.right = "auto";
   element.style.bottom = "auto";
-  element.style.display = hidden ? "none" : "block";
+  element.style.display = display;
 }
 
 function linkTitle(mode: PlayerMode): string {
@@ -73,6 +86,9 @@ export class PlayerChrome {
   private recognitionHost: HTMLElement | null = null;
   private recognitionObserver: MutationObserver | null = null;
   private styledButtons = new WeakSet<HTMLElement>();
+  private headerHeight: number | null = null;
+  private headerNav: HTMLElement | null = null;
+  private paintedMode: PlayerMode | null = null;
 
   mountedDocument(): Document | null {
     return this.doc;
@@ -148,6 +164,9 @@ export class PlayerChrome {
     this.page = null;
     this.slot = null;
     this.bar = null;
+    this.headerHeight = null;
+    this.headerNav = null;
+    this.paintedMode = null;
   }
 
   render(model: ChromeModel): Bounds | null {
@@ -171,26 +190,22 @@ export class PlayerChrome {
     this.paintNavLink(model);
     const expanded = model.mode === "expanded";
     const parked = model.mode === "collapsed" && model.keepAlive;
-    const header = headerHeightFromNav(nav?.getBoundingClientRect().bottom ?? null, headerHeightFromButtons(this.topButtons(doc)));
+    // The row appearing or being rebuilt means the client's chrome moved, so measure once more.
+    if (this.headerNav !== nav) {
+      this.headerNav = nav;
+      this.headerHeight = null;
+    }
+    const header = headerHeightFromNav(nav?.getBoundingClientRect().bottom ?? null, this.headerFallback(doc));
+    const pageBox: Bounds = { x: 0, y: header, width, height: Math.max(1, height - header) };
     if (expanded) {
-      place(page, { x: 0, y: header, width, height: Math.max(1, height - header) }, false);
-      if (this.toolbarOpen) {
-        const linkRect = this.toolbarTrigger?.getBoundingClientRect();
-        const barWidth = 180;
-        place(bar, {
-          x: Math.max(0, Math.min(width - barWidth, Math.round(linkRect?.left ?? width - barWidth))),
-          y: Math.round(linkRect?.bottom ?? header),
-          width: barWidth,
-          height: bar.children.length * 32 + 8,
-        }, false);
-        bar.style.display = "flex";
-      } else bar.style.display = "none";
-      place(slot, { x: 0, y: header, width, height: Math.max(1, height - header) }, false);
+      place(page, pageBox, "block");
+      place(bar, this.toolbarBox(width, header, bar), this.toolbarOpen ? "flex" : "none");
+      place(slot, pageBox, "block");
     } else {
       this.toolbarOpen = false;
-      page.style.display = "none";
-      bar.style.display = "none";
-      place(slot, parked ? parkedBounds(width, height) : { x: 0, y: 0, width: 1, height: 1 }, !parked);
+      place(page, pageBox, "none");
+      place(bar, this.toolbarBox(width, header, bar), "none");
+      place(slot, parked ? parkedBounds(width, height) : { x: 0, y: 0, width: 1, height: 1 }, parked ? "block" : "none");
     }
 
     if (!expanded && !parked) return null;
@@ -333,6 +348,7 @@ export class PlayerChrome {
     this.linkLabel = null;
     this.linkMark = null;
     this.navHost = null;
+    this.paintedMode = null;
   }
 
   /* recognition opens from inside the NetEase page */
@@ -506,6 +522,8 @@ export class PlayerChrome {
     const link = this.link;
     const mark = this.linkMark;
     if (label == null || link == null || mark == null) return;
+    if (this.paintedMode === model.mode) return;
+    this.paintedMode = model.mode;
     const active = model.mode === "expanded";
     const title = linkTitle(model.mode);
     link.title = title;
@@ -528,6 +546,32 @@ export class PlayerChrome {
       onClick();
     });
     return button;
+  }
+
+  private toolbarBox(width: number, header: number, bar: HTMLElement): Bounds {
+    const barWidth = 180;
+    const rect = this.toolbarTrigger?.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(width - barWidth, Math.round(rect?.left ?? width - barWidth))),
+      y: Math.round(rect?.bottom ?? header),
+      width: barWidth,
+      height: bar.children.length * 32 + 8,
+    };
+  }
+
+  /** The window size and the client's own chrome are the only things that move the measurement. */
+  invalidateHeader(): void {
+    this.headerHeight = null;
+  }
+
+  /**
+   * Last resort for the header height: one rect per button in the whole client document, which is
+   * both a very large scan and a layout flush per button. The nav row supplies the height in
+   * practice, so measure this once and keep it until a resize or a new document.
+   */
+  private headerFallback(doc: Document): number {
+    this.headerHeight ??= headerHeightFromButtons(this.topButtons(doc));
+    return this.headerHeight;
   }
 
   private topButtons(doc: Document): ButtonRect[] {

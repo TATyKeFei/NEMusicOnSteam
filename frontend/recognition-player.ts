@@ -1,3 +1,19 @@
+/**
+ * The steady-state half of recognitionScript: refreshes the config of the page script that is
+ * already running and reports whether it is there. Recognition runs on a two second timer, so
+ * sending the whole bundle just to learn it is installed is a needless allocation every tick.
+ */
+export function recognitionUpdateScript(endpoint: string, token: string, open = false): string {
+  return `(() => {
+    const api = window.__nemusicRecognition;
+    if (!api) return false;
+    api.config = ${JSON.stringify({ endpoint, token, open })};
+    api.ensureHeaderButton?.();
+    if (api.config.open) api.show();
+    return true;
+  })()`;
+}
+
 export function recognitionScript(endpoint: string, token: string, open = false): string {
   return `(() => {
     const config = ${JSON.stringify({ endpoint, token, open })};

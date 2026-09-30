@@ -1,7 +1,7 @@
 import { ffi } from "millennium";
 import { evaluateInPlayer } from "./player-target.ts";
 import { downloadScript, songFileName, type DownloadSong, type DownloadTrack } from "./download-player.ts";
-import { MENU_TICK_SCRIPT, menuToastScript } from "./menu-player.ts";
+import { MENU_POLL_SCRIPT, MENU_TICK_SCRIPT, menuToastScript } from "./menu-player.ts";
 
 type DownloadJob = {
   active: boolean;
@@ -70,6 +70,7 @@ export class DownloadBridge {
   private menus = 0;
   private songs = 0;
   private menuBroken = false;
+  private menuInstalled = false;
 
   constructor(options: () => DownloadOptions) {
     this.options = options;
@@ -93,6 +94,7 @@ export class DownloadBridge {
       this.menus = 0;
       this.songs = 0;
       this.menuBroken = false;
+      this.menuInstalled = false;
     }
   }
 
@@ -182,16 +184,17 @@ export class DownloadBridge {
   }
 
   /**
-   * The menu scanner installs itself through this very call and is idempotent, so a page reload
-   * only means it gets installed again on the next tick.
+   * The scanner reports whether it is still on the page, and a reload takes it with it: only the
+   * tick that finds it missing pays for the installer, every other tick sends the small poll.
    */
   private async tickMenu(): Promise<void> {
     if (!this.enabled) return;
     const generation = this.generation;
     try {
-      const result = (await this.evaluate(MENU_TICK_SCRIPT)) as MenuTick | null;
+      const result = (await this.evaluate(this.menuInstalled ? MENU_POLL_SCRIPT : MENU_TICK_SCRIPT)) as MenuTick | null;
       if (generation !== this.generation || result == null) return;
       if (result.error) this.menuBroken = true;
+      this.menuInstalled = result.installed === true;
       this.menus = Math.max(this.menus, Number(result.menus) || 0);
       this.songs = Math.max(this.songs, Number(result.songs) || 0);
       const pending = Array.isArray(result.pending) ? result.pending : [];

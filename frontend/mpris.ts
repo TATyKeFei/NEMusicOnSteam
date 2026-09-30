@@ -76,6 +76,7 @@ export class MprisBridge {
   private settledLyricsTrackId = "";
   private lastLyricsAttemptAt = 0;
   private lastSentLyrics: string | null = null;
+  private lastSentState: string | null = null;
   private status = "尚未连接";
   private commandError = "";
   private commandRequest: AbortController | null = null;
@@ -109,6 +110,7 @@ export class MprisBridge {
     this.endpoint = null;
     this.token = null;
     this.lastSentLyrics = null;
+    this.lastSentState = null;
     releasePlayerSession();
     if (endpoint && token) {
       try {
@@ -137,6 +139,7 @@ export class MprisBridge {
     this.endpoint = result.slice(0, separator);
     this.token = result.slice(separator + 1);
     this.lastSentLyrics = null;
+    this.lastSentState = null;
     return true;
   }
 
@@ -231,8 +234,16 @@ export class MprisBridge {
       if (!this.timer) return;
       const payload: Partial<TrackState> = { ...this.state };
       if (this.lastSentLyrics === this.state.lyrics) delete payload.lyrics;
-      const update = await this.request("/state", payload);
-      if (!update.ok) throw new Error(`MPRIS state update failed: ${update.status}`);
+      // An install with no player open reports the same stopped state forever; posting it twice a
+      // second only keeps an upload and its response body alive in the Steam UI renderer.
+      const encoded = JSON.stringify(payload);
+      if (encoded !== this.lastSentState) {
+        const update = await this.request("/state", payload);
+        // A response body nobody reads stays in the renderer's heap until GC; drain it either way.
+        await update.arrayBuffer().catch(() => {});
+        if (!update.ok) throw new Error(`MPRIS state update failed: ${update.status}`);
+        this.lastSentState = encoded;
+      }
       this.lastSentLyrics = this.state.lyrics;
       this.status = this.commandError || "MPRIS 已连接";
     } catch (error) {

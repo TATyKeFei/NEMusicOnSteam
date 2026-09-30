@@ -78,7 +78,8 @@ function setup(options: { trackId?: string; lyric?: unknown } = {}) {
         });
       }
       if (url.endsWith("/state")) stateUpdates++;
-      return { ok: true };
+      // The bridge drains the body of every state push; a real Response always offers the body.
+      return { ok: true, arrayBuffer: async () => new ArrayBuffer(0) };
     },
   });
   const bridge = new Bridge(() => {}, () => {});

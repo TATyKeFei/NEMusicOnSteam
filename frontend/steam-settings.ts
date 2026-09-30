@@ -24,7 +24,8 @@ export class SteamSettingsEntry {
     const layout = findModule(module => typeof module?.PagedSettingsDialog_PageList === "string");
     const settings = findModule(module => typeof module?.SettingsModal === "string");
     this.classes = { ...FALLBACK_CLASSES, ...layout, ...settings };
-    this.timer = window.setInterval(() => this.sync(), 500);
+    // GetPopups() plus a querySelector per popup, forever, for a dialog the user opens rarely.
+    this.timer = window.setInterval(() => this.sync(), 1000);
     this.sync();
   }
 

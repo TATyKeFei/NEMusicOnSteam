@@ -260,7 +260,19 @@ const MENU_INSTALL = `() => {
   return { installed: true, menus: api.menus, songs: api.songs };
 }`;
 
-/** One round trip: installs if needed and drains whatever the user asked for. */
+/**
+ * The steady-state half of MENU_TICK_SCRIPT: drains what the user asked for and reports what the
+ * scanner found, without reshipping the installer. The scanner polls every second, so inlining
+ * the installer into every tick re-parsed the whole bundle in the page for no gain.
+ */
+export const MENU_POLL_SCRIPT = `(() => {
+  const api = window.__nemusicDownload;
+  if (!api) return { installed: false, menus: 0, songs: 0, pending: [] };
+  const pending = typeof api.take === 'function' ? api.take() : [];
+  return { installed: true, menus: api.menus || 0, songs: api.songs || 0, pending };
+})()`;
+
+/** One round trip: installs the scanner if it is missing and drains whatever the user asked for. */
 export const MENU_TICK_SCRIPT = `(() => {
   let status = null;
   try {

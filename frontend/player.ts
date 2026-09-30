@@ -125,8 +125,7 @@ export class PlayerController {
   updateSettings(patch: Partial<PlayerSettings>): PlayerSettings {
     this.settings = { ...this.settings, ...patch, launcher: patch.launcher ?? this.settings.launcher };
     writeSettings(browserStorage(), this.settings);
-    this.render();
-    this.syncView(true);
+    this.syncView(true, this.render());
     return this.snapshot().settings;
   }
 
@@ -164,8 +163,7 @@ export class PlayerController {
     this.pendingOpen = false;
     this.mode = "collapsed";
     this.status = status;
-    this.render();
-    this.syncView(true);
+    this.syncView(true, this.render());
     return this.status;
   }
 
@@ -213,8 +211,7 @@ export class PlayerController {
     try {
       this.ensureChrome(win);
       this.ensureView(win, findMainPopup());
-      this.render();
-      this.syncView(true);
+      this.syncView(true, this.render());
       this.focusView();
     } catch (error) {
       this.status = errorText(error);
@@ -234,8 +231,7 @@ export class PlayerController {
       if (this.mode !== "closed" && popup != null && (this.view == null || this.owner !== popup.window)) {
         this.ensureView(popup.window, popup);
       }
-      this.render();
-      this.syncView(false);
+      this.syncView(false, this.render());
       if (popup != null) this.syncSteamPage(steamPageVisible(popup.window.document, this.steamPageSelectors));
     } catch (error) {
       this.status = errorText(error);
@@ -250,7 +246,7 @@ export class PlayerController {
       onNavigateAway: () => {
         if (this.mode === "expanded") this.collapse();
       },
-      onToolbarChange: () => this.syncView(false),
+      onToolbarChange: () => this.syncView(false, this.render()),
       onCollapse: () => this.collapse(),
       onRecognize: () => this.recognizeSong(),
       onReload: () => this.reload(),
@@ -269,8 +265,8 @@ export class PlayerController {
   }
 
   private onResize = (): void => {
-    this.render();
-    this.syncView(false);
+    this.chrome.invalidateHeader();
+    this.syncView(false, this.render());
   };
 
   private ensureView(win: SteamWindow, popup: SteamPopup | null): void {
@@ -373,16 +369,19 @@ export class PlayerController {
     return this.open();
   }
 
-  private render(): void {
+  private render(): Bounds | null {
     const bounds = this.chrome.render({
       mode: this.mode,
       status: this.status,
       keepAlive: this.settings.keepAliveWhenCollapsed,
     });
     if (bounds != null) this.applyBounds(bounds, false);
+    return bounds;
   }
 
-  private syncView(force: boolean): void {
+  // Takes the bounds render() already produced: laying the chrome out costs a full pass over the
+  // client document, and the tick ran it twice per frame with nothing changing in between.
+  private syncView(force: boolean, bounds: Bounds | null): void {
     const active = this.mode === "expanded" || (this.mode === "collapsed" && this.settings.keepAliveWhenCollapsed);
     if (!active || this.view == null) {
       if (this.mode === "collapsed" && this.view != null) {
@@ -397,11 +396,6 @@ export class PlayerController {
       else this.refreshThrottle();
       return;
     }
-    const bounds = this.chrome.render({
-      mode: this.mode,
-      status: this.status,
-      keepAlive: this.settings.keepAliveWhenCollapsed,
-    });
     if (bounds != null) this.applyBounds(bounds, force);
     this.refreshThrottle();
   }

@@ -1,6 +1,6 @@
 import { ffi } from "millennium";
 import { evaluateInPlayer, PLAYER_TARGET_MISSING } from "./player-target.ts";
-import { recognitionScript } from "./recognition-player.ts";
+import { recognitionScript, recognitionUpdateScript } from "./recognition-player.ts";
 
 const getEndpoint = ffi<[], string>("mpris_endpoint");
 
@@ -11,6 +11,7 @@ export class RecognitionBridge {
   private generation = 0;
   private endpoint = "";
   private token = "";
+  private installed = false;
   private status = "支持识别系统声音和麦克风，仅 Linux 可用";
 
   getStatus(): string {
@@ -23,6 +24,7 @@ export class RecognitionBridge {
       window.clearInterval(this.timer);
       this.timer = 0;
       this.pendingOpen = false;
+      this.installed = false;
       if (this.endpoint) {
         void fetch(`${this.endpoint}/recognition`, { headers: { "X-NEMusic-Token": this.token } })
           .then(response => response.json())
@@ -56,18 +58,28 @@ export class RecognitionBridge {
         this.token = result.slice(separator + 1);
       }
       const open = this.pendingOpen;
-      try {
+      let ready = false;
+      if (this.installed) {
+        try {
+          ready = (await evaluateInPlayer(recognitionUpdateScript(this.endpoint, this.token, open))) === true;
+        } catch (error) {
+          // No player page yet is the normal state before the user opens one: stay quiet
+          // and keep the pending request queued for a later tick.
+          if (error instanceof Error && error.message === PLAYER_TARGET_MISSING) return;
+          ready = false;
+        }
+        this.installed = ready;
+      }
+      if (!ready) {
         await evaluateInPlayer(recognitionScript(this.endpoint, this.token, open));
-      } catch (error) {
-        // No player page yet is the normal state before the user opens one: stay quiet
-        // and keep the pending request queued for a later tick.
-        if (error instanceof Error && error.message === PLAYER_TARGET_MISSING) return;
-        throw error;
+        this.installed = true;
       }
       if (!this.timer) return;
       this.pendingOpen = false;
       this.status = "可以识别系统声音或麦克风；首次使用需联网加载识曲引擎";
     } catch (error) {
+      if (error instanceof Error && error.message === PLAYER_TARGET_MISSING) return;
+      this.installed = false;
       this.status = error instanceof Error ? error.message : String(error);
       console.warn("[NEMusic] recognition", error);
     } finally {
