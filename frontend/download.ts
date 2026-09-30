@@ -84,7 +84,7 @@ export class DownloadBridge {
     this.progress = null;
     this.status = enabled ? "可以下载当前正在播放的歌曲" : DISABLED_STATUS;
     if (enabled) {
-      this.timer = window.setInterval(() => void this.tickMenu(), MENU_TICK_MS);
+      this.timer = window.setInterval((): void => void this.tickMenu(), MENU_TICK_MS);
       void this.tickMenu();
     } else {
       window.clearInterval(this.timer);

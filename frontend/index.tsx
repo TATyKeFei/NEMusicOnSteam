@@ -17,22 +17,38 @@ function NoteIcon() {
   );
 }
 
+// snapshot() hands back fresh objects every call, so feeding it to setState unconditionally
+// re-rendered the whole panel several times a second even when nothing had changed.
+function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
+  return a.mode === b.mode
+    && a.status === b.status
+    && a.hasView === b.hasView
+    && a.throttlingSupported === b.throttlingSupported
+    && a.mprisStatus === b.mprisStatus
+    && a.recognitionStatus === b.recognitionStatus
+    && JSON.stringify(a.quality) === JSON.stringify(b.quality)
+    && JSON.stringify(a.download) === JSON.stringify(b.download)
+    && JSON.stringify(a.settings) === JSON.stringify(b.settings);
+}
+
 function SettingsContent() {
   const player = getPlayer();
   const [snapshot, setSnapshot] = useState<PlayerSnapshot>(() => player.snapshot());
   const [directory, setDirectory] = useState(() => snapshot.settings.downloadDirectory);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setSnapshot(player.snapshot()), 400);
+    const timer = window.setInterval(() => {
+      const next = player.snapshot();
+      setSnapshot(current => (sameSnapshot(current, next) ? current : next));
+    }, 400);
     return () => window.clearInterval(timer);
   }, [player]);
 
   const commitDirectory = () => {
     const trimmed = directory.trim();
-    if (trimmed === player.snapshot().settings.downloadDirectory) return;
-    player.updateSettings({ downloadDirectory: trimmed });
+    if (trimmed === snapshot.settings.downloadDirectory) return;
+    setSnapshot(player.updateSettings({ downloadDirectory: trimmed }));
     setDirectory(trimmed);
-    setSnapshot(player.snapshot());
   };
 
   const settings = snapshot.settings;
@@ -81,8 +97,7 @@ function SettingsContent() {
           selectedOption={settings.downloadQuality}
           strDefaultLabel="等待播放器"
           onChange={option => {
-            player.updateSettings({ downloadQuality: option.data });
-            setSnapshot(player.snapshot());
+            setSnapshot(player.updateSettings({ downloadQuality: option.data }));
           }}
         />
       </Field>
@@ -118,7 +133,10 @@ function SettingsContent() {
         </DialogButton>
       </Field>
       <Field label="启动时打开" description="Steam 主窗口出现后自动展开播放器。" bottomSeparator="standard">
-        <Toggle value={settings.openOnStart} onChange={(openOnStart) => player.updateSettings({ openOnStart })} />
+        <Toggle
+          value={settings.openOnStart}
+          onChange={(openOnStart) => setSnapshot(player.updateSettings({ openOnStart }))}
+        />
       </Field>
       <Field
         label="收起后继续播放"
@@ -127,7 +145,7 @@ function SettingsContent() {
       >
         <Toggle
           value={settings.keepAliveWhenCollapsed}
-          onChange={(keepAliveWhenCollapsed) => player.updateSettings({ keepAliveWhenCollapsed })}
+          onChange={(keepAliveWhenCollapsed) => setSnapshot(player.updateSettings({ keepAliveWhenCollapsed }))}
         />
       </Field>
       <Field
@@ -137,7 +155,7 @@ function SettingsContent() {
       >
         <Toggle
           value={settings.disableBackgroundThrottling}
-          onChange={(disableBackgroundThrottling) => player.updateSettings({ disableBackgroundThrottling })}
+          onChange={(disableBackgroundThrottling) => setSnapshot(player.updateSettings({ disableBackgroundThrottling }))}
         />
       </Field>
       <Field label="系统媒体控制" description={snapshot.mprisStatus} bottomSeparator="none" />

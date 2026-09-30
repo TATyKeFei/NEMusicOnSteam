@@ -134,7 +134,6 @@ function chromeFixture() {
     onNavigateAway: () => {},
     onToolbarChange: () => { toolbarChanges += 1; },
     onCollapse: () => {},
-    onRecognize: () => {},
     onReload: () => {},
     onClose: () => {},
   });

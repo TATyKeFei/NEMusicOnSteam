@@ -11,7 +11,10 @@ local mpris_token = nil
 -- those stalls back to back. Count skipped polls instead of reading a clock: utils.time_ms()
 -- reports a negative value in this 32-bit Lua host, and an earlier deadline-based gate treated
 -- its 0 sentinel as still in the future, so mpris_endpoint returned "" forever and never retried.
-local RESPAWN_SKIP_POLLS = { 2, 4, 10, 30, 60, 120 }
+-- The first gap is 5s: a PyGObject cold boot often outlasts the 1s port wait below, and forking
+-- a second helper while the first is still starting leaves two processes racing for the D-Bus
+-- name — the loser keeps serving HTTP that MPRIS clients never see.
+local RESPAWN_SKIP_POLLS = { 10, 20, 40, 80, 120 }
 local respawn_failures = 0
 local respawn_skip = 0
 

@@ -37,7 +37,7 @@ export class RecognitionBridge {
       return;
     }
     if (this.timer || !/Linux/i.test(navigator.platform)) return;
-    this.timer = window.setInterval(() => void this.install(), 2000);
+    this.timer = window.setInterval((): void => void this.install(), 2000);
     void this.install();
   }
 

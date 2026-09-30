@@ -77,6 +77,7 @@ export class PlayerController {
   private throttleForced = false;
   private throttlingSupported: boolean | null = null;
   private lastBounds: Bounds | null = null;
+  private viewVisible = false;
   private lastThrottleAt = 0;
   private timer = 0;
   private resizeTarget: Window | null = null;
@@ -123,11 +124,12 @@ export class PlayerController {
     };
   }
 
-  updateSettings(patch: Partial<PlayerSettings>): PlayerSettings {
+  /** Returns the refreshed snapshot so callers can feed setState directly. */
+  updateSettings(patch: Partial<PlayerSettings>): PlayerSnapshot {
     this.settings = { ...this.settings, ...patch, launcher: patch.launcher ?? this.settings.launcher };
     writeSettings(browserStorage(), this.settings);
     this.syncView(true, this.render());
-    return this.snapshot().settings;
+    return this.snapshot();
   }
 
   setQuality(value: number): void {
@@ -136,11 +138,6 @@ export class PlayerController {
 
   downloadCurrentSong(): void {
     void this.download.download();
-  }
-
-  recognizeSong(): void {
-    this.open();
-    this.recognition.open();
   }
 
   open(): string {
@@ -249,7 +246,6 @@ export class PlayerController {
       },
       onToolbarChange: () => this.syncView(false, this.render()),
       onCollapse: () => this.collapse(),
-      onRecognize: () => this.recognizeSong(),
       onReload: () => this.reload(),
       onClose: () => this.close(),
     });
@@ -304,6 +300,7 @@ export class PlayerController {
     const view = this.view;
     if (view == null) return;
     this.lastBounds = null;
+    this.viewVisible = false;
     try {
       view.SetVisible(false);
       view.SetVisible(true);
@@ -338,6 +335,7 @@ export class PlayerController {
       console.warn("[NEMusic] initial view setup failed", error);
     }
     this.view = created;
+    this.viewVisible = false;
     this.mpris.setEnabled(true);
     this.recognition.setEnabled(true);
     this.quality.setEnabled(true);
@@ -406,6 +404,7 @@ export class PlayerController {
     this.mode = "closed";
     this.status = "播放器窗口被关掉了";
     this.forceThrottle(false);
+    this.viewVisible = false;
     this.render();
   };
 
@@ -431,6 +430,7 @@ export class PlayerController {
       if (this.mode === "collapsed" && this.view != null) {
         try {
           this.view.SetVisible(false);
+          this.viewVisible = false;
           this.view.SetFocus?.(false);
         } catch (error) {
           console.warn("[NEMusic] hide failed", error);
@@ -447,10 +447,15 @@ export class PlayerController {
   private applyBounds(bounds: Bounds, force: boolean): void {
     if (this.view == null) return;
     if (!force && sameBounds(this.lastBounds, bounds)) {
-      try {
-        this.view.SetVisible(true);
-      } catch (error) {
-        console.warn("[NEMusic] show failed", error);
+      // SetVisible goes through the client's BrowserView IPC; with the tick running several
+      // times a second, only send it when visibility actually has to flip.
+      if (!this.viewVisible) {
+        try {
+          this.view.SetVisible(true);
+          this.viewVisible = true;
+        } catch (error) {
+          console.warn("[NEMusic] show failed", error);
+        }
       }
       return;
     }
@@ -458,6 +463,7 @@ export class PlayerController {
       this.view.SetWindowStackingOrder?.(BROWSER_VIEW_STACK_TOP);
       this.view.SetBounds(bounds.x, bounds.y, bounds.width, bounds.height);
       this.view.SetVisible(true);
+      this.viewVisible = true;
       if (this.mode === "collapsed") this.view.SetFocus?.(false);
       this.lastBounds = bounds;
     } catch (error) {
@@ -515,6 +521,7 @@ export class PlayerController {
     this.client = null;
     this.loaded = false;
     this.lastBounds = null;
+    this.viewVisible = false;
     try {
       if (view == null) return;
       try {

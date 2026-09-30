@@ -22,7 +22,7 @@ export class QualityBridge {
     this.updating = false;
     if (enabled) {
       this.status = "正在读取网易云音质设置";
-      this.timer = window.setInterval(() => void this.tick(), 1500);
+      this.timer = window.setInterval((): void => void this.tick(), 1500);
       void this.tick();
     } else {
       window.clearInterval(this.timer);

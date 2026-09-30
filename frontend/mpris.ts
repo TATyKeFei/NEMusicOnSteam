@@ -75,6 +75,8 @@ export class MprisBridge {
   private lastLyricsTrackId = "";
   private settledLyricsTrackId = "";
   private lastLyricsAttemptAt = 0;
+  private lyricsBusy = false;
+  private fetchedLyrics: { trackId: string; text: string } | null = null;
   private lastSentLyrics: string | null = null;
   private lastSentState: string | null = null;
   private status = "尚未连接";
@@ -96,7 +98,7 @@ export class MprisBridge {
       this.status = "仅 Linux 支持 MPRIS";
       return;
     }
-    this.timer = window.setInterval(() => void this.tick(), 500);
+    this.timer = window.setInterval((): void => void this.tick(), 500);
     void this.tick();
   }
 
@@ -111,6 +113,7 @@ export class MprisBridge {
     this.token = null;
     this.lastSentLyrics = null;
     this.lastSentState = null;
+    this.fetchedLyrics = null;
     releasePlayerSession();
     if (endpoint && token) {
       try {
@@ -151,34 +154,47 @@ export class MprisBridge {
     });
   }
 
-  private async updateLyrics(snapshot: TrackState): Promise<void> {
+  // Lyrics are fetched out of band: LYRICS_SCRIPT awaits the page's own /api/song/lyric call
+  // (2s timeout), and awaiting that inside the tick stalled command handling and position
+  // updates for as long as the fetch took, on every track change. The tick stays synchronous
+  // with respect to lyrics; the fetch stores its result aside and the next tick publishes it.
+  private requestLyrics(snapshot: TrackState): void {
     const trackId = snapshot.trackId;
     if (!trackId) {
       this.lastLyricsTrackId = "";
       this.settledLyricsTrackId = "";
+      this.fetchedLyrics = null;
       snapshot.lyrics = "";
       return;
     }
-    const now = Date.now();
+    const fetched = this.fetchedLyrics?.trackId === trackId ? this.fetchedLyrics.text : "";
+    snapshot.lyrics = fetched || (this.state.trackId === trackId ? this.state.lyrics : "");
     const trackChanged = trackId !== this.lastLyricsTrackId;
     const settled = this.settledLyricsTrackId === trackId;
-    const retry = !settled && !this.state.lyrics && now - this.lastLyricsAttemptAt >= 1500;
-    if (!trackChanged && !retry) {
-      snapshot.lyrics = this.state.trackId === trackId ? this.state.lyrics : "";
-      return;
-    }
+    const retry = !settled && !fetched && Date.now() - this.lastLyricsAttemptAt >= 1500;
+    if ((!trackChanged && !retry) || this.lyricsBusy) return;
     this.lastLyricsTrackId = trackId;
-    this.lastLyricsAttemptAt = now;
-    let result: unknown = null;
+    this.lastLyricsAttemptAt = Date.now();
+    void this.fetchLyrics(trackId);
+  }
+
+  private async fetchLyrics(trackId: string): Promise<void> {
+    this.lyricsBusy = true;
     try {
-      result = await tryEvaluateInPlayer(LYRICS_SCRIPT, { awaitPromise: true });
-    } catch {
-      result = null;
+      let result: unknown = null;
+      try {
+        result = await tryEvaluateInPlayer(LYRICS_SCRIPT, { awaitPromise: true });
+      } catch {
+        result = null;
+      }
+      if (!this.timer) return;
+      const payload = result as { lyric?: unknown; resolved?: unknown } | null;
+      const lyrics = typeof payload?.lyric === "string" ? payload.lyric.trim() : "";
+      if (payload?.resolved === true) this.settledLyricsTrackId = trackId;
+      this.fetchedLyrics = lyrics ? { trackId, text: lyrics } : null;
+    } finally {
+      this.lyricsBusy = false;
     }
-    const payload = result as { lyric?: unknown; resolved?: unknown } | null;
-    const lyrics = typeof payload?.lyric === "string" ? payload.lyric.trim() : "";
-    if (payload?.resolved === true) this.settledLyricsTrackId = trackId;
-    snapshot.lyrics = lyrics || (this.state.trackId === trackId ? this.state.lyrics : "");
   }
 
   private async listenForCommands(): Promise<void> {
@@ -229,7 +245,7 @@ export class MprisBridge {
       const snapshot = this.enabled
         ? ((await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null) ?? EMPTY_STATE
         : EMPTY_STATE;
-      await this.updateLyrics(snapshot);
+      this.requestLyrics(snapshot);
       this.state = snapshot;
       if (!this.timer) return;
       const payload: Partial<TrackState> = { ...this.state };
