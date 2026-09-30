@@ -1,5 +1,5 @@
 import { ChromeDevToolsProtocol } from "millennium";
-import { isPlayerDocument } from "./constants.ts";
+import { isPlayerDocument } from "../constants.ts";
 
 export type EvaluateOptions = { userGesture?: boolean; awaitPromise?: boolean };
 

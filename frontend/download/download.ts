@@ -1,7 +1,7 @@
 import { ffi } from "millennium";
-import { evaluateInPlayer } from "./player-target.ts";
-import type { NotificationMode } from "./settings.ts";
-import { steamToast } from "./toast.ts";
+import { evaluateInPlayer } from "../player/player-target.ts";
+import type { NotificationMode } from "../settings.ts";
+import { steamToast } from "../widget/toast.ts";
 import { downloadScript, songFileName, type DownloadSong, type DownloadTrack } from "./download-player.ts";
 import { MENU_POLL_SCRIPT, MENU_TICK_SCRIPT, menuToastScript } from "./menu-player.ts";
 

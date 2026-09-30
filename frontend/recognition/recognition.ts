@@ -1,5 +1,5 @@
 import { ffi } from "millennium";
-import { evaluateInPlayer, PLAYER_TARGET_MISSING } from "./player-target.ts";
+import { evaluateInPlayer, PLAYER_TARGET_MISSING } from "../player/player-target.ts";
 import { recognitionScript, recognitionUpdateScript } from "./recognition-player.ts";
 
 const getEndpoint = ffi<[], string>("mpris_endpoint");

@@ -1,4 +1,4 @@
-import { DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download-player.ts";
+import { DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download/download-player.ts";
 
 export type LauncherPosition = { left: number; bottom: number } | { left: number; top: number };
 

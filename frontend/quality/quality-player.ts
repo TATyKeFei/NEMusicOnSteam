@@ -1,4 +1,4 @@
-import { PLAYER_ACCESS_SCRIPT, SNAPSHOT_SCRIPT } from "./mpris-player.ts";
+import { PLAYER_ACCESS_SCRIPT, SNAPSHOT_SCRIPT } from "../player/player-access.ts";
 
 export const QUALITY_OPTIONS = [
   { data: 128, label: "标准 · 128 kbps" },

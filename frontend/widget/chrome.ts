@@ -1,4 +1,4 @@
-import { ROOT_ID } from "./constants.ts";
+import { ROOT_ID } from "../constants.ts";
 import { headerHeightFromButtons, parkedBounds, type Bounds, type ButtonRect } from "./layout.ts";
 import { findSupernavRow, headerHeightFromNav, isHtmlElement, NAV_LINK_ID, NAV_MODE_ATTR, navTextItems, sharedClasses } from "./nav.ts";
 

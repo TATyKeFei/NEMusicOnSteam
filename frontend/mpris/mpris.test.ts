@@ -12,7 +12,7 @@ const source = stripTypeScriptTypes(
 // mpris.ts imports its CDP session from player-target.ts, and the harness strips imports,
 // so run the real module body alongside it instead of stubbing the session out.
 const targetSource = stripTypeScriptTypes(
-  readFileSync(new URL("./player-target.ts", import.meta.url), "utf8")
+  readFileSync(new URL("../player/player-target.ts", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "")
     .replace(/^export /gm, ""),
 );

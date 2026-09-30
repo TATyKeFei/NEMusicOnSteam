@@ -1,13 +1,13 @@
 import { findModule } from "millennium";
-import { PlayerChrome, type PlayerMode } from "./chrome.ts";
-import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "./constants.ts";
-import { DownloadBridge, type DownloadSnapshot } from "./download.ts";
-import { sameBounds, type Bounds } from "./layout.ts";
-import { MprisBridge } from "./mpris.ts";
+import { PlayerChrome, type PlayerMode } from "../widget/chrome.ts";
+import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "../constants.ts";
+import { DownloadBridge, type DownloadSnapshot } from "../download/download.ts";
+import { sameBounds, type Bounds } from "../widget/layout.ts";
+import { MprisBridge } from "../mpris/mpris.ts";
 import { releasePlayerSession } from "./player-target.ts";
-import { RecognitionBridge } from "./recognition.ts";
-import { QualityBridge, type QualitySnapshot } from "./quality.ts";
-import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "./settings.ts";
+import { RecognitionBridge } from "../recognition/recognition.ts";
+import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
+import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "../settings.ts";
 import { STEAM_PAGE_FALLBACK_CLASSES, steamPageTransition, steamPageVisible, type SteamPageSelectors } from "./steam-page.ts";
 import {
   BROWSER_VIEW_STACK_TOP,
@@ -20,7 +20,6 @@ import {
   type SteamPopup,
   type SteamWindow,
 } from "./steam.ts";
-
 const TICK_MS = 400;
 const THROTTLE_REFRESH_MS = 2000;
 const VIEW_NAME = "NEMusicOnSteam";

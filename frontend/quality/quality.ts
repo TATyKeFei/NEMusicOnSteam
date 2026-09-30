@@ -1,4 +1,4 @@
-import { evaluateInPlayer } from "./player-target.ts";
+import { evaluateInPlayer } from "../player/player-target.ts";
 import { QUALITY_OPTIONS, QUALITY_SNAPSHOT_SCRIPT, qualityCommandScript, type QualityState } from "./quality-player.ts";
 
 export type QualitySnapshot = QualityState & { updating: boolean; status: string };

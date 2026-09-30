@@ -5,7 +5,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "dev": "mkdir -p dist && starlight watch",
-    "test": "node --experimental-strip-types --test frontend/*.test.ts",
+    "test": "node --experimental-strip-types --test frontend/*.test.ts frontend/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "prepare": "starlight lsp"
   },

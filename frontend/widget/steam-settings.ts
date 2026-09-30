@@ -1,6 +1,6 @@
 import { findModule } from "millennium";
 import type { ReactNode } from "react";
-import { steamGlobals } from "./steam.ts";
+import { steamGlobals } from "../player/steam.ts";
 
 type MountedPage = { dialog: HTMLElement; button: HTMLButtonElement; dispose: () => void };
 

@@ -264,6 +264,8 @@ dbus-send --session --dest=org.mpris.MediaPlayer2.NEMusicOnSteam --type=method_c
 
 # 构建
 
+> 需要 Nodejs 22及以上 版本
+
 ```bash
 npm install
 npm test

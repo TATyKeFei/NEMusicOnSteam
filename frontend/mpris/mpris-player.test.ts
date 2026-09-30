@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
-import { commandScript, LYRICS_SCRIPT, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
+import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
+import { commandScript, LYRICS_SCRIPT, type Command } from "./mpris-player.ts";
 
 function playerFixture() {
   const state = {

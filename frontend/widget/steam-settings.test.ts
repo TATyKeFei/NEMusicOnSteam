@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
 
-const luaSource = readFileSync(new URL("../backend/main.lua", import.meta.url), "utf8");
+const luaSource = readFileSync(new URL("../../backend/main.lua", import.meta.url), "utf8");
 const patch = luaSource.match(/find = \[\[(return Ga.*?)\]\],[\s\S]*?replace = \[=\[([\s\S]*?)\]=\]/);
 const settingsList = `function settingsPages(){return a.useMemo(()=>{const Ga=[];for(let oo=0;oo<Kr.length;oo++){const qa=Kr[oo];if(qa===l.I0)oo!==0&&oo!==Kr.length-1&&Kr[oo+1]!==l.I0&&Ga.push(l.I0);else{const Or=Ua[qa];Or&&Or&&Or.visible&&Ga.push(Or)}}return Ga},[Kr,Ua])}`;
 

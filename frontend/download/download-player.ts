@@ -1,4 +1,4 @@
-import { PLAYER_ACCESS_SCRIPT } from "./mpris-player.ts";
+import { PLAYER_ACCESS_SCRIPT } from "../player/player-access.ts";
 
 const DOWNLOAD_LEVELS: Record<number, string> = {
   128: "standard",

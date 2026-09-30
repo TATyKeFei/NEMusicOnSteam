@@ -1,8 +1,9 @@
 import { ffi } from "millennium";
-import { releasePlayerSession, tryEvaluateInPlayer } from "./player-target.ts";
-import type { NotificationMode } from "./settings.ts";
-import { steamToast } from "./toast.ts";
-import { commandScript, LYRICS_SCRIPT, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
+import { releasePlayerSession, tryEvaluateInPlayer } from "../player/player-target.ts";
+import type { NotificationMode } from "../settings.ts";
+import { steamToast } from "../widget/toast.ts";
+import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
+import { commandScript, LYRICS_SCRIPT, type Command } from "./mpris-player.ts";
 
 type TrackState = {
   active: boolean;

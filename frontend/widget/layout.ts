@@ -1,4 +1,4 @@
-import { CONTROL_BAR_HEIGHT, DEFAULT_HEADER_HEIGHT, PARKED_SIZE } from "./constants.ts";
+import { CONTROL_BAR_HEIGHT, DEFAULT_HEADER_HEIGHT, PARKED_SIZE } from "../constants.ts";
 
 export type Bounds = {
   x: number;

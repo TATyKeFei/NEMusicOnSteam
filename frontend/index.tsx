@@ -1,9 +1,9 @@
 import { definePlugin, DialogButton, Dropdown, Field, TextField, Toggle } from "millennium";
 import { useEffect, useState, type ReactElement } from "react";
-import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player.ts";
-import { QUALITY_OPTIONS, qualityLabel } from "./quality-player.ts";
+import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player/player.ts";
+import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
 import type { NotificationMode } from "./settings.ts";
-import { SteamSettingsEntry } from "./steam-settings.ts";
+import { SteamSettingsEntry } from "./widget/steam-settings.ts";
 
 const steamSettings = new SteamSettingsEntry(() => <SettingsContent />);
 

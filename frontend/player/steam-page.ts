@@ -1,4 +1,4 @@
-import type { PlayerMode } from "./chrome.ts";
+import type { PlayerMode } from "../widget/chrome.ts";
 
 export type SteamPageSelectors = {
   main: string | null;
