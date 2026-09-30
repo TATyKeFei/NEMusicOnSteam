@@ -1,5 +1,7 @@
 import { ffi } from "millennium";
 import { releasePlayerSession, tryEvaluateInPlayer } from "./player-target.ts";
+import type { NotificationMode } from "./settings.ts";
+import { steamToast } from "./toast.ts";
 import { commandScript, LYRICS_SCRIPT, SNAPSHOT_SCRIPT, type Command } from "./mpris-player.ts";
 
 type TrackState = {
@@ -79,6 +81,7 @@ export class MprisBridge {
   private fetchedLyrics: { trackId: string; text: string } | null = null;
   private lastSentLyrics: string | null = null;
   private lastSentState: string | null = null;
+  private lastToastedTrack = "";
   private status = "尚未连接";
   private commandError = "";
   private commandRequest: AbortController | null = null;
@@ -86,10 +89,12 @@ export class MprisBridge {
 
   private readonly open: () => void;
   private readonly close: () => void;
+  private readonly notifyMode: () => NotificationMode;
 
-  constructor(open: () => void, close: () => void) {
+  constructor(open: () => void, close: () => void, notifyMode: () => NotificationMode = () => "system") {
     this.open = open;
     this.close = close;
+    this.notifyMode = notifyMode;
   }
 
   start(): void {
@@ -114,6 +119,7 @@ export class MprisBridge {
     this.lastSentLyrics = null;
     this.lastSentState = null;
     this.fetchedLyrics = null;
+    this.lastToastedTrack = "";
     releasePlayerSession();
     if (endpoint && token) {
       try {
@@ -226,18 +232,20 @@ export class MprisBridge {
     if (this.busy || !this.timer) return;
     this.busy = true;
     try {
-      if (!(await this.connect())) return;
+      const connected = await this.connect();
       if (!this.timer) return;
-      void this.listenForCommands();
-      while (this.pendingCommands.length) {
-        const command = this.pendingCommands.shift()!;
-        if (command.action === "open") this.open();
-        else if (command.action === "close") this.close();
-        else {
-          const handled = await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true });
-          if (["volume", "seek", "setposition"].includes(command.action)) {
-            this.commandError = handled ? "" : `MPRIS ${command.action} 未执行；未找到可用的网易云播放器状态`;
-            if (!handled) console.warn("[NEMusic] MPRIS command not handled", command.action);
+      if (connected) {
+        void this.listenForCommands();
+        while (this.pendingCommands.length) {
+          const command = this.pendingCommands.shift()!;
+          if (command.action === "open") this.open();
+          else if (command.action === "close") this.close();
+          else {
+            const handled = await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true });
+            if (["volume", "seek", "setposition"].includes(command.action)) {
+              this.commandError = handled ? "" : `MPRIS ${command.action} 未执行；未找到可用的网易云播放器状态`;
+              if (!handled) console.warn("[NEMusic] MPRIS command not handled", command.action);
+            }
           }
         }
       }
@@ -248,7 +256,9 @@ export class MprisBridge {
       this.requestLyrics(snapshot);
       this.state = snapshot;
       if (!this.timer) return;
-      const payload: Partial<TrackState> = { ...this.state };
+      this.maybeToastTrack(snapshot);
+      if (!connected) return;
+      const payload: Partial<TrackState> & { notify: NotificationMode } = { ...this.state, notify: this.notifyMode() };
       if (this.lastSentLyrics === this.state.lyrics) delete payload.lyrics;
       // An install with no player open reports the same stopped state forever; posting it twice a
       // second only keeps an upload and its response body alive in the Steam UI renderer.
@@ -272,5 +282,16 @@ export class MprisBridge {
       this.busy = false;
       if (this.pendingCommands.length && this.timer && this.endpoint) void this.tick();
     }
+  }
+
+  // Steam toasts are raised here so they work even when the Python helper is unavailable;
+  // the helper keeps raising desktop notifications on its own for the "system" mode.
+  private maybeToastTrack(state: TrackState): void {
+    if (this.notifyMode() !== "steam") return;
+    if (!state.active || state.playbackStatus !== "Playing" || !state.title) return;
+    const track = [state.trackId, state.title, state.artist].join("\u0000");
+    if (track === this.lastToastedTrack) return;
+    this.lastToastedTrack = track;
+    steamToast(state.title, state.artist, /^https?:/.test(state.artUrl) ? state.artUrl : undefined);
   }
 }

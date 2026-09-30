@@ -54,12 +54,13 @@ export type PlayerSnapshot = {
 
 export class PlayerController {
   private readonly chrome = new PlayerChrome();
-  private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); });
+  private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); }, () => this.settings.notificationMode);
   private readonly recognition = new RecognitionBridge();
   private readonly quality = new QualityBridge();
   private readonly download = new DownloadBridge(() => ({
     quality: this.settings.downloadQuality,
     directory: this.settings.downloadDirectory,
+    notificationMode: this.settings.notificationMode,
   }));
   private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
   private steamPageShown: boolean | null = null;

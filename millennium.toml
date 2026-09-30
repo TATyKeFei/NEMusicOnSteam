@@ -1,7 +1,7 @@
 [plugin]
 id = "icu.tatyrealms.nemos"
 name = "NEMusicOnSteam | 蒸汽云音乐"
-version = "0.1.2"
+version = "0.1.3"
 author = "TATyKeFei"
 description = "把网易云官方网页播放器嵌进 Steam 里，并实现一些Web版没有的功能"
 

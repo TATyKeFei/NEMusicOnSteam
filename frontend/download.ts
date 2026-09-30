@@ -1,5 +1,7 @@
 import { ffi } from "millennium";
 import { evaluateInPlayer } from "./player-target.ts";
+import type { NotificationMode } from "./settings.ts";
+import { steamToast } from "./toast.ts";
 import { downloadScript, songFileName, type DownloadSong, type DownloadTrack } from "./download-player.ts";
 import { MENU_POLL_SCRIPT, MENU_TICK_SCRIPT, menuToastScript } from "./menu-player.ts";
 
@@ -30,7 +32,7 @@ export type DownloadSnapshot = {
   progress: DownloadProgress | null;
 };
 
-export type DownloadOptions = { quality: number; directory: string };
+export type DownloadOptions = { quality: number; directory: string; notificationMode: NotificationMode };
 
 const POLL_MS = 800;
 const MENU_TICK_MS = 1000;
@@ -154,12 +156,18 @@ export class DownloadBridge {
         }
         this.progress = null;
         this.status = job.path ? `已保存到 ${job.path}` : "下载已结束但没有生成文件";
+        if (this.options().notificationMode === "steam") {
+          steamToast("下载完成", job.path || this.status);
+        }
         return;
       }
     } catch (error) {
       if (generation === this.generation) {
         this.status = message(error);
         this.toast(this.status);
+        if (this.options().notificationMode === "steam") {
+          steamToast("下载失败", this.status);
+        }
       }
     } finally {
       if (generation === this.generation) this.busy = false;

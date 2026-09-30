@@ -2,6 +2,8 @@ import { DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download-player.t
 
 export type LauncherPosition = { left: number; bottom: number } | { left: number; top: number };
 
+export type NotificationMode = "system" | "steam" | "none";
+
 export type PlayerSettings = {
   openOnStart: boolean;
   keepAliveWhenCollapsed: boolean;
@@ -9,6 +11,7 @@ export type PlayerSettings = {
   launcher: LauncherPosition;
   downloadDirectory: string;
   downloadQuality: number;
+  notificationMode: NotificationMode;
 };
 
 export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
@@ -20,6 +23,7 @@ export const defaultSettings: PlayerSettings = {
   launcher: { left: 16, bottom: 16 },
   downloadDirectory: "",
   downloadQuality: DEFAULT_DOWNLOAD_QUALITY,
+  notificationMode: "system",
 };
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -34,6 +38,10 @@ function booleanOr(value: unknown, fallback: boolean): boolean {
 
 function directoryOr(value: unknown, fallback: string): string {
   return typeof value === "string" ? value.trim().slice(0, 4096) : fallback;
+}
+
+function notificationModeOr(value: unknown, fallback: NotificationMode): NotificationMode {
+  return value === "system" || value === "steam" || value === "none" ? value : fallback;
 }
 
 export function sanitizeLauncher(value: unknown): LauncherPosition {
@@ -54,6 +62,7 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     launcher: sanitizeLauncher(record.launcher),
     downloadDirectory: directoryOr(record.downloadDirectory, defaultSettings.downloadDirectory),
     downloadQuality: isDownloadQuality(record.downloadQuality) ? record.downloadQuality : defaultSettings.downloadQuality,
+    notificationMode: notificationModeOr(record.notificationMode, defaultSettings.notificationMode),
   };
 }
 

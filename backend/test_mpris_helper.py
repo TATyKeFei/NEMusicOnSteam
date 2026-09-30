@@ -33,6 +33,7 @@ class ServiceTestCase(unittest.TestCase):
         self.service.token = "test-token"
         self.service.commands = []
         self.service.recognition = helper.RecognitionService()
+        self.service.notify_mode = "system"
         self.service.state = {"volume": 0.42}
         self.service.position_anchor = None
         self.service.reanchor_position_until = 0.0

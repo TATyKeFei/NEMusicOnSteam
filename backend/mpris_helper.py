@@ -181,6 +181,7 @@ class MprisService:
         self.commands = []
         self.download = None
         self.recognition = RecognitionService()
+        self.notify_mode = "system"
         self.last_seen = time.monotonic()
         self.notification_serial = 0
         self.last_notified_track = None
@@ -331,6 +332,10 @@ class MprisService:
                     incoming = state
                     state = dict(previous)
                     state.update(incoming)
+                    # The frontend picks the notification channel; "steam"/"none" must not
+                    # double up with the desktop notifications raised here.
+                    if incoming.get("notify") in ("system", "steam", "none"):
+                        service.notify_mode = incoming["notify"]
                     if incoming.get("volume") is None:
                         state["volume"] = previous.get("volume")
                     now = time.monotonic()
@@ -339,7 +344,7 @@ class MprisService:
                     service.last_seen = now
                     if seeked:
                         GLib.idle_add(service.emit_seeked, int(state["position"] * 1000000))
-                    if state.get("active") and state.get("playbackStatus") == "Playing" and state.get("title"):
+                    if service.notify_mode == "system" and state.get("active") and state.get("playbackStatus") == "Playing" and state.get("title"):
                         track = (state.get("trackId"), state.get("title"), state.get("artist"))
                         if track != service.last_notified_track:
                             service.last_notified_track = track
@@ -647,7 +652,9 @@ class MprisService:
                     job["filename"] = os.path.basename(path)
                     job["path"] = path
                     job["total"] = received
-                GLib.idle_add(self.send_notification, "下载完成", f"{os.path.basename(path)} 已保存到 {os.path.dirname(path)}", "folder-download")
+                    notify_system = self.notify_mode == "system"
+                if notify_system:
+                    GLib.idle_add(self.send_notification, "下载完成", f"{os.path.basename(path)} 已保存到 {os.path.dirname(path)}", "folder-download")
         except (OSError, ValueError, HTTPException) as error:
             if path is not None:
                 try:
@@ -657,7 +664,9 @@ class MprisService:
             failure = str(error) or error.__class__.__name__
             with self.lock:
                 job["error"] = failure
-            GLib.idle_add(self.send_notification, "下载失败", failure, "dialog-error")
+                notify_system = self.notify_mode == "system"
+            if notify_system:
+                GLib.idle_add(self.send_notification, "下载失败", failure, "dialog-error")
         finally:
             with self.lock:
                 job["active"] = False

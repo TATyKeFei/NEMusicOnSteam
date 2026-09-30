@@ -2,9 +2,16 @@ import { definePlugin, DialogButton, Dropdown, Field, TextField, Toggle } from "
 import { useEffect, useState, type ReactElement } from "react";
 import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality-player.ts";
+import type { NotificationMode } from "./settings.ts";
 import { SteamSettingsEntry } from "./steam-settings.ts";
 
 const steamSettings = new SteamSettingsEntry(() => <SettingsContent />);
+
+const NOTIFICATION_OPTIONS = [
+  { data: "system", label: "系统通知" },
+  { data: "steam", label: "Steam 弹窗" },
+  { data: "none", label: "无" },
+];
 
 function NoteIcon() {
   return (
@@ -151,11 +158,24 @@ function SettingsContent() {
       <Field
         label="最小化后继续跑页面"
         description={`反复调用 Steam 语音通话用的 SetBackgroundThrottlingDisabled。${throttling}。窗口整个最小化之后仍不保证切歌，这是 CEF 的限制`}
-        bottomSeparator="none"
+        bottomSeparator="standard"
       >
         <Toggle
           value={settings.disableBackgroundThrottling}
           onChange={(disableBackgroundThrottling) => setSnapshot(player.updateSettings({ disableBackgroundThrottling }))}
+        />
+      </Field>
+      <Field
+        label="通知方式"
+        description="切歌和下载完成时如何提醒。系统通知走桌面通知（Linux 需要 Python 辅助进程），Steam 弹窗用右下角的 Steam 通知样式"
+        bottomSeparator="standard"
+      >
+        <Dropdown
+          rgOptions={NOTIFICATION_OPTIONS}
+          selectedOption={settings.notificationMode}
+          onChange={option => {
+            setSnapshot(player.updateSettings({ notificationMode: option.data as NotificationMode }));
+          }}
         />
       </Field>
       <Field label="系统媒体控制" description={snapshot.mprisStatus} bottomSeparator="none" />
