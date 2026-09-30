@@ -12,12 +12,11 @@
 
 # 声明
 
-- 不确保能一直使用，可能因为Steam更新、网易云音乐Web版下架等不可预因素停止更新某个功能
+- 不确保能一直使用，可能因为Steam更新、网易云音乐Web版下架、某个功能停用等不可预因素停止更新某个功能
 - 非任何官方插件! 本项目与网易、Valve 都没关系。我要有关系我还在这写这个sb项目早躺平了
 - 登录态在 Steam 自带的浏览器里，和系统其他浏览器不共享
 - 不会窃取任何数据，程序就开源在这了，不放心就自己构建插件
-- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的
-- 我不是xnn
+- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的（声明：我虽然用Arch + rust但我不是那种xnnLGBT，我只是爱好者别给我扣帽子）
 
 # 支持
 
@@ -26,9 +25,9 @@
 | 系统    | 可用性                 | 备注及注意事项       |
 | :---    | :---                   | :---                 |
 | Linux   | 支持                   | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不爆改应该都支持                       |
-| Windows | 残废，只能听歌         | 本项目依赖MPRIS实现大部分功能，由于Windows没有MPRIS且我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份  |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
 | Mac OS  | 不支持                 | 我是穷鬼安卓人没钱买苹果测试，不过Millennium好像也没支持MacOS                          |
+| Windows | 残废，只能听歌         | 本项目依赖MPRIS实现大部分功能，由于Windows没有MPRIS且我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份  |
 
 # 特色功能
 
@@ -42,8 +41,8 @@
 | 后台播放   | 支持  | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
 | 下载歌曲   | 支持           | 列表里的歌曲更多菜单里新增了“下载”按钮，在**Steam → 设置 → 网易云音乐**里可以选下载音质和目录，默认路径 `~/Music/网易云音乐` |
 | 听歌识曲   | 仅 Linux 支持  | 支持桌面音频、麦克风输入录制                     |
-| 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#歌词](#歌词)       |
-| 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#全局快捷键](#全局快捷键)       |
+| 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#歌词](#歌词)            |
+| 全局快捷键 | 利用媒体键     | 依赖 MPRIS 连接，做法见[#全局快捷键](#全局快捷键)       |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | API 接口   | 后续支持       |        |
 
@@ -52,14 +51,6 @@
 | 内容       | 支持状况                                              | 备注   |
 | :--- | :--- | :--- |
 | 状态显示当前歌曲 | 不支持   | 目前没有稳定良好的思路方法实现，而且会骚扰好友   |
-
-## 听歌识曲
-
-在顶部“网易云音乐”的悬浮菜单中点击“听歌识曲”，或使用 **Steam → 设置 → 网易云音乐 → 听歌识曲**。选择“系统声音”可以识别游戏、视频等默认输出设备正在播放的音乐；选择“麦克风”则使用系统默认输入设备。点击开始后采集约 6 秒，支持取消，识别结果可以打开网易云歌曲页面。
-
-需要运行中的 PulseAudio 或 PipeWire 的 PulseAudio 兼容服务，以及 `parec`（Debian/Ubuntu 的 `pulseaudio-utils`、Arch 的 `libpulse`）；也可使用支持 PulseAudio 输入的 `ffmpeg`。设备选择跟随系统默认输入／输出，使用系统声音时建议暂停网易云自身播放，避免混音影响识别。
-
-首次使用会从 GitHub 下载固定版本且校验 SHA-256 的音频指纹引擎，缓存在辅助进程内存中；需要能够访问 `raw.githubusercontent.com` 和网易云识曲接口。实现参考 [NeteaseCloudMusicApiEnhanced 的 audio_match_demo](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced/tree/a8c781fd64faab17fedfd46e0615a2609307f163/public/audio_match_demo)。录音仅在本机内存中处理，不写录音文件；只向网易云发送音频指纹。识别成功率和可用性取决于音源及网易云接口，不保证哼唱识别。
 
 # 预览
 
@@ -185,6 +176,20 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 
 进度跳转和音量控制通过网页现有的 Redux 播放器动作执行，音量读取播放器确认后的状态，关闭音量浮层也能操作。可以用 `playerctl -p NEMusicOnSteam position 60` 跳到第 60 秒，用 `playerctl -p NEMusicOnSteam volume 0.3` 调到 30%，再用 `playerctl -p NEMusicOnSteam volume` 查看回报。如果网页改版后无法找到播放器状态，插件设置页和 Steam 控制台会报告命令未执行
 
+## 听歌识曲
+
+> - 需要运行中的 PulseAudio 或 PipeWire 的 PulseAudio 兼容服务。Arch 的 `libpulse`，以及 `parec`（Debian/Ubuntu 的 `pulseaudio-utils`）
+> - 也可使用支持 PulseAudio 输入的 `ffmpeg`。设备选择跟随系统默认输入／输出
+> - 使用系统声音时建议暂停网易云自身播放，避免混音影响识别
+
+首次使用会从 GitHub 下载固定版本且校验 SHA-256 的音频指纹引擎，缓存在辅助进程内存中
+
+需要能够访问 `raw.githubusercontent.com` 和网易云识曲接口。实现参考 [NeteaseCloudMusicApiEnhanced 的 audio_match_demo](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced/tree/a8c781fd64faab17fedfd46e0615a2609307f163/public/audio_match_demo)
+
+录音仅在本机内存中处理，不存录音文件，只向网易云发送音频指纹
+
+识别成功率和可用性取决于音源及网易云会不会意淫，不保证哼唱识别。只要你别故意测试想看看会返回什么歌，一般都会识别正确
+
 ## 歌词
 
 依赖 MPRIS 且仅 Linux，可以使用支持 MPRIS 的工具例如KDE小部件或其他软件
@@ -209,7 +214,11 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 
 ## 全局快捷键
 
-依赖 MPRIS 且仅 Linux，插件不自己抢键盘（Wayland 本来也不允许），利用了 MPIRS + 媒体控制器
+依赖 MPRIS 且仅 Linux，插件不抢键盘（Wayland 本来也不允许），利用了 MPIRS + 媒体控制器
+
+这是代码量最少、不抢键盘、易维护、最原生、最通用、性能最好的方案，不用考虑桌面环境和 Wayland 以及 x11 的问题
+
+代价只是没法切心动模式和给歌点小心心无痛不痒
 
 <p align="center">
   <img src=".docs/p5.png" width="800">
@@ -246,14 +255,12 @@ Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统�
 
 键盘上那些多媒体键（播放/暂停/上一首/下一首）多数桌面会自动接管 MPRIS 客户端，通常不用自己绑；只有自定义组合键才需要上面这套。
 
-不想装 `playerctl` 也能用，直接走 D-Bus 一样，就是把 `PlayPause` 换成 `Next`、`Previous`：
+不想装 `playerctl` 也能用，直接走 D-Bus 一样。就是打得字要贼多，人类难阅读。把 `PlayPause` 换成 `Next`、`Previous`：
 
 ```bash
 dbus-send --session --dest=org.mpris.MediaPlayer2.NEMusicOnSteam --type=method_call \
   /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause
 ```
-
-Steam 没开着的时候按了没反应是正常的，辅助进程跟着 Steam 一起退出
 
 # 构建
 
@@ -312,15 +319,16 @@ cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 | Millennium | [Github仓库](https://github.com/SteamClientHomebrew/Millennium)  | 用于加载本插件                                      |
 | MusicFox   | [Github仓库](https://github.com/go-musicfox/go-musicfox)         | 好用的网易云终端工具，本项目的MPIRS功能参考了此项目 |
 | open orpheus | [Github仓库](https://github.com/YUCLing/open-orpheus)          | 能让Linux运行网易云客户端，听歌识曲功能参考了此项目 |
+| NeteaseCloudMusicApiEnhanced | [Github仓库](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | 听歌识曲api接口功能用了他 |
 
 # 为什么有网易云客户端还要去写这个？
 
 如果你去网易云音乐官网下载页面点击Linux下载，你会发现tm居然直接跳转到Web版？
 
-那么多个客户端版本就是不给Linux适配，我天天用Muxicfox按错快捷键有点烦
+那么多个客户端版本就是不给Linux适配，我天天用Muxicfox按错快捷键没有都不知道有点烦
 
 然后我看到我Steam天天在后台没啥用，想到他能装插件于是就萌生了这种想法让Linux用上网易云
 
-反正Stean天天在后台吃内存也是吃白饭，不用白不用。哦对了v社啥时候才支持wayland，2027年了哥
+结果搭配 MPRIS 我体验下来确实不错，没想到Web版音质也这么好
 
-结果我体验下来确实不错，没想到Web版音质也这么好
+反正Stean天天在后台吃内存也是吃白饭，不用白不用。哦对了v社啥时候才支持wayland，2027年了哥
