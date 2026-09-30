@@ -9,11 +9,12 @@ function playerFixture() {
       playingVolume: 0.42,
       resourceDuration: 240,
       resourceTrackId: "track-1",
+      playingMode: "playOrder",
       freeTrialInfo: null as { start: number; end: number } | null,
     },
   };
   const media = { volume: 1, currentTime: 30, duration: 240, paused: false, readyState: 4 };
-  const commands: { type: string; payload: { volume?: number; duration?: number } }[] = [];
+  const commands: { type: string; payload: { volume?: number; duration?: number; playingMode?: string } }[] = [];
   let confirmVolume: (() => void) | null = null;
   const store = {
     getState: () => state,
@@ -23,6 +24,8 @@ function playerFixture() {
         confirmVolume = () => { state.playing.playingVolume = action.payload.volume!; };
       } else if (action.type === "playing/setPlayingPosition") {
         media.currentTime = action.payload.duration!;
+      } else if (action.type === "playing/switchPlayingMode") {
+        state.playing.playingMode = action.payload.playingMode!;
       }
     },
   };
@@ -177,6 +180,41 @@ describe("NetEase MPRIS player control", () => {
     assert.equal(await player.command({ action: "previous" }), false);
     assert.equal(next.clicks, 1);
     assert.equal(previous.clicks, 0);
+  });
+
+  it("reports loop and shuffle from the playing mode the store holds", () => {
+    const player = playerFixture();
+    assert.equal(player.snapshot().loopStatus, "None");
+    assert.equal(player.snapshot().shuffle, false);
+    player.state.playing.playingMode = "playRandom";
+    assert.equal(player.snapshot().shuffle, true);
+    player.state.playing.playingMode = "playOneCycle";
+    assert.equal(player.snapshot().loopStatus, "Track");
+    assert.equal(player.snapshot().shuffle, false);
+    player.state.playing.playingMode = "playCycle";
+    assert.equal(player.snapshot().loopStatus, "Playlist");
+  });
+
+  it("switches the playing mode through the store instead of toggling a button", async () => {
+    const player = playerFixture();
+    assert.equal(await player.command({ action: "shuffle", value: true }), true);
+    assert.deepEqual(JSON.parse(JSON.stringify(player.commands.at(-1))), {
+      type: "playing/switchPlayingMode",
+      payload: { playingMode: "playRandom", triggerScene: "miniBar", HeartBeatFlage: false },
+    });
+    assert.equal(player.snapshot().shuffle, true);
+    assert.equal(await player.command({ action: "loop", value: "Track" }), true);
+    assert.equal(player.snapshot().loopStatus, "Track");
+    assert.equal(await player.command({ action: "loop", value: "None" }), true);
+    assert.equal(player.snapshot().loopStatus, "None");
+  });
+
+  it("leaves a loop mode alone when a client only clears shuffle", async () => {
+    const player = playerFixture();
+    player.state.playing.playingMode = "playOneCycle";
+    assert.equal(await player.command({ action: "shuffle", value: false }), true);
+    assert.equal(player.snapshot().loopStatus, "Track");
+    assert.equal(player.snapshot().shuffle, false);
   });
 
   it("waits for the application's command and rejects invalid values", async () => {    const player = playerFixture();

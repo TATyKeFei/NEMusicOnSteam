@@ -1,4 +1,4 @@
-export type Command = { action: string; value?: number };
+export type Command = { action: string; value?: number | string | boolean };
 
 export const PLAYER_ACCESS_SCRIPT = `
   const findPlayerStore = () => {
@@ -51,6 +51,25 @@ export const PLAYER_ACCESS_SCRIPT = `
       await playerStore.dispatch({ type: 'playing/setPlayingPosition', payload: { duration: target - trialStart } });
       return true;
     },
+  };
+  // playingMode is a string enum: playOrder, playRandom, playOneCycle, playCycle, playAi, playFm.
+  // Loop and shuffle are not separate switches in this player, so they all map onto that one value.
+  const MODE_ORDER = 'playOrder';
+  const MODE_RANDOM = 'playRandom';
+  const MODE_SINGLE = 'playOneCycle';
+  const MODE_CYCLE = 'playCycle';
+  const currentMode = () => playerStore?.getState()?.playing?.playingMode || '';
+  // The mode button only cycles, so switch modes through the action the application itself
+  // dispatches, then wait for the store to confirm rather than trusting the request.
+  const setPlayingMode = async mode => {
+    if (!playerStore || !mode) return false;
+    if (currentMode() === mode) return true;
+    playerStore.dispatch({ type: 'playing/switchPlayingMode', payload: { playingMode: mode, triggerScene: 'miniBar', HeartBeatFlage: false } });
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (currentMode() === mode) return true;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return false;
   };
 `;
 
@@ -127,10 +146,9 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const duration = playing?.resourceDuration || progress?.max || pageDuration || mediaDuration;
   const mediaPosition = Number.isFinite(media?.currentTime) && (media?.readyState || 0) > 0 ? media.currentTime : null;
   const position = mediaPosition !== null ? Math.max(0, Math.min(duration, mediaPosition)) : progress?.max ? Math.max(0, Math.min(duration, progress.value)) : pagePosition;
-  const controls = Array.from(document.querySelectorAll('.m-playbar button, .m-playbar a, .m-playbar [role="button"]')).map(element => [element.getAttribute('aria-label'), element.getAttribute('title'), element.getAttribute('data-testid'), element.className].filter(value => typeof value === 'string').join(' ').toLowerCase());
-  const controlText = controls.join(' ');
-  const loopStatus = /单曲循环|single.?loop|one.?song/.test(controlText) ? 'Track' : /列表循环|list.?loop|repeat/.test(controlText) ? 'Playlist' : 'None';
-  const shuffle = /随机播放|shuffle/.test(controlText);
+  const mode = currentMode();
+  const loopStatus = mode === MODE_SINGLE ? 'Track' : mode === MODE_CYCLE ? 'Playlist' : 'None';
+  const shuffle = mode === MODE_RANDOM;
   const rate = Number(media?.playbackRate) > 0 ? Number(media.playbackRate) : 1;
   const volumeSlider = slider('音量调节');
   const volumeState = sliderValue(sliderHandle('音量调节')) || sliderValue(volumeSlider);
@@ -285,8 +303,18 @@ export function commandScript(command: Command): string {
       case 'previous': return clickControl(PREV_LABELS) || clickSelector('#btn_pc_previous');
       case 'volume': return Number.isFinite(command.value) && playerControl.volume(command.value);
       case 'rate': if (media && Number.isFinite(command.value) && command.value > 0) { media.playbackRate = command.value; return true; } return false;
-      case 'shuffle': return click(['随机播放', 'shuffle']);
-      case 'loop': return click(['循环', 'repeat', 'loop']);
+      case 'shuffle': {
+        // Clearing shuffle must not undo a loop the client asked for earlier.
+        if (command.value !== true && currentMode() !== MODE_RANDOM) return true;
+        return setPlayingMode(command.value === true ? MODE_RANDOM : MODE_ORDER);
+      }
+      case 'loop': {
+        const target = command.value === 'Track' ? MODE_SINGLE : command.value === 'Playlist' ? MODE_CYCLE : command.value === 'None' ? MODE_ORDER : null;
+        if (!target) return false;
+        // LoopStatus None only clears a loop mode; order and random playback are already unlooped.
+        if (target === MODE_ORDER && currentMode() !== MODE_SINGLE && currentMode() !== MODE_CYCLE) return true;
+        return setPlayingMode(target);
+      }
       case 'seek': return Number.isFinite(command.value) && playerControl.seek(currentPosition + command.value / 1000000);
       case 'setposition': return Number.isFinite(command.value) && playerControl.seek(command.value / 1000000);
     }
