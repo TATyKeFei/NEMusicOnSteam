@@ -128,6 +128,151 @@ def open_unique(directory, base, extension):
     raise ValueError("同名文件过多")
 
 
+COVER_MIME = {".jpg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp"}
+
+
+def fetch_cover(url):
+    """Downloads album art for embedding; returns (bytes, mime) or None. Never fatal."""
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    try:
+        validate_download_url(url)
+        request = Request(url, headers={"User-Agent": "NEMusicOnSteam", "Referer": "https://music.163.com/"})
+        with urlopen(request, timeout=10) as response:
+            content = response.read(4 * 1024 * 1024 + 1)
+    except (OSError, ValueError, HTTPException) as error:
+        print(f"[NEMusic] Cover download skipped: {error}", file=sys.stderr, flush=True)
+        return None
+    if len(content) > 4 * 1024 * 1024:
+        return None
+    extension = cover_extension(content)
+    if extension is None:
+        return None
+    return content, COVER_MIME[extension]
+
+
+def _synchsafe(value):
+    return bytes(((value >> 21) & 0x7F, (value >> 14) & 0x7F, (value >> 7) & 0x7F, value & 0x7F))
+
+
+def _id3_text(value):
+    # v2.3 text frames: encoding 0x01 = UTF-16 with a BOM, NUL-terminated.
+    return b"\x01\xff\xfe" + value.encode("utf-16-le") + b"\x00\x00"
+
+
+def _id3_frame(frame_id, payload):
+    return frame_id.encode("ascii") + len(payload).to_bytes(4, "big") + b"\x00\x00" + payload
+
+
+def build_id3_tag(title, artist, album, cover):
+    frames = []
+    if title:
+        frames.append(_id3_frame("TIT2", _id3_text(title)))
+    if artist:
+        frames.append(_id3_frame("TPE1", _id3_text(artist)))
+    if album:
+        frames.append(_id3_frame("TALB", _id3_text(album)))
+    if cover is not None:
+        data, mime = cover
+        payload = b"\x00" + mime.encode("ascii") + b"\x00" + b"\x03" + b"\x00" + data
+        frames.append(_id3_frame("APIC", payload))
+    body = b"".join(frames)
+    return b"ID3\x03\x00\x00" + _synchsafe(len(body)) + body
+
+
+def write_id3_tag(path, title, artist, album, cover):
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if data.startswith(b"ID3") and len(data) >= 10:
+        old_size = (data[6] & 0x7F) << 21 | (data[7] & 0x7F) << 14 | (data[8] & 0x7F) << 7 | data[9] & 0x7F
+        audio = data[10 + old_size:]
+    else:
+        audio = data
+    with open(path, "wb") as handle:
+        handle.write(build_id3_tag(title, artist, album, cover) + audio)
+    return True
+
+
+def _flac_vorbis_block(comments):
+    vendor = b"NEMusicOnSteam"
+    entries = []
+    for key, value in comments:
+        if not value:
+            continue
+        entry = f"{key}={value}".encode("utf-8")
+        entries.append(len(entry).to_bytes(4, "little") + entry)
+    payload = len(vendor).to_bytes(4, "little") + vendor + len(entries).to_bytes(4, "little") + b"".join(entries)
+    return 4, payload
+
+
+def _flac_picture_block(cover):
+    data, mime = cover
+    payload = (3).to_bytes(4, "big")  # front cover
+    payload += len(mime).to_bytes(4, "big") + mime.encode("ascii")
+    payload += (0).to_bytes(4, "big")  # empty description
+    payload += b"\x00\x00\x00\x00" * 4  # width/height/depth/colors: decoders read the image
+    payload += len(data).to_bytes(4, "big") + data
+    return 6, payload
+
+
+def write_flac_tags(path, title, artist, album, cover):
+    with open(path, "rb") as handle:
+        data = handle.read()
+    if not data.startswith(b"fLaC") or len(data) < 8:
+        return False
+    pos = 4
+    kept = []
+    while True:
+        if pos + 4 > len(data):
+            return False
+        header = data[pos:pos + 4]
+        last = bool(header[0] & 0x80)
+        block_type = header[0] & 0x7F
+        length = int.from_bytes(header[1:4], "big")
+        body = data[pos + 4:pos + 4 + length]
+        if len(body) != length:
+            return False
+        pos += 4 + length
+        # Old comments and pictures are replaced by ours; everything else is preserved.
+        if block_type not in (4, 6):
+            kept.append((block_type, body))
+        if last:
+            break
+    if not kept or kept[0][0] != 0:
+        return False
+    comments = [("TITLE", title), ("ARTIST", artist), ("ALBUM", album)]
+    new_blocks = [_flac_vorbis_block(comments)]
+    if cover is not None:
+        new_blocks.append(_flac_picture_block(cover))
+    all_blocks = kept[:1] + new_blocks + kept[1:]
+    out = bytearray(b"fLaC")
+    for index, (block_type, body) in enumerate(all_blocks):
+        out.append((0x80 if index == len(all_blocks) - 1 else 0) | block_type)
+        out += len(body).to_bytes(3, "big")
+        out += body
+    out += data[pos:]
+    with open(path, "wb") as handle:
+        handle.write(out)
+    return True
+
+
+def tag_audio(path, extension, title, artist, album, cover):
+    """Best-effort metadata embedding: failures are logged and never fail the download."""
+    if not (title or artist or album or cover):
+        return False
+    cover_data = fetch_cover(cover) if cover else None
+    try:
+        if extension == ".mp3":
+            return write_id3_tag(path, title, artist, album, cover_data)
+        if extension == ".flac":
+            return write_flac_tags(path, title, artist, album, cover_data)
+        print(f"[NEMusic] Tagging skipped for {extension}", file=sys.stderr, flush=True)
+        return False
+    except (OSError, ValueError) as error:
+        print(f"[NEMusic] Tagging failed: {error}", file=sys.stderr, flush=True)
+        return False
+
+
 INTROSPECTION = """<node>
   <interface name="org.mpris.MediaPlayer2">
     <method name="Raise"/>
@@ -305,7 +450,7 @@ class MprisService:
                         self.reply(400, {})
                         return
                     try:
-                        job = service.start_download(payload.get("url"), payload.get("filename"), payload.get("directory"), payload.get("type"))
+                        job = service.start_download(payload.get("url"), payload.get("filename"), payload.get("directory"), payload.get("type"), payload)
                     except ValueError as error:
                         self.reply(400, {"error": str(error)})
                         return
@@ -602,7 +747,12 @@ class MprisService:
                 return {"active": False, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
             return dict(self.download)
 
-    def start_download(self, url, filename, directory, declared):
+    def start_download(self, url, filename, directory, declared, meta=None):
+        meta = meta if isinstance(meta, dict) else {}
+        cover = str(meta.get("cover") or "")
+        if cover:
+            # The cover is fetched by this process, so it gets the same SSRF screen as the audio.
+            validate_download_url(cover)
         validate_download_url(url)
         destination = download_directory(directory)
         try:
@@ -617,11 +767,17 @@ class MprisService:
             job = {"active": True, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
             self.download = job
             self.last_seen = time.monotonic()
-        worker = threading.Thread(target=self.run_download, args=(job, str(url), destination, str(filename or ""), declared), daemon=True)
+        tags = {key: str(meta.get(key) or "") for key in ("title", "artist", "album")}
+        tags["cover"] = cover
+        tags["notify"] = str(meta.get("notify") or "system")
+        worker = threading.Thread(target=self.run_download, args=(job, str(url), destination, str(filename or ""), declared, tags), daemon=True)
         worker.start()
         return job
 
-    def run_download(self, job, url, destination, filename, declared):
+    def run_download(self, job, url, destination, filename, declared, meta=None):
+        meta = meta if isinstance(meta, dict) else {}
+        # Frontends that predate the notify field always got desktop notifications.
+        notify_system = str(meta.get("notify") or "system") == "system"
         path = None
         try:
             request = Request(url, headers={"User-Agent": "NEMusicOnSteam", "Referer": "https://music.163.com/"})
@@ -652,7 +808,7 @@ class MprisService:
                     job["filename"] = os.path.basename(path)
                     job["path"] = path
                     job["total"] = received
-                    notify_system = self.notify_mode == "system"
+                tag_audio(path, extension, meta.get("title") or "", meta.get("artist") or "", meta.get("album") or "", meta.get("cover") or "")
                 if notify_system:
                     GLib.idle_add(self.send_notification, "下载完成", f"{os.path.basename(path)} 已保存到 {os.path.dirname(path)}", "folder-download")
         except (OSError, ValueError, HTTPException) as error:
@@ -664,7 +820,6 @@ class MprisService:
             failure = str(error) or error.__class__.__name__
             with self.lock:
                 job["error"] = failure
-                notify_system = self.notify_mode == "system"
             if notify_system:
                 GLib.idle_add(self.send_notification, "下载失败", failure, "dialog-error")
         finally:

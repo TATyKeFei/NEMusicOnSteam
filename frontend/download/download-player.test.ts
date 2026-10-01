@@ -192,25 +192,30 @@ describe("NetEase download of a song picked from a list", () => {
 
   it("trims the tags that end up in the file name", async () => {
     const result = await downloadFixture().run(320, { id: 1, name: " 歌名 ", artist: " 歌手 " });
-    assert.equal(songFileName(result.artist, result.name), "歌手 - 歌名");
+    assert.equal(songFileName("{artist} - {title}", { title: result.name, artist: result.artist }), "歌手 - 歌名");
   });
 });
 
 describe("download file names", () => {
   it("joins artist and title", () => {
-    assert.equal(songFileName("歌手一, 歌手二", "歌名"), "歌手一, 歌手二 - 歌名");
+    assert.equal(songFileName("{artist} - {title}", { title: "歌名", artist: "歌手一, 歌手二" }), "歌手一, 歌手二 - 歌名");
+  });
+
+  it("supports the album token", () => {
+    assert.equal(songFileName("{artist} - {album} - {title}", { title: "歌名", artist: "歌手", album: "专辑" }), "歌手 - 专辑 - 歌名");
+    assert.equal(songFileName("{artist} - {album} - {title}", { title: "歌名", artist: "歌手" }), "歌手 -  - 歌名");
   });
 
   it("falls back when NetEase has no tags", () => {
-    assert.equal(songFileName("", ""), "未知歌手 - 未知歌曲");
-    assert.equal(songFileName(null, undefined), "未知歌手 - 未知歌曲");
+    assert.equal(songFileName("{artist} - {title}", { title: "", artist: "" }), "未知歌手 - 未知歌曲");
+    assert.equal(songFileName("{artist} - {title}", { title: null, artist: undefined }), "未知歌手 - 未知歌曲");
   });
 
   it("normalizes whitespace and control characters", () => {
-    assert.equal(songFileName(" 歌手\n一 ", "歌\t名"), "歌手 一 - 歌 名");
+    assert.equal(songFileName("{artist} - {title}", { title: "歌\t名", artist: " 歌手\n一 " }), "歌手 一 - 歌 名");
   });
 
   it("leaves separators and length for the backend to enforce", () => {
-    assert.equal(songFileName("a/b", "c"), "a/b - c");
+    assert.equal(songFileName("{artist} - {title}", { title: "c", artist: "a/b" }), "a/b - c");
   });
 });

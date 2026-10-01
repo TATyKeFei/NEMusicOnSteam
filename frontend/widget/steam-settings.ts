@@ -16,8 +16,16 @@ export class SteamSettingsEntry {
   private timer = 0;
   private readonly mounted = new Map<Document, MountedPage>();
   private classes = FALLBACK_CLASSES;
+  private nativeSeen = false;
+  private injected = false;
 
   constructor(private readonly content: () => ReactNode) {}
+
+  /** Reports whether the settings page came from the Lua patch or our DOM injection. */
+  entryStatus(): "native" | "injected" | "waiting" {
+    if (this.nativeSeen) return "native";
+    return this.injected ? "injected" : "waiting";
+  }
 
   start(): void {
     if (this.timer) return;
@@ -54,9 +62,15 @@ export class SteamSettingsEntry {
       if (!dialog) continue;
       const list = dialog.querySelector<HTMLElement>(this.selector("PagedSettingsDialog_PageList"));
       const column = dialog.querySelector<HTMLElement>(this.selector("PagedSettingDialog_ContentColumn"));
-      if (!list || !column || list.textContent?.includes("网易云音乐")) continue;
+      if (!list || !column) continue;
+      if (list.textContent?.includes("网易云音乐")) {
+        // The Lua-patched settings route already added a page: the patch works.
+        this.nativeSeen = true;
+        continue;
+      }
       try {
         this.mounted.set(doc, this.mount(dialog, list, column));
+        this.injected = true;
       } catch (error) {
         console.warn("[NEMusic] Steam settings entry", error);
       }

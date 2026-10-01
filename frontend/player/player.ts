@@ -1,5 +1,5 @@
 import { findModule } from "millennium";
-import { PlayerChrome, type PlayerMode } from "../widget/chrome.ts";
+import { PlayerChrome, type NavEntryStatus, type PlayerMode } from "../widget/chrome.ts";
 import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "../constants.ts";
 import { DownloadBridge, type DownloadSnapshot } from "../download/download.ts";
 import { sameBounds, type Bounds } from "../widget/layout.ts";
@@ -39,6 +39,8 @@ function steamPageClasses(): SteamPageSelectors {
   }
 }
 
+export type SteamSettingsStatus = { entryStatus: () => "native" | "injected" | "waiting" };
+
 export type PlayerSnapshot = {
   mode: PlayerMode;
   status: string;
@@ -46,6 +48,8 @@ export type PlayerSnapshot = {
   throttlingSupported: boolean | null;
   mprisStatus: string;
   recognitionStatus: string;
+  navEntry: NavEntryStatus;
+  settingsEntry: "native" | "injected" | "waiting";
   quality: QualitySnapshot;
   download: DownloadSnapshot;
   settings: PlayerSettings;
@@ -59,7 +63,9 @@ export class PlayerController {
   private readonly download = new DownloadBridge(() => ({
     quality: this.settings.downloadQuality,
     directory: this.settings.downloadDirectory,
+    nameTemplate: this.settings.downloadNameTemplate,
     notificationMode: this.settings.notificationMode,
+    downloadNotificationMode: this.settings.downloadNotificationMode,
   }));
   private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
   private steamPageShown: boolean | null = null;
@@ -84,6 +90,11 @@ export class PlayerController {
   private visibilityTarget: Document | null = null;
   private unregisterChild: (() => void) | null = null;
   private destroying = false;
+  private readonly steamSettings: SteamSettingsStatus | null;
+
+  constructor(steamSettings?: SteamSettingsStatus) {
+    this.steamSettings = steamSettings ?? null;
+  }
 
   boot(): void {
     if (this.booted) return;
@@ -118,6 +129,8 @@ export class PlayerController {
       throttlingSupported: this.throttlingSupported,
       mprisStatus: this.mpris.getStatus(),
       recognitionStatus: this.recognition.getStatus(),
+      navEntry: this.chrome.navEntryStatus(),
+      settingsEntry: this.steamSettings?.entryStatus() ?? "waiting",
       quality: this.quality.snapshot(),
       download: this.download.snapshot(),
       settings: { ...this.settings, launcher: { ...this.settings.launcher } },
@@ -138,6 +151,11 @@ export class PlayerController {
 
   downloadCurrentSong(): void {
     void this.download.download();
+  }
+
+  downloadPlayingList(): void {
+    this.open();
+    void this.download.downloadPlayingList();
   }
 
   open(): string {
@@ -247,6 +265,7 @@ export class PlayerController {
       onToolbarChange: () => this.syncView(false, this.render()),
       onCollapse: () => this.collapse(),
       onReload: () => this.reload(),
+      onDownloadList: () => this.downloadPlayingList(),
       onClose: () => this.close(),
     });
     this.bindWindowEvents(win);
@@ -546,8 +565,8 @@ function errorText(error: unknown): string {
 
 let singleton: PlayerController | null = null;
 
-export function getPlayer(): PlayerController {
-  singleton ??= new PlayerController();
+export function getPlayer(steamSettings?: SteamSettingsStatus): PlayerController {
+  singleton ??= new PlayerController(steamSettings);
   return singleton;
 }
 

@@ -3,10 +3,14 @@
  * already running and reports whether it is there. Recognition runs on a two second timer, so
  * sending the whole bundle just to learn it is installed is a needless allocation every tick.
  */
+
+/** Bumped whenever the injected api changes shape, so an upgrade replaces the old page script. */
+const RECOGNITION_API_VERSION = 4;
+
 export function recognitionUpdateScript(endpoint: string, token: string, open = false): string {
   return `(() => {
     const api = window.__nemusicRecognition;
-    if (!api) return false;
+    if (!api || api.version !== ${RECOGNITION_API_VERSION}) return false;
     api.config = ${JSON.stringify({ endpoint, token, open })};
     api.ensureHeaderButton?.();
     if (api.config.open) api.show();
@@ -18,13 +22,69 @@ export function recognitionScript(endpoint: string, token: string, open = false)
   return `(() => {
     const config = ${JSON.stringify({ endpoint, token, open })};
     const key = '__nemusicRecognition';
-    if (window[key]) {
+    const version = ${RECOGNITION_API_VERSION};
+    // A stale api from an older plugin build would keep serving its old closures (a store
+    // captured at install time, an older play flow), so a version bump replaces it entirely.
+    if (window[key] && window[key].version === version) {
       window[key].config = config;
       window[key].ensureHeaderButton?.();
       if (config.open) window[key].show();
       return true;
     }
-    const api = { config, generation: 0, jobId: '', busy: false, factory: null, panel: null, previousFocus: null };
+    if (window[key]) {
+      try { window[key].cancel?.(); window[key].hide?.(); } catch (error) {}
+      try { delete window[key]; } catch (error) { window[key] = undefined; }
+    }
+    const api = { version, config, generation: 0, jobId: '', busy: false, factory: null, panel: null, previousFocus: null };
+    const historyStore = (() => {
+      try { return window.localStorage ?? null; } catch (error) { return null; }
+    })();
+    const HISTORY_KEY = '__nemusicRecognitionHistory';
+    api.history = (() => {
+      try {
+        const parsed = JSON.parse(historyStore?.getItem?.(HISTORY_KEY) || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (error) { return []; }
+    })();
+    const saveHistory = () => {
+      try { historyStore?.setItem?.(HISTORY_KEY, JSON.stringify(api.history.slice(0, 50))); } catch (error) {}
+    };
+    api.pushHistory = entry => {
+      api.history = [entry, ...api.history.filter(item => Number(item.id) !== Number(entry.id))].slice(0, 50);
+      saveHistory();
+      api.showHistory();
+    };
+    api.clearHistory = () => {
+      api.history = [];
+      saveHistory();
+      api.showHistory();
+    };
+    api.showHistory = () => {
+      const list = api.panel?.querySelector('[data-history]');
+      if (!list) return;
+      list.replaceChildren();
+      for (const entry of api.history.slice(0, 20)) {
+        const item = document.createElement('li');
+        const title = document.createElement('span');
+        title.textContent = entry.name + (entry.artist ? ' — ' + entry.artist : '');
+        title.style.color = '#ff7777';
+        const link = document.createElement('button');
+        link.type = 'button';
+        link.textContent = '复制链接';
+        link.style.cssText = 'float:right;background:#484850;font-size:12px;padding:2px 10px;';
+        link.addEventListener('click', () => api.copyText('https://music.163.com/#/song?id=' + encodeURIComponent(entry.id)));
+        item.append(title, link);
+        list.append(item);
+      }
+    };
+    api.copyText = async value => {
+      try {
+        await navigator.clipboard.writeText(value);
+        status('已复制');
+      } catch {
+        status('复制失败，请手动选中文字复制');
+      }
+    };
     const request = async (path, body, keepalive = false) => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 35000);
@@ -197,7 +257,10 @@ export function recognitionScript(endpoint: string, token: string, open = false)
           if (job.stage === 'error') throw new Error(job.error || '识曲失败');
           if (job.stage === 'done') {
             showResults(job.results);
-            status(job.results.length ? '识别完成，由于不知道Web版的歌曲路由动作无法直接打开音乐，麻烦自己通过下面歌名等搜索😭' : '没有找到匹配歌曲，请换一段更清晰的音乐再试');
+            status(job.results.length ? '识别完成，麻烦自己通过下面歌名等搜索😭' : '没有找到匹配歌曲，请换一段更清晰的音乐再试');
+            for (const song of job.results.slice(0, 5)) {
+              api.pushHistory({ id: song.id, name: String(song.name || ''), artist: String(song.artist || ''), album: String(song.album || ''), at: Date.now() });
+            }
             return;
           }
           if (job.stage === 'recorded' && !submitted) {
@@ -229,7 +292,7 @@ export function recognitionScript(endpoint: string, token: string, open = false)
       api.previousFocus = document.activeElement;
       const panel = document.createElement('div');
       panel.id = 'nemusic-recognition';
-      panel.innerHTML = '<style>#nemusic-recognition{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;background:rgba(0,0,0,.48);font:14px/1.6 system-ui,sans-serif;color:#eee}#nemusic-recognition section{width:min(460px,90vw);max-height:85vh;overflow:auto;box-sizing:border-box;padding:26px;border:1px solid #46464c;border-radius:0;background:#222228;box-shadow:0 18px 70px #0008}#nemusic-recognition h2{font-size:21px;margin:0 0 14px;color:#fff}#nemusic-recognition p{margin:12px 0;color:#b8b8c2}#nemusic-recognition select{display:block;width:100%;margin:8px 0 16px;padding:10px;border:1px solid #555;border-radius:8px;background:#303038;color:#fff}#nemusic-recognition button{cursor:pointer;padding:8px 18px;border:0;border-radius:20px;margin-right:8px;background:#ec4141;color:#fff;font:inherit}#nemusic-recognition button:disabled{opacity:.5;cursor:wait}#nemusic-recognition [data-close]{float:right;background:transparent;padding:0 6px;font-size:24px}#nemusic-recognition [data-cancel]{background:#484850}#nemusic-recognition [data-status]{min-height:44px;color:#eee}#nemusic-recognition ul{padding:0;list-style:none;margin:0}#nemusic-recognition li{padding:10px 0;border-top:1px solid #444}#nemusic-recognition a{color:#ff7777;text-decoration:none}#nemusic-recognition small{display:block;color:#aaa}#nemusic-recognition :focus-visible{outline:2px solid #ff7777;outline-offset:3px}</style><section role="dialog" aria-modal="true" aria-labelledby="nemusic-recognition-title"><button data-close aria-label="关闭">×</button><h2 id="nemusic-recognition-title">听歌识曲</h2><label>声音来源<select data-source aria-label="声音来源"><option value="system">系统声音 · 默认输出设备</option><option value="microphone">麦克风 · 默认输入设备</option></select></label><p>开始后将采集 6 秒。仅用于向网易云发送音频指纹，不会保存录音文件</p><button data-start>开始识曲</button><button data-cancel hidden>取消</button><p data-status role="status" aria-live="polite">准备好音乐后，点击开始识曲</p><ul data-results></ul></section>';
+      panel.innerHTML = '<style>#nemusic-recognition{position:fixed;inset:0;z-index:2147483646;display:grid;place-items:center;background:rgba(0,0,0,.48);font:14px/1.6 system-ui,sans-serif;color:#eee}#nemusic-recognition section{width:min(460px,90vw);max-height:85vh;overflow:auto;box-sizing:border-box;padding:26px;border:1px solid #46464c;border-radius:0;background:#222228;box-shadow:0 18px 70px #0008}#nemusic-recognition h2{font-size:21px;margin:0 0 14px;color:#fff}#nemusic-recognition p{margin:12px 0;color:#b8b8c2}#nemusic-recognition select{display:block;width:100%;margin:8px 0 16px;padding:10px;border:1px solid #555;border-radius:8px;background:#303038;color:#fff}#nemusic-recognition button{cursor:pointer;padding:8px 18px;border:0;border-radius:20px;margin-right:8px;background:#ec4141;color:#fff;font:inherit}#nemusic-recognition button:disabled{opacity:.5;cursor:wait}#nemusic-recognition [data-close]{float:right;background:transparent;padding:0 6px;font-size:24px}#nemusic-recognition [data-cancel]{background:#484850}#nemusic-recognition [data-status]{min-height:44px;color:#eee}#nemusic-recognition ul{padding:0;list-style:none;margin:0}#nemusic-recognition li{padding:10px 0;border-top:1px solid #444}#nemusic-recognition a{color:#ff7777;text-decoration:none}#nemusic-recognition small{display:block;color:#aaa}#nemusic-recognition :focus-visible{outline:2px solid #ff7777;outline-offset:3px}</style><section role="dialog" aria-modal="true" aria-labelledby="nemusic-recognition-title"><button data-close aria-label="关闭">×</button><h2 id="nemusic-recognition-title">听歌识曲</h2><label>声音来源<select data-source aria-label="声音来源"><option value="system">系统声音 · 默认输出设备</option><option value="microphone">麦克风 · 默认输入设备</option></select></label><p>开始后将采集 6 秒。仅用于向网易云发送音频指纹，不会保存录音文件</p><button data-start>开始识曲</button><button data-cancel hidden>取消</button><p data-status role="status" aria-live="polite">准备好音乐后，点击开始识曲</p><ul data-results></ul><p style="margin:18px 0 4px;color:#8a8a94;font-size:12px">识别历史（只保存在本机）<button data-clear-history type="button" style="float:right;background:#484850;color:#ddd;border:0;border-radius:20px;padding:2px 12px;font:12px system-ui;cursor:pointer">清空</button></p><ul data-history></ul></section>';
       panel.querySelector('[data-close]').addEventListener('click', api.hide);
       panel.querySelector('[data-start]').addEventListener('click', () => void api.start());
       panel.querySelector('[data-cancel]').addEventListener('click', () => void api.cancel());
@@ -245,6 +308,8 @@ export function recognitionScript(endpoint: string, token: string, open = false)
       });
       api.panel = panel;
       document.body.append(panel);
+      panel.querySelector('[data-clear-history]').addEventListener('click', () => api.clearHistory());
+      api.showHistory();
       panel.querySelector('[data-source]').focus();
     };
     document.addEventListener('click', event => {

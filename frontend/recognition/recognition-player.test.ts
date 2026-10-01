@@ -134,4 +134,15 @@ describe("听歌识曲 UI", () => {
     assert.equal(api.panel.querySelector("[data-status]").textContent, "需要安装 parec");
     assert.equal(api.panel.querySelector("[data-start]").disabled, false);
   });
+
+  it("replaces a stale api left by an older plugin build", () => {
+    const { context } = setup();
+    const stale = { version: 0, config: {}, cancel() {}, hide() {}, show() { throw new Error("stale show called"); } };
+    context.window.__nemusicRecognition = stale;
+    runInNewContext(recognitionScript("http://localhost", "token", false), context);
+    const fresh = context.window.__nemusicRecognition;
+    assert.notEqual(fresh, stale);
+    assert.ok((fresh.version as number) > 0);
+    assert.equal(stale.cancel !== undefined, true);
+  });
 });

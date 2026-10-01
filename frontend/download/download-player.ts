@@ -21,11 +21,23 @@ export type DownloadTrack = {
   level: string;
   name: string;
   artist: string;
+  album: string;
+  cover: string;
   source: "api" | "player";
 };
 
 /** A song picked from a list row instead of whatever happens to be playing. */
-export type DownloadSong = { id: number; name: string; artist: string };
+export type DownloadSong = { id: number; name: string; artist: string; album?: string; cover?: string };
+
+export const DEFAULT_DOWNLOAD_NAME_TEMPLATE = "{artist} - {title}";
+
+/** Replaces {title} {artist} {album} tokens; unknown tokens are left for the user to fix. */
+export function formatDownloadName(template: string, parts: { title: string; artist: string; album: string }): string {
+  return template
+    .split("{title}").join(parts.title)
+    .split("{artist}").join(parts.artist)
+    .split("{album}").join(parts.album);
+}
 
 export function isDownloadQuality(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && Object.prototype.hasOwnProperty.call(DOWNLOAD_LEVELS, value);
@@ -42,9 +54,13 @@ export function downloadLevel(value: number): { level: string; encodeType: strin
  * Base name for the saved file, without an extension: Python appends the real one after sniffing the bytes.
  * Separators and length are enforced on the Python side; this only normalizes whitespace.
  */
-export function songFileName(artist: unknown, title: unknown): string {
+export function songFileName(template: string, parts: { title: unknown; artist: unknown; album?: unknown }): string {
   const clean = (value: unknown) => String(value ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim();
-  return `${clean(artist) || "未知歌手"} - ${clean(title) || "未知歌曲"}`;
+  return formatDownloadName(template, {
+    title: clean(parts.title) || "未知歌曲",
+    artist: clean(parts.artist) || "未知歌手",
+    album: clean(parts.album),
+  });
 }
 
 export function downloadScript(value: number, song?: DownloadSong): string {
@@ -53,7 +69,13 @@ export function downloadScript(value: number, song?: DownloadSong): string {
   const target =
     song == null
       ? null
-      : { id: Number(song.id), name: String(song.name ?? "").trim(), artist: String(song.artist ?? "").trim() };
+      : {
+          id: Number(song.id),
+          name: String(song.name ?? "").trim(),
+          artist: String(song.artist ?? "").trim(),
+          album: String(song.album ?? "").trim(),
+          cover: String(song.cover ?? "").trim(),
+        };
   if (target != null && (!Number.isFinite(target.id) || target.id <= 0 || target.name === "")) {
     throw new Error("没有认出要下载的歌曲，只能先播放它再用设置页下载");
   }
@@ -67,7 +89,9 @@ export function downloadScript(value: number, song?: DownloadSong): string {
       .map(candidate => Number(candidate))
       .find(candidate => Number.isFinite(candidate) && candidate > 0) || 0;
     const artists = Array.isArray(track?.artists) ? track.artists.map(entry => entry?.name).filter(Boolean).join(', ') : '';
+    const album = String(track?.album?.name || track?.albumName || track?.album || '').trim();
     const metadata = navigator.mediaSession?.metadata;
+    const cover = String(track?.album?.picUrl || track?.al?.picUrl || track?.picUrl || track?.cover || playingState?.resourceCoverUrl || metadata?.artwork?.at(-1)?.src || '').trim();
     const name = String(target?.name || track?.name || metadata?.title || '').trim();
     const artist = String(target?.artist || artists || metadata?.artist || '').trim();
     if (!id) throw new Error('没有正在播放的歌曲，请先在播放器里播放一首歌');
@@ -96,6 +120,8 @@ export function downloadScript(value: number, song?: DownloadSong): string {
         level: String(item.level || requested.level),
         name,
         artist,
+        album: String(target?.album || album || metadata?.album || '').trim(),
+        cover: String(target?.cover || cover || '').trim(),
         source: 'api',
       };
     }
@@ -112,9 +138,41 @@ export function downloadScript(value: number, song?: DownloadSong): string {
     const media = mediaCandidates.sort((left, right) => mediaScore(right) - mediaScore(left))[0] || null;
     const playingStream = String(media?.currentSrc || media?.src || '');
     if (playingStream.startsWith('http')) {
-      return { url: playingStream, type: '', size: 0, br: 0, level: '', name, artist, source: 'player' };
+      return { url: playingStream, type: '', size: 0, br: 0, level: '', name, artist, album: String(target?.album || album || '').trim(), cover: String(target?.cover || cover || '').trim(), source: 'player' };
     }
     if (Number.isFinite(code) && code !== 200) throw new Error('网易云接口返回 code ' + code + '，可能已下架或需要在播放器里重新登录');
     throw new Error('网易云没有返回可下载地址，可能是无版权、需要 VIP 或账号未登录');
   })()`;
 }
+
+/**
+ * Reads the player's own playing list out of the Redux store. The state key has moved between
+ * NetEase updates before, so every reasonable candidate is probed and entries are only accepted
+ * when they carry a real id and name — a wrong guess yields an empty list, never bad downloads.
+ */
+export const PLAYING_LIST_SCRIPT = `(() => {
+  ${PLAYER_ACCESS_SCRIPT}
+  const state = playerStore?.getState() || {};
+  const playing = state.playing || {};
+  const candidates = [playing.playingList, playing.playList, playing.list, state.playingList];
+  const raw = candidates.find(item => Array.isArray(item) && item.length > 0) || [];
+  const seen = new Set();
+  const songs = [];
+  for (const entry of raw) {
+    const track = entry && typeof entry === 'object' ? (entry.songInfo ?? entry.song ?? entry.track ?? entry) : null;
+    if (!track || typeof track !== 'object') continue;
+    const id = Number(track.id ?? track.resourceId ?? track.songId);
+    const name = String(track.name ?? track.songName ?? '').trim();
+    if (!Number.isFinite(id) || id <= 0 || !name || seen.has(id)) continue;
+    seen.add(id);
+    const artistList = Array.isArray(track.artists) ? track.artists : Array.isArray(track.ar) ? track.ar : [];
+    songs.push({
+      id,
+      name,
+      artist: artistList.map(item => item?.name).filter(Boolean).join(', '),
+      album: String(track.album?.name ?? track.al?.name ?? track.albumName ?? '').trim(),
+      cover: String(track.album?.picUrl ?? track.al?.picUrl ?? track.picUrl ?? track.cover ?? '').trim(),
+    });
+  }
+  return songs;
+})()`;

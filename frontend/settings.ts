@@ -1,4 +1,4 @@
-import { DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download/download-player.ts";
+import { DEFAULT_DOWNLOAD_NAME_TEMPLATE, DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download/download-player.ts";
 
 export type LauncherPosition = { left: number; bottom: number } | { left: number; top: number };
 
@@ -12,6 +12,8 @@ export type PlayerSettings = {
   downloadDirectory: string;
   downloadQuality: number;
   notificationMode: NotificationMode;
+  downloadNotificationMode: NotificationMode;
+  downloadNameTemplate: string;
 };
 
 export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
@@ -24,8 +26,9 @@ export const defaultSettings: PlayerSettings = {
   downloadDirectory: "",
   downloadQuality: DEFAULT_DOWNLOAD_QUALITY,
   notificationMode: "system",
+  downloadNotificationMode: "system",
+  downloadNameTemplate: DEFAULT_DOWNLOAD_NAME_TEMPLATE,
 };
-
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
 
 function finiteNumber(value: unknown): value is number {
@@ -44,6 +47,12 @@ function notificationModeOr(value: unknown, fallback: NotificationMode): Notific
   return value === "system" || value === "steam" || value === "none" ? value : fallback;
 }
 
+function templateOr(value: unknown, fallback: string): string {
+  if (typeof value !== "string") return fallback;
+  const cleaned = value.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200);
+  return cleaned === "" ? fallback : cleaned;
+}
+
 export function sanitizeLauncher(value: unknown): LauncherPosition {
   if (value == null || typeof value !== "object") return { ...defaultSettings.launcher };
   const record = value as Record<string, unknown>;
@@ -55,6 +64,7 @@ export function sanitizeLauncher(value: unknown): LauncherPosition {
 
 export function sanitizeSettings(value: unknown): PlayerSettings {
   const record = value != null && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const notificationMode = notificationModeOr(record.notificationMode, defaultSettings.notificationMode);
   return {
     openOnStart: booleanOr(record.openOnStart, defaultSettings.openOnStart),
     keepAliveWhenCollapsed: booleanOr(record.keepAliveWhenCollapsed, defaultSettings.keepAliveWhenCollapsed),
@@ -62,7 +72,10 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     launcher: sanitizeLauncher(record.launcher),
     downloadDirectory: directoryOr(record.downloadDirectory, defaultSettings.downloadDirectory),
     downloadQuality: isDownloadQuality(record.downloadQuality) ? record.downloadQuality : defaultSettings.downloadQuality,
-    notificationMode: notificationModeOr(record.notificationMode, defaultSettings.notificationMode),
+    notificationMode,
+    // Settings saved before the split had one switch for both channels: keep them in sync.
+    downloadNotificationMode: notificationModeOr(record.downloadNotificationMode ?? record.notificationMode, notificationMode),
+    downloadNameTemplate: templateOr(record.downloadNameTemplate, defaultSettings.downloadNameTemplate),
   };
 }
 

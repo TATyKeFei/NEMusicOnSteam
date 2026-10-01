@@ -33,15 +33,30 @@ function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
     && a.throttlingSupported === b.throttlingSupported
     && a.mprisStatus === b.mprisStatus
     && a.recognitionStatus === b.recognitionStatus
+    && a.navEntry === b.navEntry
+    && a.settingsEntry === b.settingsEntry
     && JSON.stringify(a.quality) === JSON.stringify(b.quality)
     && JSON.stringify(a.download) === JSON.stringify(b.download)
     && JSON.stringify(a.settings) === JSON.stringify(b.settings);
 }
 
+const NAV_ENTRY_TEXT: Record<PlayerSnapshot["navEntry"], string> = {
+  native: "顶栏入口：原生补丁生效",
+  fallback: "顶栏入口：兼容模式（补丁没匹配上）",
+  none: "顶栏入口：还没找到（展开一次播放器再来看）",
+};
+
+const SETTINGS_ENTRY_TEXT: Record<PlayerSnapshot["settingsEntry"], string> = {
+  native: "设置入口：原生补丁生效",
+  injected: "设置入口：兼容注入（补丁没匹配上）",
+  waiting: "设置入口：还没打开过设置页，无法判断",
+};
+
 function SettingsContent() {
-  const player = getPlayer();
+  const player = getPlayer(steamSettings);
   const [snapshot, setSnapshot] = useState<PlayerSnapshot>(() => player.snapshot());
   const [directory, setDirectory] = useState(() => snapshot.settings.downloadDirectory);
+  const [nameTemplate, setNameTemplate] = useState(() => snapshot.settings.downloadNameTemplate);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -56,6 +71,13 @@ function SettingsContent() {
     if (trimmed === snapshot.settings.downloadDirectory) return;
     setSnapshot(player.updateSettings({ downloadDirectory: trimmed }));
     setDirectory(trimmed);
+  };
+
+  const commitNameTemplate = () => {
+    const trimmed = nameTemplate.trim();
+    if (trimmed === snapshot.settings.downloadNameTemplate) return;
+    setSnapshot(player.updateSettings({ downloadNameTemplate: trimmed }));
+    setNameTemplate(trimmed);
   };
 
   const settings = snapshot.settings;
@@ -123,6 +145,20 @@ function SettingsContent() {
         />
       </Field>
       <Field
+        label="下载命名模板"
+        description={`保存文件的名字，可用 {title} {artist} {album}。改完按回车或点到别处保存`}
+        bottomSeparator="standard"
+      >
+        <TextField
+          value={nameTemplate}
+          onChange={event => setNameTemplate(event.target.value)}
+          onBlur={commitNameTemplate}
+          onKeyDown={event => {
+            if (event.key === "Enter") commitNameTemplate();
+          }}
+        />
+      </Field>
+      <Field
         label="播放器"
         description={`${snapshot.status}。点击顶部其他栏目即可返回 Steam 页面`}
         bottomSeparator="standard"
@@ -166,8 +202,8 @@ function SettingsContent() {
         />
       </Field>
       <Field
-        label="通知方式"
-        description="切歌和下载完成时如何提醒。系统通知走桌面通知（Linux 需要 Python 辅助进程），Steam 弹窗用右下角的 Steam 通知样式"
+        label="切歌通知"
+        description="切歌时如何提醒。系统通知走桌面通知（Linux 需要 Python 辅助进程），Steam 弹窗用右下角的 Steam 通知样式，无则不提醒"
         bottomSeparator="standard"
       >
         <Dropdown
@@ -178,6 +214,24 @@ function SettingsContent() {
           }}
         />
       </Field>
+      <Field
+        label="下载通知"
+        description="下载完成或失败时如何提醒，选项含义同上"
+        bottomSeparator="standard"
+      >
+        <Dropdown
+          rgOptions={NOTIFICATION_OPTIONS}
+          selectedOption={settings.downloadNotificationMode}
+          onChange={option => {
+            setSnapshot(player.updateSettings({ downloadNotificationMode: option.data as NotificationMode }));
+          }}
+        />
+      </Field>
+      <Field
+        label="诊断"
+        description={`${NAV_ENTRY_TEXT[snapshot.navEntry]}。${SETTINGS_ENTRY_TEXT[snapshot.settingsEntry]}。Steam 更新后如果显示兼容模式，说明官方补丁没匹配上，功能仍可用但样式可能错位，可以去 Github 反馈`}
+        bottomSeparator="standard"
+      />
       <Field label="系统媒体控制" description={snapshot.mprisStatus} bottomSeparator="none" />
     </>
   );
@@ -220,7 +274,7 @@ export function shutdown(): string {
 }
 
 export default definePlugin(() => {
-  getPlayer().boot();
+  getPlayer(steamSettings).boot();
   steamSettings.start();
   return {
     title: "网易云音乐",

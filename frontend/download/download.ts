@@ -2,7 +2,13 @@ import { ffi } from "millennium";
 import { evaluateInPlayer } from "../player/player-target.ts";
 import type { NotificationMode } from "../settings.ts";
 import { steamToast } from "../widget/toast.ts";
-import { downloadScript, songFileName, type DownloadSong, type DownloadTrack } from "./download-player.ts";
+import {
+  downloadScript,
+  PLAYING_LIST_SCRIPT,
+  songFileName,
+  type DownloadSong,
+  type DownloadTrack,
+} from "./download-player.ts";
 import { MENU_POLL_SCRIPT, MENU_TICK_SCRIPT, menuToastScript } from "./menu-player.ts";
 
 type DownloadJob = {
@@ -32,7 +38,13 @@ export type DownloadSnapshot = {
   progress: DownloadProgress | null;
 };
 
-export type DownloadOptions = { quality: number; directory: string; notificationMode: NotificationMode };
+export type DownloadOptions = {
+  quality: number;
+  directory: string;
+  nameTemplate: string;
+  notificationMode: NotificationMode;
+  downloadNotificationMode: NotificationMode;
+};
 
 const POLL_MS = 800;
 const MENU_TICK_MS = 1000;
@@ -64,6 +76,7 @@ export class DownloadBridge {
   private enabled = false;
   private busy = false;
   private generation = 0;
+  private queue: DownloadSong[] = [];
   private status = DISABLED_STATUS;
   private progress: DownloadProgress | null = null;
   private endpoint: string | null = null;
@@ -84,6 +97,7 @@ export class DownloadBridge {
     this.generation++;
     this.busy = false;
     this.progress = null;
+    this.queue = [];
     this.status = enabled ? "可以下载当前正在播放的歌曲" : DISABLED_STATUS;
     if (enabled) {
       this.timer = window.setInterval((): void => void this.tickMenu(), MENU_TICK_MS);
@@ -117,10 +131,17 @@ export class DownloadBridge {
       return;
     }
     if (this.busy) {
-      this.report("正在下载，请稍候");
+      // The helper runs one job at a time; a queue on this side turns repeated requests
+      // into sequential downloads instead of a 409 dead end.
+      if (song != null) {
+        this.queue.push(song);
+        this.report(this.queue.length === 1 ? "已加入下载队列" : `已加入下载队列，前面还有 ${this.queue.length - 1} 首`);
+      } else {
+        this.report("正在下载，请稍候");
+      }
       return;
     }
-    const { quality, directory } = this.options();
+    const { quality, directory, nameTemplate, downloadNotificationMode } = this.options();
     const generation = ++this.generation;
     this.busy = true;
     this.progress = null;
@@ -129,11 +150,21 @@ export class DownloadBridge {
       const track = await this.resolve(quality, song);
       if (generation !== this.generation) return;
       if (track.source === "player") this.status = "网易云没有返回所选音质，改用当前播放的音频流";
-      else this.status = `正在下载 ${track.artist ? `${track.artist} - ` : ""}${track.name}`;
+      else this.status = `正在下载 ${track.artist ? `${track.artist} - ` : ""}${track.name}${this.queue.length > 0 ? `（队列还有 ${this.queue.length} 首）` : ""}`;
       this.toast(this.status);
       const started = await this.request("/download", {
         method: "POST",
-        body: { url: track.url, filename: songFileName(track.artist, track.name), directory, type: track.type },
+        body: {
+          url: track.url,
+          filename: songFileName(nameTemplate, { title: track.name, artist: track.artist, album: track.album }),
+          directory,
+          type: track.type,
+          title: track.name,
+          artist: track.artist,
+          album: track.album,
+          cover: track.cover,
+          notify: downloadNotificationMode,
+        },
       });
       if (generation !== this.generation) return;
       if (started.status === 409) {
@@ -156,7 +187,7 @@ export class DownloadBridge {
         }
         this.progress = null;
         this.status = job.path ? `已保存到 ${job.path}` : "下载已结束但没有生成文件";
-        if (this.options().notificationMode === "steam") {
+        if (downloadNotificationMode === "steam") {
           steamToast("下载完成", job.path || this.status);
         }
         return;
@@ -165,13 +196,47 @@ export class DownloadBridge {
       if (generation === this.generation) {
         this.status = message(error);
         this.toast(this.status);
-        if (this.options().notificationMode === "steam") {
+        if (downloadNotificationMode === "steam") {
           steamToast("下载失败", this.status);
         }
       }
     } finally {
-      if (generation === this.generation) this.busy = false;
+      if (generation === this.generation) {
+        this.busy = false;
+        this.pump();
+      }
     }
+  }
+
+  /** Reads the player's playing list and queues every song on it for sequential downloads. */
+  async downloadPlayingList(): Promise<void> {
+    if (!this.enabled) {
+      this.status = "先打开播放器再下载";
+      return;
+    }
+    if (this.busy) {
+      this.report("正在下载，请稍候");
+      return;
+    }
+    try {
+      const songs = (await this.evaluate(PLAYING_LIST_SCRIPT)) as DownloadSong[] | null;
+      if (!Array.isArray(songs) || songs.length === 0) {
+        this.status = "没有读到播放列表，可能网易云改版了";
+        this.toast(this.status);
+        return;
+      }
+      this.queue.push(...songs);
+      this.status = `播放列表共 ${songs.length} 首，开始依次下载`;
+      this.toast(this.status);
+      this.pump();
+    } catch {
+      /* the player page is not there yet, or is mid-navigation */
+    }
+  }
+
+  private pump(): void {
+    if (this.busy || !this.enabled || this.queue.length === 0) return;
+    void this.download(this.queue.shift());
   }
 
   private menuText(): string {

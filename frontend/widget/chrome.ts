@@ -10,8 +10,12 @@ export type ChromeHandlers = {
   onToolbarChange: () => void;
   onCollapse: () => void;
   onReload: () => void;
+  onDownloadList: () => void;
   onClose: () => void;
 };
+
+/** Whether the Steam-window supernav entry is the patched native link or our DOM fallback. */
+export type NavEntryStatus = "native" | "fallback" | "none";
 
 export type ChromeModel = {
   mode: PlayerMode;
@@ -85,6 +89,11 @@ export class PlayerChrome {
   private headerHeight: number | null = null;
   private headerNav: HTMLElement | null = null;
   private paintedMode: PlayerMode | null = null;
+  private lastNavEntry: NavEntryStatus = "none";
+
+  navEntryStatus(): NavEntryStatus {
+    return this.lastNavEntry;
+  }
 
   mountedDocument(): Document | null {
     return this.doc;
@@ -132,8 +141,9 @@ export class PlayerChrome {
 
     const collapse = this.commandButton(doc, "收起", () => this.handlers?.onCollapse());
     const reload = this.commandButton(doc, "刷新", () => this.handlers?.onReload());
+    const download = this.commandButton(doc, "下载", () => this.handlers?.onDownloadList());
     const close = this.commandButton(doc, "关闭", () => this.handlers?.onClose());
-    bar.append(collapse, reload, close);
+    bar.append(collapse, reload, download, close);
     bar.addEventListener("mouseenter", this.openToolbar);
     bar.addEventListener("mouseleave", this.scheduleToolbarClose);
 
@@ -163,6 +173,7 @@ export class PlayerChrome {
     this.headerHeight = null;
     this.headerNav = null;
     this.paintedMode = null;
+    this.lastNavEntry = "none";
   }
 
   render(model: ChromeModel): Bounds | null {
@@ -362,6 +373,7 @@ export class PlayerChrome {
     const native = this.nativeNavLink(doc);
     if (native != null) {
       this.removeFallback();
+      this.lastNavEntry = "native";
       return native.parentElement ?? native;
     }
     // While the fallback link sits connected in its host, the host MutationObserver already
@@ -369,11 +381,16 @@ export class PlayerChrome {
     // when one appears. findSupernavRow is a whole-document elementsFromPoint scan, so skip
     // it whenever the link and its host are both alive.
     if (this.link?.isConnected && this.navHost?.isConnected && this.link.parentElement === this.navHost) {
+      this.lastNavEntry = "fallback";
       return this.navHost;
     }
     const found = findSupernavRow(doc);
     const host = found ?? (this.navHost?.isConnected ? this.navHost : null);
-    if (host == null) return null;
+    if (host == null) {
+      this.lastNavEntry = "none";
+      return null;
+    }
+    this.lastNavEntry = "fallback";
     if (this.link == null || !this.link.isConnected) this.createNavLink(doc, host);
     else if (this.link.parentElement !== host) host.append(this.link);
     this.watchNavHost(host);
@@ -484,7 +501,7 @@ export class PlayerChrome {
   }
 
   private toolbarBox(width: number, header: number, bar: HTMLElement): Bounds {
-    const barWidth = 180;
+    const barWidth = 224;
     const rect = this.toolbarTrigger?.getBoundingClientRect();
     return {
       x: Math.max(0, Math.min(width - barWidth, Math.round(rect?.left ?? width - barWidth))),
