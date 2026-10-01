@@ -21,7 +21,7 @@ export class SteamSettingsEntry {
 
   constructor(private readonly content: () => ReactNode) {}
 
-  /** Reports whether the settings page came from the Lua patch or our DOM injection. */
+  /** 设置页是来自 Lua 补丁，还是我们自己注入的 DOM。 */
   entryStatus(): "native" | "injected" | "waiting" {
     if (this.nativeSeen) return "native";
     return this.injected ? "injected" : "waiting";
@@ -32,7 +32,8 @@ export class SteamSettingsEntry {
     const layout = findModule(module => typeof module?.PagedSettingsDialog_PageList === "string");
     const settings = findModule(module => typeof module?.SettingsModal === "string");
     this.classes = { ...FALLBACK_CLASSES, ...layout, ...settings };
-    // GetPopups() plus a querySelector per popup, forever, for a dialog the user opens rarely.
+    // 为了一个用户很少打开的对话框，无休止地 GetPopups() 再对每个 popup 做一次
+    // querySelector。
     this.timer = window.setInterval(() => this.sync(), 1000);
     this.sync();
   }
@@ -64,7 +65,7 @@ export class SteamSettingsEntry {
       const column = dialog.querySelector<HTMLElement>(this.selector("PagedSettingDialog_ContentColumn"));
       if (!list || !column) continue;
       if (list.textContent?.includes("网易云音乐")) {
-        // The Lua-patched settings route already added a page: the patch works.
+        // Lua 补丁加的设置路由已经在列表里放了一个入口，说明补丁生效了。
         this.nativeSeen = true;
         continue;
       }

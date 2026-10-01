@@ -3,17 +3,16 @@ import { isPlayerDocument } from "../constants.ts";
 
 export type EvaluateOptions = { userGesture?: boolean; awaitPromise?: boolean };
 
-/** Thrown by evaluateInPlayer when the NetEase page has no CDP target yet. */
+/** evaluateInPlayer 在网易云页面还没有 CDP target 时抛出。 */
 export const PLAYER_TARGET_MISSING = "等待网易云播放器加载";
 
 type PlayerSession = { targetId: string; sessionId: string };
 type Outcome = { kind: "value"; value: unknown } | { kind: "missing" };
 
 /**
- * Every bridge used to run its own Target.getTargets + attach/detach cycle on each tick.
- * That traffic runs through the CDP client inside the Steam main process, so a handful of
- * 500ms-2s pollers turned into a steady storm that shared the main process with the UI.
- * One cached session, attached once, keeps the same functionality at a fraction of the IPC.
+ * 过去每个桥都在自己的每个 tick 上跑一遍 Target.getTargets 加 attach/detach。这些流量都
+ * 要经过 Steam 主进程里的 CDP 客户端，于是几个 500ms～2s 的轮询器就变成了持续的风暴，
+ * 和界面共享同一个主进程。改成只缓存一个会话、只 attach 一次，功能不变，IPC 降到零头。
  */
 let session: PlayerSession | null = null;
 let resolving: Promise<PlayerSession | null> | null = null;
@@ -65,9 +64,9 @@ async function evaluate(expression: string, options: EvaluateOptions): Promise<O
       awaitPromise: options.awaitPromise ?? false,
     }, current.sessionId);
   };
-  // A rejected send means the cached session went stale (page reload, navigation, closed
-  // view), not that the page threw: drop it and reattach once. exceptionDetails is a
-  // successful round trip, so it must not trigger the same churn.
+  // send 被 reject 说明缓存的会话已经失效（页面刷新、跳转、视图关闭），而不是页面抛了
+  // 异常：丢掉它并重新 attach 一次。exceptionDetails 是一次成功往返的结果，
+  // 不能因此触发同样的反复重连。
   let response: unknown;
   try {
     response = await request();
@@ -93,7 +92,7 @@ export async function evaluateInPlayer(expression: string, options: EvaluateOpti
   return outcome.value;
 }
 
-/** Same as evaluateInPlayer, but resolves to null instead of throwing when the page is absent. */
+/** 与 evaluateInPlayer 相同，但页面不存在时返回 null 而不是抛异常。 */
 export async function tryEvaluateInPlayer(expression: string, options: EvaluateOptions = {}): Promise<unknown> {
   const outcome = await evaluate(expression, options);
   return outcome.kind === "missing" ? null : outcome.value;

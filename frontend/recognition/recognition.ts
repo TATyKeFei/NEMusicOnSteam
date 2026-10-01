@@ -63,8 +63,8 @@ export class RecognitionBridge {
         try {
           ready = (await evaluateInPlayer(recognitionUpdateScript(this.endpoint, this.token, open))) === true;
         } catch (error) {
-          // No player page yet is the normal state before the user opens one: stay quiet
-          // and keep the pending request queued for a later tick.
+          // 用户还没打开播放器时没有页面是正常状态：这里保持安静，
+          // 并把这个待处理请求留到后面的 tick 再试。
           if (error instanceof Error && error.message === PLAYER_TARGET_MISSING) return;
           ready = false;
         }

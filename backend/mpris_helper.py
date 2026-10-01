@@ -132,7 +132,7 @@ COVER_MIME = {".jpg": "image/jpeg", ".png": "image/png", ".gif": "image/gif", ".
 
 
 def fetch_cover(url):
-    """Downloads album art for embedding; returns (bytes, mime) or None. Never fatal."""
+    """下载用于嵌入的封面图；返回 (字节, mime) 或 None。任何失败都不会中断下载。"""
     if not url or not url.startswith(("http://", "https://")):
         return None
     try:
@@ -156,7 +156,7 @@ def _synchsafe(value):
 
 
 def _id3_text(value):
-    # v2.3 text frames: encoding 0x01 = UTF-16 with a BOM, NUL-terminated.
+    # v2.3 文本帧：encoding 0x01 表示带 BOM 的 UTF-16，以 NUL 结尾。
     return b"\x01\xff\xfe" + value.encode("utf-16-le") + b"\x00\x00"
 
 
@@ -233,7 +233,7 @@ def write_flac_tags(path, title, artist, album, cover):
         if len(body) != length:
             return False
         pos += 4 + length
-        # Old comments and pictures are replaced by ours; everything else is preserved.
+        # 旧的评论块和图片块由我们的替换，其余块原样保留。
         if block_type not in (4, 6):
             kept.append((block_type, body))
         if last:
@@ -257,7 +257,7 @@ def write_flac_tags(path, title, artist, album, cover):
 
 
 def tag_audio(path, extension, title, artist, album, cover):
-    """Best-effort metadata embedding: failures are logged and never fail the download."""
+    """尽力写入元数据：失败只记日志，绝不影响下载本身。"""
     if not (title or artist or album or cover):
         return False
     cover_data = fetch_cover(cover) if cover else None
@@ -363,9 +363,8 @@ class MprisService:
                     self.end_headers()
                     self.wfile.write(body)
                 except CLIENT_GONE_ERRORS:
-                    # The /commands long-poll commonly replies after the caller has
-                    # already gone away (page reload, HMR, aborted fetch). Let the
-                    # connection close quietly instead of dumping a traceback.
+                    # /commands 的长轮询经常在调用方已经离开后才返回（页面刷新、
+                    # HMR、fetch 被中断）。让连接安静地关掉，而不是抛出一堆回溯。
                     self.close_connection = True
 
             def do_OPTIONS(self):
@@ -477,8 +476,7 @@ class MprisService:
                     incoming = state
                     state = dict(previous)
                     state.update(incoming)
-                    # The frontend picks the notification channel; "steam"/"none" must not
-                    # double up with the desktop notifications raised here.
+                    # 通知渠道由前端选择；"steam"/"none" 时不能再叠加这里发的桌面通知。
                     if incoming.get("notify") in ("system", "steam", "none"):
                         service.notify_mode = incoming["notify"]
                     if incoming.get("volume") is None:
@@ -613,13 +611,11 @@ class MprisService:
         return max(0.0, position)
 
     def track_position(self, previous, state, now):
-        # The page reports Position in coarse steps, but every push is a
-        # PropertiesChanged that makes clients such as plasma-lyrics re-anchor
-        # their own interpolation to the value they are handed. Publishing the
-        # coarse sample verbatim therefore drags them backwards between page
-        # updates, which shows up as lyrics flipping back to the previous line.
-        # Keep advancing from a monotonic anchor unless the page is genuinely
-        # ahead, playback stopped, a seek happened, or a seek was just commanded.
+        # 页面上报的 Position 是粗粒度的，但每次推送都是一次 PropertiesChanged，
+        # 会让 plasma-lyrics 这类客户端把插值重新锚定到拿到的数值上。原样发布粗
+        # 粒度采样，就会在两次上报之间把客户端往回拖，表现为歌词倒退到上一句。
+        # 因此除非页面确实超前、播放停止、发生了 seek 或刚下发 seek 命令，否则
+        # 一律从单调递增的锚点继续推进。
         track = state.get("trackId")
         playing = bool(state.get("active")) and state.get("playbackStatus") == "Playing"
         incoming = max(0.0, float(state.get("position") or 0))
@@ -751,7 +747,7 @@ class MprisService:
         meta = meta if isinstance(meta, dict) else {}
         cover = str(meta.get("cover") or "")
         if cover:
-            # The cover is fetched by this process, so it gets the same SSRF screen as the audio.
+            # 封面由本进程下载，所以要和音频一样经过 SSRF 校验。
             validate_download_url(cover)
         validate_download_url(url)
         destination = download_directory(directory)
@@ -776,7 +772,7 @@ class MprisService:
 
     def run_download(self, job, url, destination, filename, declared, meta=None):
         meta = meta if isinstance(meta, dict) else {}
-        # Frontends that predate the notify field always got desktop notifications.
+        # 早于 notify 字段的前端一直是发桌面通知的。
         notify_system = str(meta.get("notify") or "system") == "system"
         path = None
         try:
@@ -831,8 +827,8 @@ class MprisService:
         self.recognition.expire()
         with self.lock:
             downloading = self.download is not None and self.download.get("active")
-            # The frontend polls every 500ms, so 15s meant any hiccup in the Steam client
-            # killed the helper and forced a fresh python3 boot; give it real slack.
+            # 前端每 500ms 轮询一次，15s 的阈值意味着 Steam 客户端任何一次卡顿
+            # 都会干掉辅助进程并重新启动 python3；这里留出足够的余量。
             expired = time.monotonic() - self.last_seen > 60
         if downloading or self.recognition.active():
             return True
@@ -854,9 +850,8 @@ class MprisService:
             self.server.shutdown()
             Gio.bus_unown_name(self.owner)
             self.cover_directory.cleanup()
-            # Nothing else removes the runtime directory, so every plugin reload
-            # and every Steam start used to strand one. Leaving the port file
-            # behind is what tells the plugin the helper is still alive.
+            # 没有别的东西会删除这个运行目录，所以过去每次插件重载、每次 Steam
+            # 启动都会遗留一个。端口文件还在，正是插件判断辅助进程仍存活的依据。
             if os.path.basename(os.path.normpath(self.runtime_dir)).startswith("nemusic-mpris-"):
                 shutil.rmtree(self.runtime_dir, ignore_errors=True)
 

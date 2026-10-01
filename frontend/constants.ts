@@ -9,8 +9,8 @@ export function isPlayerDocument(url: unknown): boolean {
 export const MPRIS_PLAYER_NAME = "NEMusicOnSteam";
 
 /**
- * The command a desktop shortcut should run. `-p` is not optional: without it playerctl
- * targets whichever MPRIS player was active last, which is usually a browser tab.
+ * 桌面快捷方式应该执行的命令。-p 不是可选项：少了它，playerctl 会作用于上一次活跃的
+ * 那个 MPRIS 播放器，而那通常是个浏览器标签页。
  */
 export function mprisCommand(action: string): string {
   return `playerctl -p ${MPRIS_PLAYER_NAME} ${action}`;

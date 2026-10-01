@@ -1,10 +1,10 @@
 /**
- * The steady-state half of recognitionScript: refreshes the config of the page script that is
- * already running and reports whether it is there. Recognition runs on a two second timer, so
- * sending the whole bundle just to learn it is installed is a needless allocation every tick.
+ * recognitionScript 的稳态部分：刷新已在运行的页面脚本的配置，并汇报它是否还在。
+ * 识曲每两秒运行一次定时器，为了确认「装上了没有」而每次都发整份脚本，
+ * 只会是每个 tick 一次无谓的内存分配。
  */
 
-/** Bumped whenever the injected api changes shape, so an upgrade replaces the old page script. */
+/** 注入的 api 结构一有变化就递增，让升级能够替换掉页面上的旧脚本。 */
 const RECOGNITION_API_VERSION = 4;
 
 export function recognitionUpdateScript(endpoint: string, token: string, open = false): string {
@@ -23,8 +23,8 @@ export function recognitionScript(endpoint: string, token: string, open = false)
     const config = ${JSON.stringify({ endpoint, token, open })};
     const key = '__nemusicRecognition';
     const version = ${RECOGNITION_API_VERSION};
-    // A stale api from an older plugin build would keep serving its old closures (a store
-    // captured at install time, an older play flow), so a version bump replaces it entirely.
+    // 旧版本插件留下的过期 api 会继续用它当初的闭包（比如安装那一刻抓到的 store、
+    // 旧版的播放流程），所以版本号一升就把它整个替换掉。
     if (window[key] && window[key].version === version) {
       window[key].config = config;
       window[key].ensureHeaderButton?.();

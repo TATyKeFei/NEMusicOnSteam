@@ -6,14 +6,14 @@ local fs = require("fs")
 local mpris_dir = nil
 local mpris_token = nil
 
--- The frontend polls every 500ms, and a spawn attempt forks python3 and blocks this process for
--- up to a second while it boots. Without a breather a helper that cannot start at all stacked
--- those stalls back to back. Count skipped polls instead of reading a clock: utils.time_ms()
--- reports a negative value in this 32-bit Lua host, and an earlier deadline-based gate treated
--- its 0 sentinel as still in the future, so mpris_endpoint returned "" forever and never retried.
--- The first gap is 5s: a PyGObject cold boot often outlasts the 1s port wait below, and forking
--- a second helper while the first is still starting leaves two processes racing for the D-Bus
--- name — the loser keeps serving HTTP that MPRIS clients never see.
+-- 前端每 500ms 轮询一次，而每次尝试拉起辅助进程都会 fork 一个 python3，并在它启动
+-- 期间阻塞本进程最长一秒。没有喘息间隔的话，一个根本起不来的辅助进程会把这些阻塞连
+-- 续叠加。所以这里用「跳过的轮询次数」计数，而不是去读时钟：utils.time_ms() 在这个
+-- 32 位 Lua 宿主里会返回负数，早期基于截止时间的判断把它的 0 哨兵值当成「还在未来」，
+-- 于是 mpris_endpoint 永远返回 "" 再也不重试。
+-- 首个间隔取 5s：PyGObject 冷启动经常超过下面 1s 的端口等待，在第一个还在启动时再 fork
+-- 一个，会留下两个进程抢同一个 D-Bus 名字——抢输的那个仍在提供 MPRIS 客户端根本看不到
+-- 的 HTTP 服务。
 local RESPAWN_SKIP_POLLS = { 10, 20, 40, 80, 120 }
 local respawn_failures = 0
 local respawn_skip = 0
@@ -22,9 +22,9 @@ local function shell_quote(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
--- Every failure used to return "" and the frontend turned that into one message blaming
--- Python/PyGObject/D-Bus, which sent users installing packages they already had. Return a
--- "!<code>:<detail>" reason instead so the settings page can name the step that failed.
+-- 过去任何失败都只返回 ""，前端把它一律变成「请检查 Python/PyGObject/D-Bus」，导致用户
+-- 去安装他们本来就已经装好的包。改为返回 "!<code>:<detail>" 形式的失败原因，让设置页能
+-- 指出到底是哪一步失败了。
 local function last_log_line(path)
     local text = utils.read_file(path)
     if text == nil then return "" end
@@ -47,8 +47,8 @@ function mpris_endpoint()
             respawn_skip = 0
             return "http://127.0.0.1:" .. port .. "|" .. mpris_token
         end
-        -- The helper deletes its runtime directory when it exits, so a missing
-        -- port file means the previous process is gone and a new one is needed.
+        -- 辅助进程退出时会删掉自己的运行目录，所以端口文件消失就意味着上一个进程已经
+        -- 没了，需要重新拉起一个。
         mpris_dir = nil
         mpris_token = nil
     end
@@ -71,8 +71,8 @@ function mpris_endpoint()
     if not utils.write_file(path, script) then return "!write-helper" end
     if not utils.write_file(dir .. "/recognition.py", recognition) then return "!write-recognition" end
     if not utils.write_file(dir .. "/token", token) then return "!write-token" end
-    -- Keep the log outside the runtime directory: the helper wipes that directory on exit,
-    -- so a helper that dies before announcing its port would take its own traceback with it.
+    -- 日志要放在运行目录之外：辅助进程退出时会清空该目录，一个在报出端口前就死掉的
+    -- 辅助进程会把自己的回溯一起带走。
     local log_path = base .. "/nemusic-mpris.log"
     utils.exec("python3 " .. shell_quote(path) .. " " .. shell_quote(dir) .. " </dev/null >" .. shell_quote(log_path) .. " 2>&1 &")
     for _ = 1, 20 do
@@ -129,7 +129,7 @@ return {
         {
             find = [[\{name:"#Menu_Library",steamURL:"steam://open/library/view/home"\}]],
             file = [[chunk~[0-9a-f]+\.js]],
-            -- Menu label stays ASCII. Packed Lua corrupts raw non-ASCII and the View menu would show mojibake.
+            -- 菜单标签保持 ASCII：打包后的 Lua 会破坏原始非 ASCII 字符，否则「查看」菜单里会显示乱码。
             transforms = {
                 {
                     match = [[\{name:"#Menu_Library",steamURL:"steam://open/library/view/home"\}]],
@@ -138,9 +138,9 @@ return {
             },
         },
         {
-            -- Current Steam builds the library/community row in one SuperNav function. Insert a real React child
-            -- so the client stops deleting an outside DOM node. Labels are code points: packed Lua and
-            -- the patch replacer both mangle raw non-ASCII and backslash-u escapes.
+            -- 当前版本的 Steam 把「库/社区」这一行放在同一个 SuperNav 函数里。插入一个真正的
+            -- React 子节点，客户端才不会去删除这个外部 DOM 节点。标签用码点表示：打包后的
+            -- Lua 和补丁替换器都会破坏原始非 ASCII 字符以及 \u 转义。
             find = [=[function Sr\(Or\)\{const Ar=\(0,d\.Sn\)\(\);return\(0,e\.jsxs\)\("div",\{className:mt\(\)\.SuperNav,children:\[\(0,e\.jsx\)\(fr,\{\}\),\(0,e\.jsx\)\(yr,\{\}\),\(0,e\.jsx\)\(Pt,\{\}\),\(0,e\.jsx\)\(gt,\{\}\),\(0,e\.jsx\)\(Te,\{\}\),\(0,e\.jsx\)\(Et,\{\}\),Ar&&\(0,e\.jsx\)\(qt,\{\}\)\]\}\)\}]=],
             file = [[chunk~[0-9a-f]+\.js]],
             transforms = {

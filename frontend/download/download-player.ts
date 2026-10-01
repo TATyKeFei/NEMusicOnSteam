@@ -26,12 +26,12 @@ export type DownloadTrack = {
   source: "api" | "player";
 };
 
-/** A song picked from a list row instead of whatever happens to be playing. */
+/** 从列表行里选中的歌曲，而不是当前恰好在播的那一首。 */
 export type DownloadSong = { id: number; name: string; artist: string; album?: string; cover?: string };
 
 export const DEFAULT_DOWNLOAD_NAME_TEMPLATE = "{artist} - {title}";
 
-/** Replaces {title} {artist} {album} tokens; unknown tokens are left for the user to fix. */
+/** 替换 {title} {artist} {album} 占位符；无法识别的占位符原样保留，让用户自己去改。 */
 export function formatDownloadName(template: string, parts: { title: string; artist: string; album: string }): string {
   return template
     .split("{title}").join(parts.title)
@@ -43,7 +43,7 @@ export function isDownloadQuality(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && Object.prototype.hasOwnProperty.call(DOWNLOAD_LEVELS, value);
 }
 
-/** Lossless levels and above ask NetEase for flac; lossy levels let it pick. */
+/** 无损及以上的档位向网易云指定 flac；有损档位让它自己挑。 */
 export function downloadLevel(value: number): { level: string; encodeType: string | null } | null {
   const level = DOWNLOAD_LEVELS[value];
   if (level == null) return null;
@@ -51,8 +51,8 @@ export function downloadLevel(value: number): { level: string; encodeType: strin
 }
 
 /**
- * Base name for the saved file, without an extension: Python appends the real one after sniffing the bytes.
- * Separators and length are enforced on the Python side; this only normalizes whitespace.
+ * 保存文件的基础名，不含扩展名：真实的扩展名由 Python 在嗅探字节后补上。
+ * 分隔符和长度限制都在 Python 那边处理，这里只负责规整空白字符。
  */
 export function songFileName(template: string, parts: { title: unknown; artist: unknown; album?: unknown }): string {
   const clean = (value: unknown) => String(value ?? "").replace(/[\x00-\x1f\x7f]+/g, " ").replace(/\s+/g, " ").trim();
@@ -146,9 +146,9 @@ export function downloadScript(value: number, song?: DownloadSong): string {
 }
 
 /**
- * Reads the player's own playing list out of the Redux store. The state key has moved between
- * NetEase updates before, so every reasonable candidate is probed and entries are only accepted
- * when they carry a real id and name — a wrong guess yields an empty list, never bad downloads.
+ * 从 Redux store 里读播放器自己的播放列表。这个状态键在网易云的历次更新中挪过位置，
+ * 所以这里把所有合理的候选都探测一遍，并且只接受带有真实 id 和名称的条目——猜错最多
+ * 得到一个空列表，绝不会下到错误的文件。
  */
 export const PLAYING_LIST_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}

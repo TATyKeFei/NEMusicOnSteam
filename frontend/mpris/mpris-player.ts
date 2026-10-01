@@ -1,7 +1,6 @@
 /**
- * Page scripts that act on the NetEase player on behalf of MPRIS: fetching lyrics and
- * dispatching playback commands. The read-only state scripts (store access, transport
- * lookup, snapshot) live in ../player/player-access.ts.
+ * 代表 MPRIS 操作网易云播放器的页面脚本：抓取歌词、下发播放指令。
+ * 只读的状态脚本（store 访问、播放控件定位、快照）在 ../player/player-access.ts。
  */
 import { PLAYER_ACCESS_SCRIPT, TRANSPORT_SCRIPT } from "../player/player-access.ts";
 
@@ -148,14 +147,14 @@ export function commandScript(command: Command): string {
       case 'volume': return Number.isFinite(command.value) && playerControl.volume(command.value);
       case 'rate': if (media && Number.isFinite(command.value) && command.value > 0) { media.playbackRate = command.value; return true; } return false;
       case 'shuffle': {
-        // Clearing shuffle must not undo a loop the client asked for earlier.
+        // 关闭随机播放不能顺带取消客户端之前要求的循环模式。
         if (command.value !== true && currentMode() !== MODE_RANDOM) return true;
         return setPlayingMode(command.value === true ? MODE_RANDOM : MODE_ORDER);
       }
       case 'loop': {
         const target = command.value === 'Track' ? MODE_SINGLE : command.value === 'Playlist' ? MODE_CYCLE : command.value === 'None' ? MODE_ORDER : null;
         if (!target) return false;
-        // LoopStatus None only clears a loop mode; order and random playback are already unlooped.
+        // LoopStatus 为 None 只是清除循环模式；顺序和随机播放本来就不算循环。
         if (target === MODE_ORDER && currentMode() !== MODE_SINGLE && currentMode() !== MODE_CYCLE) return true;
         return setPlayingMode(target);
       }

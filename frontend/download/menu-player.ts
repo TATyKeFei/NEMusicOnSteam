@@ -1,13 +1,13 @@
 /**
- * Runs inside the NetEase page (not the Steam window) to add a 下载 item to the song "···" menu.
- * The menu is React-rendered third-party DOM, so every step is defensive: when a menu or a song
- * cannot be identified we inject nothing instead of guessing, and the reason surfaces in the
- * plugin settings so a NetEase redesign is visible rather than silent.
+ * 运行在网易云页面内部（不是 Steam 窗口），给歌曲的「···」菜单加一个「下载」项。
+ * 这个菜单是 React 渲染出来的第三方 DOM，所以每一步都做防御性处理：认不出菜单或歌曲时
+ * 宁可不注入也不猜，并且把原因暴露到插件设置里，这样网易云改版后是「看得见的失败」，
+ * 而不是静默失效。
  */
 
 /**
- * DOM-free helpers. Self-invoking so `node:vm` can hand them plain objects and assert on the
- * song that would be picked.
+ * 不依赖 DOM 的辅助函数。自调用形式，这样 `node:vm` 可以直接传入普通对象，
+ * 对「将会选中哪首歌」做断言。
  */
 export const MENU_HELPERS_SCRIPT = `(() => {
   const ARTIST_KEYS = ['ar', 'artists', 'singer', 'singers'];
@@ -26,7 +26,7 @@ export const MENU_HELPERS_SCRIPT = `(() => {
     return '';
   };
 
-  /** A track row, not a playlist or album header: needs a real id, a name, and track-only fields. */
+  /** 必须是歌曲行，而不是歌单或专辑的表头：需要真实的 id、名称，以及只有歌曲才有的字段。 */
   const asSong = value => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const id = Number(value.id ?? value.songId ?? value.trackId ?? value.resourceId);
@@ -44,8 +44,8 @@ export const MENU_HELPERS_SCRIPT = `(() => {
   const MAX_DEPTH = 4;
 
   /**
-   * Walks named keys only. Never descends into arrays: the first element of a list prop is a
-   * different song, and downloading the wrong file is worse than downloading nothing.
+   * 只沿具名字段向下走，绝不进入数组：列表属性里的第一个元素是另一首歌，
+   * 下错文件比不下更糟。
    */
   const findSongFromProps = props => {
     if (!props || typeof props !== 'object' || Array.isArray(props)) return null;
@@ -72,8 +72,8 @@ export const MENU_HELPERS_SCRIPT = `(() => {
 })()`;
 
 /**
- * Function expression that installs the scanner and is idempotent, so the frontend can just call
- * it on every tick: after a page reload the global is gone and it installs itself again.
+ * 安装扫描器的函数表达式，幂等，所以前端每次 tick 直接调用即可：页面刷新后全局变量会消失，
+ * 它会自行重新安装一次。
  */
 const MENU_INSTALL = `() => {
   const helpers = ${MENU_HELPERS_SCRIPT};
@@ -119,7 +119,7 @@ const MENU_INSTALL = `() => {
     return key ? element[key] : null;
   };
 
-  /** Row components hold the song in their props, so the clicked node is the best lead. */
+  /** 行组件把歌曲存在自己的 props 里，所以从被点击的节点往上找最有可能找到。 */
   const songFromNode = node => {
     let element = node && node.nodeType === 1 ? node : null;
     for (let hops = 0; element && hops < 12; element = element.parentElement, hops++) {
@@ -150,7 +150,7 @@ const MENU_INSTALL = `() => {
     return items;
   };
 
-  /** Class names are hashed, so also look next to the click and at body-level portal children. */
+  /** 类名是哈希过的，所以还要看点击位置的邻近节点，以及 body 层的 portal 子节点。 */
   const rootsNear = clicked => {
     const roots = new Set();
     for (const child of document.body.children) roots.add(child);
@@ -188,7 +188,7 @@ const MENU_INSTALL = `() => {
     api.toastTimer = setTimeout(() => { box.style.display = 'none'; }, 5000);
   };
 
-  /** Clone a sibling item so the label matches the native menu, then swap its text. */
+  /** 克隆一个同级菜单项，让样式与原生菜单一致，再把文案换成「下载」。 */
   const inject = (source, parent, song) => {
     let item = null;
     try {
@@ -261,9 +261,9 @@ const MENU_INSTALL = `() => {
 }`;
 
 /**
- * The steady-state half of MENU_TICK_SCRIPT: drains what the user asked for and reports what the
- * scanner found, without reshipping the installer. The scanner polls every second, so inlining
- * the installer into every tick re-parsed the whole bundle in the page for no gain.
+ * MENU_TICK_SCRIPT 的稳态部分：取出用户点击的下载请求，并汇报扫描器的发现，
+ * 不重复投递安装代码。扫描器每秒轮询一次，把安装代码内联进每次 tick 只会让页面
+ * 白白重复解析整份脚本，没有任何收益。
  */
 export const MENU_POLL_SCRIPT = `(() => {
   const api = window.__nemusicDownload;
@@ -272,7 +272,7 @@ export const MENU_POLL_SCRIPT = `(() => {
   return { installed: true, menus: api.menus || 0, songs: api.songs || 0, pending };
 })()`;
 
-/** One round trip: installs the scanner if it is missing and drains whatever the user asked for. */
+/** 一次往返：扫描器缺失时就安装，并取出用户点击的下载请求。 */
 export const MENU_TICK_SCRIPT = `(() => {
   let status = null;
   try {
@@ -290,7 +290,7 @@ export const MENU_TICK_SCRIPT = `(() => {
   };
 })()`;
 
-/** Lets the frontend report progress and failures where the user is actually looking. */
+/** 让前端把进度和失败信息显示在用户真正会看的地方。 */
 export function menuToastScript(message: string): string {
   return `(() => {
     const api = window.__nemusicDownload;

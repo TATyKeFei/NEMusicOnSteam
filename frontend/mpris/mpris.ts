@@ -37,7 +37,7 @@ const FAILURE_REASONS: Record<string, string> = {
   spawn: "辅助进程启动后没有监听端口",
 };
 
-/** mpris_endpoint returns "!<code>:<detail>" when the helper cannot start. */
+/** 辅助进程起不来时，mpris_endpoint 会返回 "!<code>:<detail>"。 */
 function describeFailure(result: string): string {
   const match = /^!([a-z-]+)(?::(.*))?$/.exec(result);
   const code = match?.[1] ?? "";
@@ -161,10 +161,9 @@ export class MprisBridge {
     });
   }
 
-  // Lyrics are fetched out of band: LYRICS_SCRIPT awaits the page's own /api/song/lyric call
-  // (2s timeout), and awaiting that inside the tick stalled command handling and position
-  // updates for as long as the fetch took, on every track change. The tick stays synchronous
-  // with respect to lyrics; the fetch stores its result aside and the next tick publishes it.
+  // 歌词在后台抓取：LYRICS_SCRIPT 会等待页面自己调 /api/song/lyric（2 秒超时），在 tick
+  // 里 await 它会导致每次切歌后，命令处理和进度更新都被这次请求卡住那么久。现在 tick
+  // 在歌词这件事上保持同步，抓取任务把结果存到一旁，由下一个 tick 发布。
   private requestLyrics(snapshot: TrackState): void {
     const trackId = snapshot.trackId;
     if (!trackId) {
@@ -250,7 +249,7 @@ export class MprisBridge {
           }
         }
       }
-      // A closed player has no page to read; report Stopped without a CDP round trip per tick.
+      // 播放器关闭时没有页面可读，直接上报 Stopped，不必每个 tick 都跑一趟 CDP。
       const snapshot = this.enabled
         ? ((await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null) ?? EMPTY_STATE
         : EMPTY_STATE;
@@ -261,12 +260,12 @@ export class MprisBridge {
       if (!connected) return;
       const payload: Partial<TrackState> & { notify: NotificationMode } = { ...this.state, notify: this.notifyMode() };
       if (this.lastSentLyrics === this.state.lyrics) delete payload.lyrics;
-      // An install with no player open reports the same stopped state forever; posting it twice a
-      // second only keeps an upload and its response body alive in the Steam UI renderer.
+      // 没打开播放器的安装会永远上报同一个停止状态；每秒上报两次，只是让一份上传和
+      // 它的响应体一直留在 Steam UI 渲染器的堆里。
       const encoded = JSON.stringify(payload);
       if (encoded !== this.lastSentState) {
         const update = await this.request("/state", payload);
-        // A response body nobody reads stays in the renderer's heap until GC; drain it either way.
+        // 没人读的响应体会一直留在渲染器堆里等 GC，不管怎样都把它读掉。
         await update.arrayBuffer().catch(() => {});
         if (!update.ok) throw new Error(`MPRIS state update failed: ${update.status}`);
         this.lastSentState = encoded;
@@ -285,8 +284,8 @@ export class MprisBridge {
     }
   }
 
-  // Steam toasts are raised here so they work even when the Python helper is unavailable;
-  // the helper keeps raising desktop notifications on its own for the "system" mode.
+  // Steam 弹窗放在这里触发，这样即使 Python 辅助进程不可用也能工作；
+  // "system" 模式下的桌面通知仍然由辅助进程自己发出。
   private maybeToastTrack(state: TrackState): void {
     if (this.notifyMode() !== "steam") return;
     if (!state.active || state.playbackStatus !== "Playing" || !state.title) return;

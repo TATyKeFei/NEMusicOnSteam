@@ -14,7 +14,7 @@ export type ChromeHandlers = {
   onClose: () => void;
 };
 
-/** Whether the Steam-window supernav entry is the patched native link or our DOM fallback. */
+/** Steam 窗口顶栏入口用的是补丁后的原生链接，还是我们自己的 DOM 兜底实现。 */
 export type NavEntryStatus = "native" | "fallback" | "none";
 
 export type ChromeModel = {
@@ -43,9 +43,9 @@ type Display = "block" | "flex" | "none";
 const placed = new WeakMap<HTMLElement, { box: string; display: Display }>();
 
 /**
- * Writing a style property dirties layout, and the next getBoundingClientRect in the same tick
- * then pays for a full style/layout pass over the whole Steam client document. render() runs
- * several times per tick, so leave anything that has not actually moved untouched.
+ * 写样式属性会让布局失效，同一 tick 内紧接着的 getBoundingClientRect 就要为整个 Steam
+ * 客户端文档付一次完整的样式/布局计算。render() 每个 tick 会跑好几次，所以没有真正移动
+ * 过的东西一律不要碰。
  */
 function place(element: HTMLElement, bounds: Bounds, display: Display): void {
   const box = `${bounds.x},${bounds.y},${bounds.width},${bounds.height}`;
@@ -197,7 +197,7 @@ export class PlayerChrome {
     this.paintNavLink(model);
     const expanded = model.mode === "expanded";
     const parked = model.mode === "collapsed" && model.keepAlive;
-    // The row appearing or being rebuilt means the client's chrome moved, so measure once more.
+    // 这一行出现或被重建，说明客户端的界面挪动了，需要重新测量一次。
     if (this.headerNav !== nav) {
       this.headerNav = nav;
       this.headerHeight = null;
@@ -271,10 +271,9 @@ export class PlayerChrome {
   private styleToolbar(): void {
     if (this.bar == null) return;
     for (const button of Array.from(this.bar.querySelectorAll("button"))) {
-      // Styling and hover listeners are applied once per button: this runs on
-      // every render (twice per 400ms tick), so re-attaching here leaked two
-      // listeners per button per render. It also kept resetting background and
-      // color, cancelling an in-progress hover highlight.
+      // 样式和 hover 监听每个按钮只设置一次：这里每帧都会执行（每个 400ms tick 两次），
+      // 重复挂载会导致每次渲染每个按钮多泄漏两个监听器。而且重复设置还会不断重置背景色和
+      // 文字色，把正在进行的 hover 高亮打断掉。
       if (this.styledButtons.has(button)) continue;
       this.styledButtons.add(button);
       button.className = "";
@@ -300,7 +299,7 @@ export class PlayerChrome {
     }, 120) ?? 0;
   };
 
-  /** A window that loses focus or gets minimized never delivers the bar's mouseleave. */
+  /** 窗口失去焦点或被最小化时，永远收不到工具条的 mouseleave。 */
   dismissToolbar(): void {
     this.clearToolbarTimer();
     if (!this.toolbarOpen) return;
@@ -366,8 +365,8 @@ export class PlayerChrome {
     this.paintedMode = null;
   }
 
-  /* recognition opens from inside the NetEase page: its own header button and the native
-   * 听歌识曲 button are wired by recognition-player.ts, so the Steam chrome needs no entry. */
+  /* 识曲从网易云页面内部打开：它自己的顶栏按钮和原生「听歌识曲」按钮都由
+   * recognition-player.ts 接管，所以 Steam 界面这边不需要任何入口。 */
 
   private ensureNavLink(doc: Document): HTMLElement | null {
     const native = this.nativeNavLink(doc);
@@ -376,10 +375,10 @@ export class PlayerChrome {
       this.lastNavEntry = "native";
       return native.parentElement ?? native;
     }
-    // While the fallback link sits connected in its host, the host MutationObserver already
-    // re-appends the link when the client rebuilds the row and hands over to a native link
-    // when one appears. findSupernavRow is a whole-document elementsFromPoint scan, so skip
-    // it whenever the link and its host are both alive.
+    // 只要兜底链接还挂在存活的 host 上，host 的 MutationObserver 就已经在负责：客户端
+    // 重建这一行时它会把链接重新挂回去，原生链接出现时它也会交出控制权。而
+    // findSupernavRow 是一次全文档的 elementsFromPoint 扫描，所以链接和 host 都还活着
+    // 的时候直接跳过它。
     if (this.link?.isConnected && this.navHost?.isConnected && this.link.parentElement === this.navHost) {
       this.lastNavEntry = "fallback";
       return this.navHost;
@@ -511,15 +510,15 @@ export class PlayerChrome {
     };
   }
 
-  /** The window size and the client's own chrome are the only things that move the measurement. */
+  /** 只有窗口尺寸和客户端自身的界面变化会让测量结果失效。 */
   invalidateHeader(): void {
     this.headerHeight = null;
   }
 
   /**
-   * Last resort for the header height: one rect per button in the whole client document, which is
-   * both a very large scan and a layout flush per button. The nav row supplies the height in
-   * practice, so measure this once and keep it until a resize or a new document.
+   * 求顶栏高度的最后手段：要对整个客户端文档里的每个按钮取一次 rect，既是一次巨大的扫描，
+   * 也会为每个按钮触发一次布局刷新。实际中顶栏那一行就能给出高度，所以只测一次，
+   * 一直保留到窗口尺寸变化或文档更换为止。
    */
   private headerFallback(doc: Document): number {
     this.headerHeight ??= headerHeightFromButtons(this.topButtons(doc));

@@ -137,7 +137,7 @@ export class PlayerController {
     };
   }
 
-  /** Returns the refreshed snapshot so callers can feed setState directly. */
+  /** 返回刷新后的快照，调用方可以直接喂给 setState。 */
   updateSettings(patch: Partial<PlayerSettings>): PlayerSnapshot {
     this.settings = { ...this.settings, ...patch, launcher: patch.launcher ?? this.settings.launcher };
     writeSettings(browserStorage(), this.settings);
@@ -304,9 +304,9 @@ export class PlayerController {
   };
 
   /**
-   * Minimizing takes the child BrowserView's surface with it and Steam does not put it back on
-   * restore, so the client shows our chrome over an empty page — and the toolbar stays up because
-   * the bar never sees the mouseleave that would have closed it.
+   * 最小化窗口会把子 BrowserView 的画面一起带走，而 Steam 恢复时并不会把它放回去，于是
+   * 我们的界面就显示在一片空白页面之上；工具条也会一直挂着，因为它永远收不到本该关闭
+   * 它的那个 mouseleave。
    */
   private onVisibilityChange = (): void => {
     this.chrome.dismissToolbar();
@@ -314,7 +314,7 @@ export class PlayerController {
     this.reattachView();
   };
 
-  /** A hide/show cycle is what makes Steam rebuild the surface; another SetVisible(true) is not. */
+  /** 真正能让 Steam 重建画面的是一次隐藏/显示循环，再调一次 SetVisible(true) 没用。 */
   private reattachView(): void {
     const view = this.view;
     if (view == null) return;
@@ -441,8 +441,8 @@ export class PlayerController {
     return bounds;
   }
 
-  // Takes the bounds render() already produced: laying the chrome out costs a full pass over the
-  // client document, and the tick ran it twice per frame with nothing changing in between.
+  // 直接复用 render() 已经算好的 bounds：排一次界面要对整个客户端文档做一次遍历，
+  // 而 tick 里原本每帧会跑两遍，中间却什么都没变。
   private syncView(force: boolean, bounds: Bounds | null): void {
     const active = this.mode === "expanded" || (this.mode === "collapsed" && this.settings.keepAliveWhenCollapsed);
     if (!active || this.view == null) {
@@ -466,8 +466,8 @@ export class PlayerController {
   private applyBounds(bounds: Bounds, force: boolean): void {
     if (this.view == null) return;
     if (!force && sameBounds(this.lastBounds, bounds)) {
-      // SetVisible goes through the client's BrowserView IPC; with the tick running several
-      // times a second, only send it when visibility actually has to flip.
+      // SetVisible 要走客户端的 BrowserView IPC；tick 每秒要跑好几次，所以只在可见性
+      // 真的需要翻转时才发。
       if (!this.viewVisible) {
         try {
           this.view.SetVisible(true);

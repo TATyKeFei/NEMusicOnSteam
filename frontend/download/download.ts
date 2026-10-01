@@ -62,7 +62,7 @@ function delay(ms: number): Promise<void> {
   return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
-/** The helper answers a rejected request with {"error": "..."}; prefer that over a generic message. */
+/** 辅助进程会用 {"error": "..."} 回应被拒绝的请求；优先用它，而不是笼统的提示。 */
 async function failureText(response: Response, fallback: string): Promise<string> {
   try {
     const payload = (await response.json()) as { error?: string };
@@ -124,15 +124,15 @@ export class DownloadBridge {
     };
   }
 
-  /** Downloads the song playing right now, or one the user picked from a list menu. */
+  /** 下载当前正在播放的歌曲，或用户在列表菜单里选中的那一首。 */
   async download(song?: DownloadSong): Promise<void> {
     if (!this.enabled) {
       this.status = "先打开播放器再下载";
       return;
     }
     if (this.busy) {
-      // The helper runs one job at a time; a queue on this side turns repeated requests
-      // into sequential downloads instead of a 409 dead end.
+      // 辅助进程一次只跑一个任务；这一侧维护队列，把用户的重复点击变成依次下载，
+      // 而不是撞上一堵 409 的墙。
       if (song != null) {
         this.queue.push(song);
         this.report(this.queue.length === 1 ? "已加入下载队列" : `已加入下载队列，前面还有 ${this.queue.length - 1} 首`);
@@ -208,7 +208,7 @@ export class DownloadBridge {
     }
   }
 
-  /** Reads the player's playing list and queues every song on it for sequential downloads. */
+  /** 读取播放器的播放列表，把里面每首歌都排进队列依次下载。 */
   async downloadPlayingList(): Promise<void> {
     if (!this.enabled) {
       this.status = "先打开播放器再下载";
@@ -251,14 +251,14 @@ export class DownloadBridge {
     this.toast(text);
   }
 
-  /** Reports where the user is actually looking; the settings tab is usually not on screen. */
+  /** 把信息报到用户真正会看到的地方；设置页通常不在当前屏幕上。 */
   private toast(text: string): void {
     void this.evaluate(menuToastScript(text)).catch(() => {});
   }
 
   /**
-   * The scanner reports whether it is still on the page, and a reload takes it with it: only the
-   * tick that finds it missing pays for the installer, every other tick sends the small poll.
+   * 扫描器会汇报自己是否还在页面上，而页面刷新会把它一起带走：所以只有发现它不见的那次
+   * tick 才需要付出安装代码的代价，其余每次 tick 都只发那个小轮询。
    */
   private async tickMenu(): Promise<void> {
     if (!this.enabled) return;
@@ -285,7 +285,7 @@ export class DownloadBridge {
     return track;
   }
 
-  /** Evaluates against the shared player session, which is attached once and reused. */
+  /** 在共享的播放器会话上求值，该会话只 attach 一次然后反复复用。 */
   private async evaluate(expression: string): Promise<unknown> {
     return evaluateInPlayer(expression, { awaitPromise: true });
   }

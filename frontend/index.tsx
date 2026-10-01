@@ -24,8 +24,8 @@ function NoteIcon() {
   );
 }
 
-// snapshot() hands back fresh objects every call, so feeding it to setState unconditionally
-// re-rendered the whole panel several times a second even when nothing had changed.
+// snapshot() 每次调用都会返回全新的对象，所以无条件喂给 setState 会让整个面板每秒重渲染
+// 好几次，哪怕什么都没变。
 function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
   return a.mode === b.mode
     && a.status === b.status
@@ -91,7 +91,7 @@ function SettingsContent() {
       : snapshot.throttlingSupported
         ? "这版 Steam 有这个接口"
         : "这版 Steam 没有这个接口";
-  // MPRIS, and therefore the shortcut commands built on it, only exists on Linux.
+  // MPRIS 以及基于它的快捷键命令只在 Linux 上存在。
 
   return (
     <>

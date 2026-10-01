@@ -73,7 +73,7 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     downloadDirectory: directoryOr(record.downloadDirectory, defaultSettings.downloadDirectory),
     downloadQuality: isDownloadQuality(record.downloadQuality) ? record.downloadQuality : defaultSettings.downloadQuality,
     notificationMode,
-    // Settings saved before the split had one switch for both channels: keep them in sync.
+    // 拆分之前保存的设置只有一个开关管两个渠道：保持它们同步。
     downloadNotificationMode: notificationModeOr(record.downloadNotificationMode ?? record.notificationMode, notificationMode),
     downloadNameTemplate: templateOr(record.downloadNameTemplate, defaultSettings.downloadNameTemplate),
   };
