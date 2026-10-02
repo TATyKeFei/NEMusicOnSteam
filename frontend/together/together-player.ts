@@ -171,6 +171,67 @@ export const TOGETHER_SYNC_ARM_SCRIPT = `(() => {
 })()`;
 
 /**
+ * 拉一次房间指令并自己套用。
+ *
+ * 为什么需要这个：网页版的 YunxinIM 是空壳——subscribeYunXinIMChatRoomMsg 的方法体是
+ * `yield () => () => {}`，loginIM / enterRTC 同样什么都不做，所以 onChatRoomMsg 从来没被注册
+ * 过。结果是网页版只能发不能收：play/command/report 是 HTTP，服务端广播出去，手机原生端收
+ * 得到；可别人发的指令只走 IM，网页版没有接收通道，于是单向同步。
+ *
+ * 唯一能拿到别人指令的 HTTP 口是 sync/playlist/get，它返回 {playCommand, playlist}，
+ * 页面 restore 用的就是它。syncPlayList 这个 effect 会把它写进
+ * async:listenTogetherPlayList.playCommand，但只做记账、不会真的操作本地播放器（应用指令
+ * 的逻辑在 onRoomMsg 里，而 onRoomMsg 原本只由 IM 回调触发）。所以这里补上最后一步：拿到
+ * playCommand 之后，按 IM 回调的形状 dispatch 一次 listenTogetherPlayStatus/onRoomMsg，
+ * 去重、暂停续播、切歌、进度对齐全都交给页面自己的逻辑。
+ *
+ * onRoomMsg 内部用 `===` 比 targetSongId 和当前 resourceId，两边一个是字符串一个是数字的
+ * 时候永远不相等，非 NEXT/PREVIOUS/GOTO 的指令会被静默丢掉。所以同一个歌的时候按当前
+ * resourceId 的原值写回去。
+ */
+export const TOGETHER_SYNC_PULL_SCRIPT = `(() => {
+  ${PLAYER_ACCESS_SCRIPT}
+  if (!playerStore) return { ok: false, error: '播放器还没准备好' };
+  const together = playerStore.getState()?.['async:listenTogether'] || {};
+  const status = String(together.status || '');
+  if (status !== 'together' && status !== 'togetherOwner') return { ok: true, applied: false };
+  const roomId = String(together.roomInfo?.roomId || '');
+  if (!roomId) return { ok: true, applied: false };
+  const storeKey = '__NEMusicOnSteamSyncPull';
+  const own = globalThis[storeKey] || (globalThis[storeKey] = { last: '', at: 0 });
+  return (async () => {
+    const readCommand = () => playerStore.getState()?.['async:listenTogetherPlayList']?.playCommand || null;
+    const before = JSON.stringify(readCommand());
+    playerStore.dispatch({
+      type: 'async:listenTogetherPlayList/syncPlayList',
+      // forceUpdatePlaylist 传 false：这是拉指令，不是让人重播房间队列。
+      payload: { roomId, forceUpdatePlaylist: false, enableDispatchQueueChange: false, isIgnorePlayCommand: false },
+    });
+    // syncPlayList 要发一次 HTTP 才落库，这里轮询等它。1.5 秒封顶，够一个来回。
+    let command = null;
+    for (let i = 0; i < 15; i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      command = readCommand();
+      if (command && JSON.stringify(command) !== before) break;
+    }
+    if (!command) return { ok: true, applied: false, reason: '没拿到指令' };
+    const fingerprint = JSON.stringify(command);
+    // 同一条指令别每个 tick 都往里灌，页面每条都会打一行日志。5 秒后放行一次，
+    // 这样「拖回同一个进度」这种真的需要重新应用的场景不会被永久吃掉。
+    if (fingerprint === own.last && Date.now() - own.at < 5000) {
+      return { ok: true, applied: false, reason: '指令没变' };
+    }
+    own.last = fingerprint;
+    own.at = Date.now();
+    const cur = playerStore.getState()?.playing?.curPlaying;
+    const payload = Object.assign({}, command);
+    if (cur && String(payload.targetSongId) === String(cur.resourceId)) payload.targetSongId = cur.resourceId;
+    playerStore.dispatch({ type: 'async:listenTogetherPlayStatus/onRoomMsg', payload });
+    return { ok: true, applied: true, command: payload };
+  })();
+})()`;
+
+/**
  * 重新拉一次房间状态。页面自己在登录后也会调，但 Steam 这边重启插件、或用户中途登录的
  * 时候补一次更稳妥。
  */

@@ -10,6 +10,7 @@ import {
   TOGETHER_LEAVE_SCRIPT,
   TOGETHER_RESTORE_SCRIPT,
   TOGETHER_SYNC_ARM_SCRIPT,
+  TOGETHER_SYNC_PULL_SCRIPT,
   TOGETHER_START_SCRIPT,
   TOGETHER_STATE_SCRIPT,
   type TogetherState,
@@ -198,6 +199,15 @@ export class TogetherBridge {
     });
   }
 
+  /**
+   * 房间里就定期拉一次别人的播放指令。网页版的 IM 接收是空壳，这一票指令只能从
+   * sync/playlist/get 拿（见 TOGETHER_SYNC_PULL_SCRIPT）。失败了不打扰界面，下个 tick 再来。
+   */
+  private pullRemoteCommands(): void {
+    if (!this.state.inRoom || !this.state.roomId) return;
+    void evaluateInPlayer(TOGETHER_SYNC_PULL_SCRIPT, { awaitPromise: true }).catch(() => {});
+  }
+
   private async tick(): Promise<void> {
     if (!this.timer || this.busy) return;
     this.busy = true;
@@ -221,6 +231,7 @@ export class TogetherBridge {
         this.status = describe(this.state);
         if (this.maybeRestore()) void evaluateInPlayer(TOGETHER_RESTORE_SCRIPT).catch(() => {});
         this.armReport();
+        this.pullRemoteCommands();
       } else {
         const response = result as { ok: boolean; error?: string };
         if (response?.ok) {

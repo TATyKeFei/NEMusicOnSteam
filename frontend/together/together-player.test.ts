@@ -7,6 +7,7 @@ import {
   TOGETHER_START_SCRIPT,
   TOGETHER_STATE_SCRIPT,
   TOGETHER_SYNC_ARM_SCRIPT,
+  TOGETHER_SYNC_PULL_SCRIPT,
   type TogetherState,
 } from "./together-player.ts";
 
@@ -21,6 +22,8 @@ type FixtureOptions = {
   together?: Record<string, unknown>;
   togetherList?: Record<string, unknown>;
   store?: unknown;
+  /** 默认 dispatch 只记录不落库；需要模拟 effect 改 store 时用这个钩子。 */
+  onDispatch?: (action: { type: string; payload?: unknown }) => void;
 };
 
 /**
@@ -49,6 +52,7 @@ function fixture(options: FixtureOptions = {}) {
     getState: () => state,
     dispatch: (action: { type: string; payload?: unknown }) => {
       dispatched.push(action);
+      options.onDispatch?.(action);
       return action;
     },
   };
@@ -56,9 +60,13 @@ function fixture(options: FixtureOptions = {}) {
   const context = {
     document: { querySelector: () => null, querySelectorAll: (selector: string) => (selector.includes("#root > *") ? [root] : []) },
     getComputedStyle: () => ({ display: "block", visibility: "visible" }),
+    // 拉指令的脚本要 await 页面里的 setTimeout，vm context 默认没有这个全局。
+    setTimeout,
   };
   const run = <T>(script: string) => plain(runInNewContext(script, context)) as T;
-  return { state, dispatched, run };
+  // 拉指令脚本返回 Promise：等它跑完再拍平，普通 run 会把 Promise 直接 JSON 成 {}。
+  const runAsync = async <T>(script: string): Promise<T> => plain(await runInNewContext(script, context)) as T;
+  return { state, dispatched, run, runAsync };
 }
 
 /** 只填房间状态那一块，其余保持默认。 */
@@ -311,6 +319,79 @@ describe("打开播放指令上报", () => {
       ok: boolean;
       error: string;
     }>(TOGETHER_SYNC_ARM_SCRIPT);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /还没准备好/);
+  });
+});
+
+describe("拉取别人的播放指令", () => {
+  /**
+   * 页面拿到指令是异步的（要发一次 HTTP 才落库），所以用 onDispatch 模拟：收到 syncPlayList
+   * 就把 playCommand 填上。resourceId 默认给数字，正好复现 onRoomMsg 里 === 比对那个坑。
+   */
+  function remote(status: string, command: Record<string, unknown> | null, resourceId: unknown = 1900172235) {
+    const playList: Record<string, unknown> = { playCommand: null };
+    const fixture = room(
+      { status, roomInfo: { roomId: "123456", chatRoomId: "chat-9", creatorId: "10001" } },
+      {
+        playing: { curPlaying: { resourceId } },
+        togetherList: playList,
+        onDispatch: (action) => {
+          if (action.type === "async:listenTogetherPlayList/syncPlayList") playList.playCommand = command;
+        },
+      },
+    );
+    return { dispatched: fixture.dispatched, playList, runAsync: fixture.runAsync };
+  }
+
+  const command = { commandType: 1, progress: 1000, playStatus: 1, formerSongId: "1", targetSongId: "1900172235", userId: "20002" };
+
+  it("拉到指令后按 IM 回调的形状派发 onRoomMsg", async () => {
+    const fixture = remote("togetherOwner", { ...command, progress: 30000, targetSongId: "999" });
+    const result = await fixture.runAsync<{ ok: boolean; applied: boolean }>(TOGETHER_SYNC_PULL_SCRIPT);
+    assert.equal(result.ok, true);
+    assert.equal(result.applied, true);
+    const types = fixture.dispatched.map(action => action.type);
+    assert.ok(types.includes("async:listenTogetherPlayList/syncPlayList"), types.join(","));
+    assert.ok(types.includes("async:listenTogetherPlayStatus/onRoomMsg"), types.join(","));
+  });
+
+  it("不在房间里不去打扰服务端", async () => {
+    for (const status of ["alone", "waiting", ""]) {
+      const fixture = remote(status, command);
+      const result = await fixture.runAsync<{ ok: boolean; applied: boolean }>(TOGETHER_SYNC_PULL_SCRIPT);
+      assert.deepEqual(result, { ok: true, applied: false }, status);
+      assert.deepEqual(fixture.dispatched, [], status);
+    }
+  });
+
+  it("服务端没给指令就只拉不套用", async () => {
+    const fixture = remote("together", null);
+    const result = await fixture.runAsync<{ ok: boolean; applied: boolean; reason: string }>(TOGETHER_SYNC_PULL_SCRIPT);
+    assert.equal(result.applied, false);
+    assert.match(result.reason, /没拿到指令/);
+    assert.deepEqual(fixture.dispatched.map(action => action.type), ["async:listenTogetherPlayList/syncPlayList"]);
+  });
+
+  it("同一个歌时把 targetSongId 换成 resourceId 的原值", async () => {
+    // onRoomMsg 用 === 比对，字符串和数字不相等，PLAY/PAUSE/PROGRESS 会被静默丢掉。
+    const fixture = remote("togetherOwner", command);
+    const result = await fixture.runAsync<{ command: Record<string, unknown> }>(TOGETHER_SYNC_PULL_SCRIPT);
+    assert.equal(result.command.targetSongId, 1900172235);
+    const pushed = fixture.dispatched.find(action => action.type === "async:listenTogetherPlayStatus/onRoomMsg");
+    assert.equal((pushed?.payload as Record<string, unknown>).targetSongId, 1900172235);
+  });
+
+  it("不是同一首歌就保持服务端给的值", async () => {
+    const fixture = remote("togetherOwner", { ...command, targetSongId: "999" });
+    const result = await fixture.runAsync<{ command: Record<string, unknown> }>(TOGETHER_SYNC_PULL_SCRIPT);
+    assert.equal(result.command.targetSongId, "999");
+  });
+
+  it("拿不到 store 时报错而不是炸", async () => {
+    const result = await room({}, {
+      store: { getState: () => ({}), dispatch: () => {} },
+    }).runAsync<{ ok: boolean; error: string }>(TOGETHER_SYNC_PULL_SCRIPT);
     assert.equal(result.ok, false);
     assert.match(result.error, /还没准备好/);
   });
