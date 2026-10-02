@@ -2,6 +2,7 @@ import { definePlugin, DialogButton, Dropdown, Field, TextField, Toggle } from "
 import { useEffect, useState, type ReactElement } from "react";
 import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player/player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
+import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
 import type { NotificationMode } from "./settings.ts";
 import { SteamSettingsEntry } from "./widget/steam-settings.ts";
 
@@ -52,6 +53,23 @@ const SETTINGS_ENTRY_TEXT: Record<PlayerSnapshot["settingsEntry"], string> = {
   injected: "设置入口：兼容注入（补丁没匹配上）",
   waiting: "设置入口：还没打开过设置页，无法判断",
 };
+
+/**
+ * 显示页面**实际**在上报的身份（回读值），不是我们「打算」写的值——补丁没生效的时候
+ * 只有回读能看出来。
+ */
+function identityText(identity: PlayerSnapshot["together"]["identity"]): string {
+  if (!identity.ok) return identity.note || "还没读到页面身份";
+  const who = `APP_CONF 上报 os=${identity.os} / appver=${identity.appver} / osver=${identity.osver}`;
+  // weapi 不看 APP_CONF，只看 cookie；一起听的接口全是 weapi，所以真正决定对方能不能进来
+  // 的是这一行。同名用 | 拼开说明 cookie 重了，那本身就是个问题。
+  const keys = Object.keys(identity.cookie).sort();
+  const wire = keys.length
+    ? keys.map(key => `${key}=${identity.cookie[key]}`).join(" / ")
+    : "没读到 cookie（页面还没写，或者被 HttpOnly 挡住了）";
+  const warn = "只影响一起听建房时报出去的客户端版本，不影响播放和下载；但这确实是假报身份，有账号风控风险";
+  return `${who}；实际发出去的 cookie：${wire}。${warn}`;
+}
 
 function togetherMembersText(together: PlayerSnapshot["together"]): string {
   if (!together.inRoom || !together.members.length) return "房间成员由网易云推送，这里只显示当前已知的人";
@@ -257,6 +275,22 @@ function SettingsContent() {
         >
           {together.inRoom ? "退出房间" : "开始一起听"}
         </DialogButton>
+      </Field>
+      <Field
+        label="一起听身份"
+        description={identityText(together.identity)}
+        bottomSeparator="standard"
+      >
+        <Dropdown
+          rgOptions={IDENTITY_VARIANTS.map(variant => ({ data: variant, label: IDENTITY_LABELS[variant] }))}
+          selectedOption={together.identityVariant}
+          strDefaultLabel="等待播放器"
+          disabled={!together.supported}
+          onChange={option => {
+            player.setTogetherIdentityVariant(option.data as IdentityVariant);
+            setSnapshot(player.snapshot());
+          }}
+        />
       </Field>
       <Field
         label="听歌识曲"

@@ -6,6 +6,7 @@ import {
   TOGETHER_RESTORE_SCRIPT,
   TOGETHER_START_SCRIPT,
   TOGETHER_STATE_SCRIPT,
+  TOGETHER_SYNC_ARM_SCRIPT,
   type TogetherState,
 } from "./together-player.ts";
 
@@ -236,10 +237,12 @@ describe("建房", () => {
 });
 
 describe("退房与恢复", () => {
-  it("退房派发 leaveListenTogether", () => {
+  it("退房派发 leaveListenTogether 并带 silent", () => {
     const { dispatched, run } = room({ status: "togetherOwner" });
     assert.deepEqual(run(TOGETHER_LEAVE_SCRIPT), { ok: true });
     assert.equal(dispatched[0].type, "async:listenTogether/leaveListenTogether");
+    // 不带 silent 页面会先弹确认框，点了才真退——插件按钮不该卡在那一步。
+    assert.deepEqual(plain(dispatched[0].payload), { silent: true });
   });
 
   it("本来就不在房间里就别去打扰服务端", () => {
@@ -263,5 +266,52 @@ describe("退房与恢复", () => {
       assert.equal(result.ok, false);
       assert.match(result.error, /还没准备好/);
     }
+  });
+});
+
+describe("打开播放指令上报", () => {
+  /** 造一个已经进房、但页面还没打开 isCanReport 的房间。 */
+  function armed(status: string, isCanReport?: boolean) {
+    const fixture = room({ status });
+    fixture.state["async:listenTogetherPlayStatus"] = isCanReport === undefined ? {} : { isCanReport };
+    return fixture;
+  }
+
+  it("房主在房间里且开关没开时派发 setCanReport", () => {
+    const { dispatched, run } = armed("togetherOwner");
+    assert.deepEqual(run(TOGETHER_SYNC_ARM_SCRIPT), { ok: true, armed: true });
+    assert.equal(dispatched[0].type, "async:listenTogetherPlayStatus/setCanReport");
+    assert.deepEqual(plain(dispatched[0].payload), { isCanReport: true });
+  });
+
+  it("作为成员进房同样要开", () => {
+    const { dispatched, run } = armed("together");
+    assert.deepEqual(run(TOGETHER_SYNC_ARM_SCRIPT), { ok: true, armed: true });
+    assert.equal(dispatched[0].type, "async:listenTogetherPlayStatus/setCanReport");
+  });
+
+  it("开关已经开了就别再刷一遍", () => {
+    for (const status of ["together", "togetherOwner"]) {
+      const { dispatched, run } = armed(status, true);
+      assert.deepEqual(run(TOGETHER_SYNC_ARM_SCRIPT), { ok: true, armed: false }, status);
+      assert.deepEqual(dispatched, [], status);
+    }
+  });
+
+  it("不在房间里就不碰这个开关", () => {
+    for (const status of ["alone", "waiting", ""]) {
+      const { dispatched, run } = armed(status);
+      assert.deepEqual(run(TOGETHER_SYNC_ARM_SCRIPT), { ok: true, armed: false }, status);
+      assert.deepEqual(dispatched, [], status);
+    }
+  });
+
+  it("拿不到 store 时报错而不是炸", () => {
+    const result = room({}, { store: { getState: () => ({}), dispatch: () => {} } }).run<{
+      ok: boolean;
+      error: string;
+    }>(TOGETHER_SYNC_ARM_SCRIPT);
+    assert.equal(result.ok, false);
+    assert.match(result.error, /还没准备好/);
   });
 });

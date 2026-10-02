@@ -128,14 +128,46 @@ export const TOGETHER_START_SCRIPT = `(() => {
   return { ok: true };
 })()`;
 
-/** 退房。message 是网易云给「为什么退」用的文案，缺省就行。 */
+/**
+ * 退房。message 是网易云给「为什么退」用的文案，缺省就行。
+ *
+ * silent 必须带上：页面默认分支会先弹一个「结束将回到正常听歌模式 / 结束并查看记录」的
+ * 确认框，只有点「结束」才真的走 leaveIM + leaveRTC + leaveListeningRoom。我们这边是插件
+ * 自己的按钮，弹在播放器窗口里用户未必看得见，卡住就会表现为「点了退出没反应」。
+ * 页面留的 silent 分支就是干这个的，直接调 v() 收尾。
+ */
 export const TOGETHER_LEAVE_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
   if (!playerStore) return { ok: false, error: '播放器还没准备好' };
   const status = String(playerStore.getState()?.['async:listenTogether']?.status || '');
   if (!status || status === 'alone') return { ok: true };
-  playerStore.dispatch({ type: 'async:listenTogether/leaveListenTogether', payload: {} });
+  playerStore.dispatch({ type: 'async:listenTogether/leaveListenTogether', payload: { silent: true } });
   return { ok: true };
+})()`;
+
+/**
+ * 打开播放指令上报（async:listenTogetherPlayStatus.isCanReport）。
+ *
+ * 页面把 isCanReport 默认设成 false，唯一的开关在 listenTogetherPlayList/playTracks 里：
+ * 播房间队列时先关掉、真正切完歌再打开。而房主建房走的是 startModulePlaying 的房主分支
+ * （backupPlayList + reportPlayList + reportRequest("force")），整条路根本不经过 playTracks，
+ * 于是 isCanReport 一直是 false。后果是 reportRequest 开头那道判断只放行 reason === "force"
+ * 的调用——房主除了一开始那一次和每 20 秒一次的心跳 PROGRESS，播放/暂停/切歌全被
+ * 「command notReport」日志吞掉，房间里另一个人收到的指令里 targetSongId 又对不上自己正在
+ * 播的那首，只能各听各的。
+ *
+ * 进房之后补一次 true，就是把设计上本来就该打开的那个开关打开。已经开了就不重复派发，
+ * 免得每 1.5 秒往页面日志里刷一行 setCanReport。
+ */
+export const TOGETHER_SYNC_ARM_SCRIPT = `(() => {
+  ${PLAYER_ACCESS_SCRIPT}
+  if (!playerStore) return { ok: false, error: '播放器还没准备好' };
+  const state = playerStore.getState() || {};
+  const status = String(state['async:listenTogether']?.status || '');
+  if (status !== 'together' && status !== 'togetherOwner') return { ok: true, armed: false };
+  if (state['async:listenTogetherPlayStatus']?.isCanReport === true) return { ok: true, armed: false };
+  playerStore.dispatch({ type: 'async:listenTogetherPlayStatus/setCanReport', payload: { isCanReport: true } });
+  return { ok: true, armed: true };
 })()`;
 
 /**

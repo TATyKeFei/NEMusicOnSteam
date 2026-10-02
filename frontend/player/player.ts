@@ -8,6 +8,7 @@ import { releasePlayerSession } from "./player-target.ts";
 import { RecognitionBridge } from "../recognition/recognition.ts";
 import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
 import { TogetherBridge, type TogetherSnapshot } from "../together/together.ts";
+import type { IdentityVariant } from "../together/identity-player.ts";
 import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "../settings.ts";
 import { STEAM_PAGE_FALLBACK_CLASSES, steamPageTransition, steamPageVisible, type SteamPageSelectors } from "./steam-page.ts";
 import {
@@ -161,6 +162,10 @@ export class PlayerController {
 
   leaveTogether(): void {
     this.together.leave();
+  }
+
+  setTogetherIdentityVariant(variant: IdentityVariant): void {
+    this.together.setIdentityVariant(variant);
   }
 
   downloadCurrentSong(): void {
