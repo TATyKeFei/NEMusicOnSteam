@@ -36,6 +36,7 @@ function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
     && a.navEntry === b.navEntry
     && a.settingsEntry === b.settingsEntry
     && JSON.stringify(a.quality) === JSON.stringify(b.quality)
+    && JSON.stringify(a.together) === JSON.stringify(b.together)
     && JSON.stringify(a.download) === JSON.stringify(b.download)
     && JSON.stringify(a.settings) === JSON.stringify(b.settings);
 }
@@ -51,6 +52,13 @@ const SETTINGS_ENTRY_TEXT: Record<PlayerSnapshot["settingsEntry"], string> = {
   injected: "设置入口：兼容注入（补丁没匹配上）",
   waiting: "设置入口：还没打开过设置页，无法判断",
 };
+
+function togetherMembersText(together: PlayerSnapshot["together"]): string {
+  if (!together.inRoom || !together.members.length) return "房间成员由网易云推送，这里只显示当前已知的人";
+  const others = together.members.filter(member => member.userId !== together.accountId);
+  const names = others.map(member => member.nickname || member.userId);
+  return names.length ? `房间里还有：${names.join("、")}` : "目前只有你一个人在房间里";
+}
 
 function SettingsContent() {
   const player = getPlayer(steamSettings);
@@ -82,6 +90,7 @@ function SettingsContent() {
 
   const settings = snapshot.settings;
   const quality = snapshot.quality;
+  const together = snapshot.together;
   const qualityOptions = QUALITY_OPTIONS.some(option => option.data === quality.preferred) || quality.preferred == null
     ? QUALITY_OPTIONS
     : [...QUALITY_OPTIONS, { data: quality.preferred, label: qualityLabel(quality.preferred) }];
@@ -232,7 +241,28 @@ function SettingsContent() {
         description={`${NAV_ENTRY_TEXT[snapshot.navEntry]}。${SETTINGS_ENTRY_TEXT[snapshot.settingsEntry]}。Steam 更新后如果显示兼容模式，说明官方补丁没匹配上，功能仍可用但样式可能错位，可以去 Github 反馈`}
         bottomSeparator="standard"
       />
-      <Field label="系统媒体控制" description={snapshot.mprisStatus} bottomSeparator="none" />
+      <Field label="系统媒体控制" description={snapshot.mprisStatus} />
+      <Field
+        label="一起听"
+        description={`${together.note}。${togetherMembersText(together)}`}
+        bottomSeparator="standard"
+      >
+        <DialogButton
+          onClick={() => {
+            if (together.inRoom) player.leaveTogether();
+            else player.startTogether();
+            setSnapshot(player.snapshot());
+          }}
+          disabled={together.busy || !together.supported || (together.inRoom ? false : !together.loggedIn)}
+        >
+          {together.inRoom ? "退出房间" : "开始一起听"}
+        </DialogButton>
+      </Field>
+      <Field
+        label="听歌识曲"
+        description={snapshot.recognitionStatus}
+        bottomSeparator="none"
+      />
     </>
   );
 }

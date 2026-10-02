@@ -7,6 +7,7 @@ import { MprisBridge } from "../mpris/mpris.ts";
 import { releasePlayerSession } from "./player-target.ts";
 import { RecognitionBridge } from "../recognition/recognition.ts";
 import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
+import { TogetherBridge, type TogetherSnapshot } from "../together/together.ts";
 import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "../settings.ts";
 import { STEAM_PAGE_FALLBACK_CLASSES, steamPageTransition, steamPageVisible, type SteamPageSelectors } from "./steam-page.ts";
 import {
@@ -51,6 +52,7 @@ export type PlayerSnapshot = {
   navEntry: NavEntryStatus;
   settingsEntry: "native" | "injected" | "waiting";
   quality: QualitySnapshot;
+  together: TogetherSnapshot;
   download: DownloadSnapshot;
   settings: PlayerSettings;
 };
@@ -60,6 +62,7 @@ export class PlayerController {
   private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); }, () => this.settings.notificationMode);
   private readonly recognition = new RecognitionBridge();
   private readonly quality = new QualityBridge();
+  private readonly together = new TogetherBridge();
   private readonly download = new DownloadBridge(() => ({
     quality: this.settings.downloadQuality,
     directory: this.settings.downloadDirectory,
@@ -132,6 +135,7 @@ export class PlayerController {
       navEntry: this.chrome.navEntryStatus(),
       settingsEntry: this.steamSettings?.entryStatus() ?? "waiting",
       quality: this.quality.snapshot(),
+      together: this.together.snapshot(),
       download: this.download.snapshot(),
       settings: { ...this.settings, launcher: { ...this.settings.launcher } },
     };
@@ -147,6 +151,16 @@ export class PlayerController {
 
   setQuality(value: number): void {
     this.quality.setQuality(value);
+  }
+
+  startTogether(): void {
+    // 建房要用当前正在播的这首歌，先把播放器展开，不然用户看不到房间建在哪。
+    this.open();
+    this.together.start();
+  }
+
+  leaveTogether(): void {
+    this.together.leave();
   }
 
   downloadCurrentSong(): void {
@@ -358,6 +372,7 @@ export class PlayerController {
     this.mpris.setEnabled(true);
     this.recognition.setEnabled(true);
     this.quality.setEnabled(true);
+    this.together.setEnabled(true);
     this.download.setEnabled(true);
     this.client = client;
     this.parentId = id;
@@ -415,6 +430,7 @@ export class PlayerController {
     this.mpris.setEnabled(false);
     this.recognition.setEnabled(false);
     this.quality.setEnabled(false);
+    this.together.setEnabled(false);
     this.download.setEnabled(false);
     releasePlayerSession();
     this.parentId = null;
@@ -534,6 +550,7 @@ export class PlayerController {
     this.mpris.setEnabled(false);
     this.recognition.setEnabled(false);
     this.quality.setEnabled(false);
+    this.together.setEnabled(false);
     this.download.setEnabled(false);
     releasePlayerSession();
     this.parentId = null;

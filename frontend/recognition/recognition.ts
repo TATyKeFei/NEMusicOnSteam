@@ -4,6 +4,28 @@ import { recognitionScript, recognitionUpdateScript } from "./recognition-player
 
 const getEndpoint = ffi<[], string>("mpris_endpoint");
 
+/** 两个注入脚本的返回值：note 是人话版的失败原因，装不上时直接显示到设置页。 */
+type InstallReport = { ok: boolean; note: string };
+
+function report(value: unknown): InstallReport {
+  if (value && typeof value === "object" && "ok" in value) {
+    const parsed = value as Partial<InstallReport>;
+    return { ok: parsed.ok === true, note: typeof parsed.note === "string" ? parsed.note : "" };
+  }
+  // 旧版脚本只会返回 true/false。
+  return { ok: value === true, note: "" };
+}
+
+/**
+ * 按钮装不上时不要把状态覆盖成「一切正常」：可能是辅助进程没起来（真错误），也可能
+ * 只是页面顶栏还没渲染出来（下一轮就好了）。分开说清楚，免得把暂时性问题报成永久故障。
+ */
+const READY = "可以识别系统声音或麦克风；顶栏按钮已就位，首次使用需联网加载识曲引擎";
+
+function statusFor(note: string): string {
+  return note ? `${note}；识曲面板仍可从设置页打开` : READY;
+}
+
 export class RecognitionBridge {
   private timer = 0;
   private busy = false;
@@ -59,9 +81,12 @@ export class RecognitionBridge {
       }
       const open = this.pendingOpen;
       let ready = false;
+      let note = "";
       if (this.installed) {
         try {
-          ready = (await evaluateInPlayer(recognitionUpdateScript(this.endpoint, this.token, open))) === true;
+          const update = report(await evaluateInPlayer(recognitionUpdateScript(this.endpoint, this.token, open)));
+          ready = update.ok;
+          note = update.note;
         } catch (error) {
           // 用户还没打开播放器时没有页面是正常状态：这里保持安静，
           // 并把这个待处理请求留到后面的 tick 再试。
@@ -71,12 +96,12 @@ export class RecognitionBridge {
         this.installed = ready;
       }
       if (!ready) {
-        await evaluateInPlayer(recognitionScript(this.endpoint, this.token, open));
+        note = report(await evaluateInPlayer(recognitionScript(this.endpoint, this.token, open))).note;
         this.installed = true;
       }
       if (!this.timer) return;
       this.pendingOpen = false;
-      this.status = "可以识别系统声音或麦克风；首次使用需联网加载识曲引擎";
+      this.status = statusFor(note);
     } catch (error) {
       if (error instanceof Error && error.message === PLAYER_TARGET_MISSING) return;
       this.installed = false;

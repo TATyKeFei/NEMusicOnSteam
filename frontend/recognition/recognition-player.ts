@@ -5,16 +5,20 @@
  */
 
 /** 注入的 api 结构一有变化就递增，让升级能够替换掉页面上的旧脚本。 */
-const RECOGNITION_API_VERSION = 4;
+const RECOGNITION_API_VERSION = 5;
 
+/**
+ * 两个脚本都返回 {ok, note}：note 是人话版的失败原因，直接显示到插件的设置页。
+ * 以前这里只返回 true/false，按钮装不上的时候外面什么都不知道，只能靠猜。
+ */
 export function recognitionUpdateScript(endpoint: string, token: string, open = false): string {
   return `(() => {
     const api = window.__nemusicRecognition;
-    if (!api || api.version !== ${RECOGNITION_API_VERSION}) return false;
+    if (!api || api.version !== ${RECOGNITION_API_VERSION}) return { ok: false, note: '页面脚本版本不一致' };
     api.config = ${JSON.stringify({ endpoint, token, open })};
-    api.ensureHeaderButton?.();
+    const note = api.ensureHeaderButton?.() || '';
     if (api.config.open) api.show();
-    return true;
+    return { ok: true, note };
   })()`;
 }
 
@@ -27,9 +31,9 @@ export function recognitionScript(endpoint: string, token: string, open = false)
     // 旧版的播放流程），所以版本号一升就把它整个替换掉。
     if (window[key] && window[key].version === version) {
       window[key].config = config;
-      window[key].ensureHeaderButton?.();
+      const note = window[key].ensureHeaderButton?.() || '';
       if (config.open) window[key].show();
-      return true;
+      return { ok: true, note };
     }
     if (window[key]) {
       try { window[key].cancel?.(); window[key].hide?.(); } catch (error) {}
@@ -210,13 +214,37 @@ export function recognitionScript(endpoint: string, token: string, open = false)
         list.append(item);
       }
     };
+    /**
+     * 把按钮挂到网易云顶栏的搜索框右边。返回空串表示已经在位，非空就是人话的失败原因。
+     *
+     * 以前这里是「第一个满足 top<100 && width>120 的 input 就用它」，条件又窄又硬：
+     * 网易云把顶栏改高一点、搜索框窄一点，按钮就无声无息地不装了，而且一行日志都没有。
+     * 现在改成给所有候选打分再挑最好的一个，挑不到就把候选的尺寸报出来。
+     */
     const ensureHeaderButton = () => {
-      if (document.querySelector?.('[data-nemusic-recognition-button]')) return;
-      const search = Array.from(document.querySelectorAll?.('input[placeholder], input[type="search"]') ?? []).find(input => {
-        const rect = input.getBoundingClientRect();
-        return rect.top >= 0 && rect.top < 100 && rect.width > 120 && rect.height > 20;
-      });
-      if (!search?.parentElement) return;
+      if (document.querySelector?.('[data-nemusic-recognition-button]')) return '';
+      const inputs = Array.from(document.querySelectorAll?.('input[placeholder], input[type="search"], input') ?? []);
+      const candidates = [];
+      for (const input of inputs) {
+        let rect = null;
+        try { rect = input.getBoundingClientRect(); } catch (error) { continue; }
+        if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+        const placeholder = String(input.getAttribute?.('placeholder') || input.placeholder || '');
+        // 分层而不是加权求和：placeholder 像搜索框是最强的信号，其次是位置在顶栏，
+        // 最后才比宽度。加权分数调起来很难推理，调坏了也看不出是哪一权出错的。
+        const looksSearch = /搜索|search|搜/i.test(placeholder);
+        const inHeader = rect.top < 140;
+        const score = (looksSearch ? 100000 : 0) + (inHeader ? 10000 : 0) + Math.min(rect.width, 600) * 10 - rect.left;
+        candidates.push({ input, rect, placeholder, score });
+      }
+      candidates.sort((left, right) => right.score - left.score);
+      const best = candidates[0];
+      if (!best || !best.input.parentElement) {
+        const seen = candidates.slice(0, 4).map(item => 'top=' + Math.round(item.rect.top) + ' left=' + Math.round(item.rect.left) + ' ' + Math.round(item.rect.width) + 'x' + Math.round(item.rect.height) + ' 「' + item.placeholder.slice(0, 12) + '」').join('; ');
+        const note = '页面顶栏没找到可以放识曲按钮的搜索框' + (seen ? '（候选：' + seen + '）' : '（页面里一个 input 都没有）');
+        try { console.warn('[NEMusic] recognition anchor', note); } catch (error) {}
+        return note;
+      }
       const button = document.createElement('button');
       button.type = 'button';
       button.title = '听歌识曲';
@@ -225,7 +253,8 @@ export function recognitionScript(endpoint: string, token: string, open = false)
       button.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Zm7-3a1 1 0 0 0-2 0 5 5 0 0 1-10 0 1 1 0 0 0-2 0 7 7 0 0 0 6 6.92V21H8a1 1 0 0 0 0 2h8a1 1 0 0 0-2 0h-3v-3.08A7 7 0 0 0 19 11Z"/></svg>';
       button.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;margin-left:8px;padding:0;border:0;border-radius:8px;background:transparent;color:inherit;cursor:pointer;';
       button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); api.show(); });
-      search.parentElement.append(button);
+      best.input.parentElement.append(button);
+      return '';
     };
     api.start = async () => {
       if (api.busy || !api.panel) return;
@@ -321,8 +350,8 @@ export function recognitionScript(endpoint: string, token: string, open = false)
     window.addEventListener('pagehide', () => void api.cancel());
     window[key] = api;
     api.ensureHeaderButton = ensureHeaderButton;
-    ensureHeaderButton();
+    const note = ensureHeaderButton();
     if (config.open) api.show();
-    return true;
+    return { ok: true, note };
   })()`;
 }

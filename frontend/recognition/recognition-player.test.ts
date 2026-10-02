@@ -1,7 +1,56 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
-import { recognitionScript } from "./recognition-player.ts";
+import { recognitionScript, recognitionUpdateScript } from "./recognition-player.ts";
+
+/** 一个只认 getBoundingClientRect 的假 input，用来喂顶栏搜索框。 */
+/** vm 里造出来的对象原型和测试进程不是一回事，深比较前先拍平。 */
+function plain<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function fakeInput(rect: { top: number; left: number; width: number; height: number }, placeholder = "") {
+  const parent = { append: (...children: unknown[]) => void (parent.children.push(...children)), children: [] as unknown[] };
+  const input = {
+    parentElement: parent,
+    placeholder,
+    getAttribute: (name: string) => (name === "placeholder" ? placeholder : null),
+    getBoundingClientRect: () => ({ ...rect, right: rect.left + rect.width, bottom: rect.top + rect.height }),
+  };
+  return input;
+}
+
+function anchorFixture(inputs: unknown[]) {
+  // 记录 createElement 造出来的东西，好让 querySelector 真的能找到上一次的按钮：
+  // 幂等性正是靠「已经插了一个就别再插」实现的，假件看不见就测不出来。
+  const created: Element[] = [];
+  const context = {
+    window: {} as any,
+    document: {
+      body: new Element(),
+      activeElement: new Element(),
+      createElement: () => {
+        const element = new Element();
+        created.push(element);
+        return element;
+      },
+      addEventListener() {},
+      querySelector: (selector: string) =>
+        selector.includes("data-nemusic-recognition-button") ? created.find(element => element.attrs.has("data-nemusic-recognition-button")) ?? null : null,
+      querySelectorAll: () => inputs,
+    },
+    AbortController,
+    atob, btoa,
+    setTimeout, clearTimeout,
+    fetch: async () => ({ ok: true, json: async () => ({}) }),
+  };
+  context.window.addEventListener = () => {};
+  const result = plain(runInNewContext(recognitionScript("http://localhost", "token", false), context)) as {
+    ok: boolean;
+    note: string;
+  };
+  return { result, context };
+}
 
 const samples = Buffer.from(new Float32Array(48000).fill(0.25).buffer).toString("base64");
 const engine = `const AudioFingerprintRuntime = () => ({ ExtractQueryFP: () => ({ size: () => 8, get: index => index * 48, delete() {} }) });`;
@@ -19,6 +68,8 @@ class Element {
   selectors = new Map<string, Element>();
   append(...children: Element[]) { this.children.push(...children); }
   replaceChildren(...children: Element[]) { this.children = children; }
+  attrs = new Set<string>();
+  setAttribute(name: string) { this.attrs.add(name); }
   querySelector(selector: string) {
     if (!this.selectors.has(selector)) this.selectors.set(selector, new Element());
     return this.selectors.get(selector)!;
@@ -144,5 +195,55 @@ describe("听歌识曲 UI", () => {
     assert.notEqual(fresh, stale);
     assert.ok((fresh.version as number) > 0);
     assert.equal(stale.cancel !== undefined, true);
+  });
+});
+
+describe("识曲按钮的挂载位置", () => {
+  it("挑顶栏最靠上靠左的那个宽框，而不是第一个 input", () => {
+    // 页面里先出现一个又窄又矮的杂项 input，真正的搜索框在后面。
+    const junk = fakeInput({ top: 30, left: 20, width: 60, height: 16 });
+    const search = fakeInput({ top: 24, left: 210, width: 260, height: 34 }, "搜索");
+    const { result, context } = anchorFixture([junk, search]);
+    assert.deepEqual(result, { ok: true, note: "" });
+    assert.equal((search.parentElement as any).children.length, 1, "按钮应该挂在搜索框那一组");
+    assert.equal((junk.parentElement as any).children.length, 0);
+    assert.equal(context.window.__nemusicRecognition.version, 5);
+  });
+
+  it("已经装好时重复调用是幂等的，不会再插一个按钮", () => {
+    const search = fakeInput({ top: 24, left: 210, width: 260, height: 34 }, "搜索");
+    const { result, context } = anchorFixture([search]);
+    assert.equal(result.note, "");
+    const again = plain(runInNewContext(recognitionUpdateScript("http://localhost", "token", false), context)) as { note: string };
+    assert.equal(again.note, "");
+    assert.equal((search.parentElement as any).children.length, 1);
+  });
+
+  it("页面里一个 input 都没有时说清楚，而不是静默失败", () => {
+    const { result } = anchorFixture([]);
+    assert.equal(result.ok, true, "脚本本身仍然装上了，只是没找到挂按钮的位置");
+    assert.match(result.note, /一个 input 都没有/);
+  });
+
+  it("搜索框位置不对时把候选尺寸报出来，方便去调", () => {
+    // 全都在视口外或者尺寸为零：以前这里直接 return，什么线索都没有。
+    const hidden = fakeInput({ top: 900, left: 900, width: 0, height: 0 });
+    const { result } = anchorFixture([hidden]);
+    assert.match(result.note, /没找到可以放识曲按钮的搜索框/);
+  });
+
+  it("placeholder 写着搜索的框即使位置稍偏也会被选中", () => {
+    const off = fakeInput({ top: 60, left: 460, width: 200, height: 30 }, "搜索");
+    const plain = fakeInput({ top: 20, left: 8, width: 150, height: 30 }, "用户名");
+    const { result } = anchorFixture([off, plain]);
+    assert.equal(result.note, "");
+    assert.equal((off.parentElement as any).children.length, 1);
+    assert.equal((plain.parentElement as any).children.length, 0);
+  });
+
+  it("页面脚本版本对不上时如实报告，而不是当成装好了", () => {
+    const context = { window: { __nemusicRecognition: { version: 1 } } as any };
+    const result = plain(runInNewContext(recognitionUpdateScript("http://localhost", "token", false), context));
+    assert.deepEqual(result, { ok: false, note: "页面脚本版本不一致" });
   });
 });
