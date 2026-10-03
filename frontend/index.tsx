@@ -269,7 +269,7 @@ function SettingsContent() {
       <Field label="系统媒体控制" description={snapshot.mprisStatus} />
       <Field
         label="一起听"
-        description={`${together.note}。${togetherMembersText(together)}${together.buttonNote ? `播放栏按钮：${together.buttonNote}` : ""}${together.buttonAnchor ? `（挂在 ${together.buttonAnchor}）` : ""}${together.buttonBar ? `｜${together.buttonBar}` : ""}${probeText(together)}`}
+        description={`${together.note}。${togetherMembersText(together)}${together.buttonNote ? `播放栏按钮：${together.buttonNote}` : ""}${together.buttonAnchor ? `（挂在 ${together.buttonAnchor}）` : ""}${together.buttonBar ? `｜${together.buttonBar}` : ""}${together.syncNote ? `｜${together.syncNote}` : ""}${together.diagnostic ? `｜诊断：${together.diagnostic}` : ""}${probeText(together)}`}
         bottomSeparator="standard"
       >
         <DialogButton

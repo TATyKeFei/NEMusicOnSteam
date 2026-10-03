@@ -15,6 +15,7 @@ import {
   TOGETHER_PROBE_SCRIPT,
   TOGETHER_RESTORE_SCRIPT,
   TOGETHER_SYNC_ARM_SCRIPT,
+  TOGETHER_SYNC_NOTICE_SCRIPT,
   TOGETHER_SYNC_PULL_SCRIPT,
   TOGETHER_START_SCRIPT,
   TOGETHER_STATE_SCRIPT,
@@ -36,6 +37,8 @@ export type TogetherSnapshot = TogetherState & {
   buttonAnchor: string;
   /** 播放栏现状（按钮标题与 id），排查用。 */
   buttonBar: string;
+  /** sync/notice 最近一次调用的结果，排查手机端不同步用。 */
+  syncNote: string;
 };
 
 const IDLE: TogetherState = {
@@ -59,6 +62,7 @@ const IDLE: TogetherState = {
   probe: [],
   action: "",
   error: "",
+  diagnostic: "",
 };
 
 const TICK_MS = 1500;
@@ -72,6 +76,10 @@ const BUTTON_FAST_MS = 300;
 const BUTTON_WATCH_MS = 600;
 /** 快速补装最多追这么多次，见 scheduleButton。 */
 const BUTTON_FAST_LIMIT = 10;
+/** 隔几个 tick 发一次 sync/notice。1.5s 一个 tick，5 就是 7.5s。 */
+const NOTICE_EVERY = 5;
+/** 加入房间最多重试几次。 */
+const JOIN_MAX_RETRIES = 3;
 const NOT_READY = "打开播放器后可以使用一起听";
 
 /** deviceId 要在一次会话里保持稳定，网易云拿它做风控画像，每个 tick 换一个反而更显眼。 */
@@ -138,6 +146,14 @@ export class TogetherBridge {
   private readonly identityDeviceId = randomDeviceId();
   private identity: IdentitySnapshot = IDENTITY_IDLE;
   private identityApplied = false;
+  /** sync/notice 最近一次的结果文案，排查手机端不同步用。 */
+  private syncNote = "";
+  /** 主 tick 的次数，隔几个 tick 发一次 sync/notice。 */
+  private noticeTick = 0;
+  /** 加入房间的重试计数，重试时不消 pending。 */
+  private joinRetries = 0;
+  /** 上一个 tick 是否在房间里，用来发现页面自己把房间丢了。 */
+  private lastInRoom = false;
 
   setEnabled(enabled: boolean): void {
     if (enabled === Boolean(this.timer)) return;
@@ -153,6 +169,10 @@ export class TogetherBridge {
       this.buttonMisses = 0;
       window.clearTimeout(this.buttonTimer);
       this.buttonTimer = 0;
+      this.syncNote = "";
+      this.noticeTick = 0;
+      this.joinRetries = 0;
+      this.lastInRoom = false;
     if (enabled) {
       this.status = "正在读取网易云一起听状态";
       this.timer = window.setInterval((): void => void this.tick(), TICK_MS);
@@ -174,6 +194,7 @@ export class TogetherBridge {
       buttonNote: this.buttonNote,
       buttonAnchor: this.buttonAnchor,
       buttonBar: this.buttonBar,
+      syncNote: this.syncNote,
     };
   }
 
@@ -280,6 +301,32 @@ export class TogetherBridge {
   }
 
   /**
+   * 隔几个 tick 发一次 sync/notice，告诉服务端「这里有变化，推给其他客户端」。
+   *
+   * 网页版只能发不能收——IM 是空壳，收不到别的客户端发来的指令，这是 TOGETHER_SYNC_PULL_SCRIPT
+   * 解决的问题。反过来也一样：别的客户端（手机原生端）收 IM 的，而服务端收到我们 HTTP
+   * play/command/report 之后不一定推 IM——所以补 sync/notice 当触发点。每 NOTICE_EVERY 个 tick
+   * 打一次，和 pullRemoteCommands 不一样——notice 是 fire-and-forget，不要求立即出结果。
+   */
+  private maybeSyncNotice(): void {
+    if (!this.state.inRoom || !this.state.roomId) {
+      this.noticeTick = 0;
+      this.syncNote = "";
+      return;
+    }
+    this.noticeTick += 1;
+    if (this.noticeTick % NOTICE_EVERY !== 0) return;
+    void evaluateInPlayer(TOGETHER_SYNC_NOTICE_SCRIPT, { awaitPromise: true }).then((result) => {
+      const r = result as { sent?: boolean; error?: string };
+      if (r?.sent) this.syncNote = "同步通知已发送";
+      else if (r?.error) this.syncNote = `同步通知失败：${r.error}`;
+      else this.syncNote = "";
+    }).catch((error) => {
+      this.syncNote = `同步通知异常：${error instanceof Error ? error.message : String(error)}`;
+    });
+  }
+
+  /**
    * 有人进来就主动把房主在听的歌推给对方。
    *
    * 正常客户端靠 USER_JOIN_IN 房间消息触发这件事，而那个消息走 IM，网页版的 IM 是空壳，
@@ -381,9 +428,17 @@ export class TogetherBridge {
       if (action == null) {
         this.state = result as TogetherState;
         this.status = describe(this.state);
+        // 上一个 tick 还在房间里、这个 tick 没了、又不是我们主动退的——页面把房间弄丢了
+        // （刷新、切页、slot 被回收都可能）。补一次 restore 让页面自己把房间捞回来。
+        if (this.lastInRoom && !this.state.inRoom && this.pending !== "leave") {
+          void evaluateInPlayer(TOGETHER_RESTORE_SCRIPT).catch(() => {});
+          this.status = "正在恢复房间连接";
+        }
+        this.lastInRoom = this.state.inRoom;
         if (this.maybeRestore()) void evaluateInPlayer(TOGETHER_RESTORE_SCRIPT).catch(() => {});
         this.armReport();
         this.pullRemoteCommands();
+        this.maybeSyncNotice();
         this.adoptForNewMember();
         await this.ensureButton(generation);
         // 按钮那边只能记下「想建房 / 退房 / 加房」，执行还是得走这里——身份补丁必须在建房前打好，
@@ -393,15 +448,21 @@ export class TogetherBridge {
           this.queued = act;
         }
       } else {
-        const response = result as { ok: boolean; error?: string };
+        const response = result as { ok: boolean; error?: string; retryable?: boolean };
         if (response?.ok) {
+          this.joinRetries = 0;
           // 建房/退房/进房的结果要等页面自己跑完 saga，所以再读一次状态当作确认。
           this.state = (await evaluateInPlayer(TOGETHER_STATE_SCRIPT)) as TogetherState;
           if (action === "start") this.status = "已请求建房";
           else if (action === "join") this.status = "已加入房间";
           else this.status = "已请求退出房间";
           this.armReport();
+        } else if (action === "join" && response?.retryable && this.joinRetries < JOIN_MAX_RETRIES) {
+          this.joinRetries += 1;
+          this.status = `${response?.error || "加入失败"}（第 ${this.joinRetries} 次重试）`;
+          // 不清 pending，下个 tick 自动重试（约 1.5s 后）。
         } else {
+          this.joinRetries = 0;
           this.status = response?.error || "一起听操作失败";
         }
       }
@@ -411,7 +472,9 @@ export class TogetherBridge {
         this.status = error instanceof Error ? error.message.split("\n")[0].replace(/^Error: /, "") : String(error);
       }
     } finally {
-      if (generation === this.generation) this.pending = null;
+      // 加入房间重试时 pending 还挂在 "join" 上，别清掉，否则下个 tick 就不知道该重试了。
+      const retrying = this.pending === "join" && this.joinRetries > 0;
+      if (generation === this.generation && !retrying) this.pending = null;
       this.busy = false;
       // 按钮点完如果正好赶上一个 tick 的尾巴，就立刻把动作做掉，不然用户要干等一个间隔。
       const queued = this.queued;

@@ -49,6 +49,9 @@ export type TogetherState = {
   /** 播放栏按钮攒下的动作（start / leave），由 TogetherBridge 取走执行。 */
   action: string;
   error: string;
+  /** 上次加入房间时 room/check 和 play/invitation/accept 的实际回包形状，
+   *  脱敏后的摘要，用来验证「creatorId 在哪」和「refer 是否被校验」。 */
+  diagnostic: string;
 };
 
 /**
@@ -96,6 +99,53 @@ const PROBE_READ = `  const probeEvents = Array.isArray(globalThis.__NEMusicOnSt
     : [];`;
 
 /**
+ * 上次 join 脚本留下的诊断。只放响应形状，不含 token/session/uid 等隐私字段。
+ * 在 TOGETHER_STATE_SCRIPT 里读回来，设置页能看到。
+ */
+const READ_DIAGNOSTICS = `  const diagKey = '__NEMusicOnSteamDiagnostics';
+  const diagnostics = globalThis[diagKey] || null;
+  // 读走即清空，免得一直显示上一次的历史数据。
+  if (globalThis[diagKey]) globalThis[diagKey] = null;`;
+
+/**
+ * 存诊断的 helper。join 脚本内部用，不导出——这些字段只在加入过程中有意义。
+ *
+ * 记录：
+ *   roomCheck：room/check 的实际回包 data 字段（看 creatorId 到底在不在）
+ *   invitationAccept：accept 的实际回包 data 字段（看 roomInfo 形状和额外字段）
+ *   refer：本次 accept 使用的 refer 值
+ */
+const SAVE_DIAGNOSTICS_HELPER = `  const saveDiagnostics = (checkData, acceptData, refer) => {
+    // 只记录「字段名 + 值类型」，绝不把真实值带回来（昵称/头像/其它人 uid 都是隐私）。
+    // 递归一层：roomInfo 是个对象，「creatorId 到底在不在顶层」正需要往下看一层。
+    const describe = (obj, depth) => {
+      if (!obj || typeof obj !== 'object') return typeof obj;
+      const out = {};
+      for (const key of Object.keys(obj)) {
+        const value = obj[key];
+        if (depth <= 0) {
+          if (typeof value === 'boolean' || typeof value === 'number') out[key] = value;
+          else if (value === null) out[key] = null;
+          else if (typeof value === 'string') out[key] = '<string>';
+          else if (Array.isArray(value)) out[key] = '<array:' + value.length + '>';
+          else if (typeof value === 'object') out[key] = '<object:' + Object.keys(value).length + '>';
+          else out[key] = '<' + typeof value + '>';
+        } else {
+          out[key] = value && typeof value === 'object' ? { '…': describe(value, depth - 1) } : '<' + typeof value + '>';
+        }
+      }
+      return out;
+    };
+    const diag = {
+      at: Date.now(),
+      roomCheck: describe(checkData, 1),
+      invitationAccept: describe(acceptData, 1),
+      refer,
+    };
+    globalThis.__NEMusicOnSteamDiagnostics = diag;
+  };`;
+
+/**
  * 读房间状态。
  *
  * 队列的真实位置是 state.playingList.curPlayingList，不在 playing 这个 slice 里。
@@ -123,7 +173,7 @@ export const TOGETHER_STATE_SCRIPT = `(() => {
     return ids;
   };
   const members = [];
-${PROBE_READ}  // 播放栏那个按钮只能记下「用户想建房 / 退房」，真正执行要过 TogetherBridge
+${PROBE_READ}${READ_DIAGNOSTICS}  // 播放栏那个按钮只能记下「用户想建房 / 退房」，真正执行要过 TogetherBridge
   // （身份补丁必须在建房前打好），所以在这里把动作捎带回去，取走即清空。
   const pendingAction = (() => {
     try {
@@ -165,6 +215,8 @@ ${PROBE_READ}  // 播放栏那个按钮只能记下「用户想建房 / 退房�
     localOnly: playState.trackFileType === 'local' || playState.resourceType === 'localTrack',
     probe: probeEvents,
     action: pendingAction,
+    // diagnostic 是脱敏摘要（字符串），空就表示最近没加入过房间。
+    diagnostic: diagnostics ? JSON.stringify(diagnostics) : '',
   };
 })()`;
 
@@ -226,6 +278,10 @@ export const TOGETHER_JOIN_SCRIPT = (roomId: string, inviterId: string): string 
   const ownUid = String(joinHost.uid || '');
   const targetRoomId = ${JSON.stringify(roomId)};
   let targetInviterId = ${JSON.stringify(inviterId)};
+  // 存诊断用，见 READ_DIAGNOSTICS / SAVE_DIAGNOSTICS_HELPER。
+  let diagCheck = null;
+  let diagAccept = null;
+${SAVE_DIAGNOSTICS_HELPER}
   const postForm = async (path, body) => {
     const response = await fetch('https://interface.music.163.com' + path, {
       method: 'POST',
@@ -243,9 +299,10 @@ export const TOGETHER_JOIN_SCRIPT = (roomId: string, inviterId: string): string 
       try {
         check = await postForm('/api/listen/together/room/check', 'roomId=' + encodeURIComponent(targetRoomId));
       } catch (error) {
-        return { ok: false, error: '房间检查失败：' + (error instanceof Error ? error.message : String(error)) };
+        return { ok: false, error: '房间检查失败：' + (error instanceof Error ? error.message : String(error)), retryable: true };
       }
       const roomData = check?.data || {};
+      diagCheck = roomData;
       if (roomData.joinable === false) {
         return { ok: false, error: String(roomData.copywriting || '房间不可加入') };
       }
@@ -260,10 +317,14 @@ export const TOGETHER_JOIN_SCRIPT = (roomId: string, inviterId: string): string 
         + '&roomId=' + encodeURIComponent(targetRoomId)
         + '&inviterId=' + encodeURIComponent(targetInviterId));
     } catch (error) {
-      return { ok: false, error: '加入请求失败：' + (error instanceof Error ? error.message : String(error)) };
+      return { ok: false, error: '加入请求失败：' + (error instanceof Error ? error.message : String(error)), retryable: true };
     }
+    diagAccept = accept?.data ?? null;
     if (!accept || Number(accept.code) !== 200) {
-      return { ok: false, error: String(accept?.message || ('加入失败（' + (accept?.code ?? '无响应') + '）')) };
+      // 5xx 和 429 是可以重试的，4xx 是参数/权限问题，重试也没用。
+      const code = Number(accept?.code ?? 0);
+      const retryable = code >= 500 || code === 429;
+      return { ok: false, error: String(accept?.message || ('加入失败（' + (accept?.code ?? '无响应') + '）')), retryable };
     }
     const roomInfo = accept.data && typeof accept.data === 'object' ? accept.data : {};
     // 回包偶尔缺字段，用我们已知的补上：resetRoomInfo 的 store 校验要 roomId/chatRoomId/creatorId。
@@ -277,6 +338,7 @@ export const TOGETHER_JOIN_SCRIPT = (roomId: string, inviterId: string): string 
     });
     // 把生命周期交回页面：setStatus 会在页面内部启动心跳/连接时间统计，我们复刻不了那一层。
     playerStore.dispatch({ type: 'async:listenTogether/restore' });
+    saveDiagnostics(diagCheck, diagAccept, ${JSON.stringify(TOGETHER_JOIN_REFER)});
     return { ok: true, roomId: String(roomInfo.roomId || targetRoomId), inviterId: targetInviterId, via };
   })();
 })()`;
@@ -288,13 +350,28 @@ export const TOGETHER_JOIN_SCRIPT = (roomId: string, inviterId: string): string 
  * 确认框，只有点「结束」才真的走 leaveIM + leaveRTC + leaveListeningRoom。我们这边是插件
  * 自己的按钮，弹在播放器窗口里用户未必看得见，卡住就会表现为「点了退出没反应」。
  * 页面留的 silent 分支就是干这个的，直接调 v() 收尾。
+ *
+ * 另外补一次 /api/listen/together/end 的 POST：页面自己的 leaveListeningRoom 里确实有 end
+ * 调用，但它拿的是 saga 里 try 块的 roomInfo，catch/wrap 里 rec 已经没了就走不到。
+ * 直接再发一次确保服务端及时释房，不靠超时。
  */
 export const TOGETHER_LEAVE_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
   if (!playerStore) return { ok: false, error: '播放器还没准备好' };
-  const status = String(playerStore.getState()?.['async:listenTogether']?.status || '');
+  const state = playerStore.getState() || {};
+  const together = state['async:listenTogether'] || {};
+  const status = String(together.status || '');
   if (!status || status === 'alone') return { ok: true };
+  const roomId = String(together.roomInfo?.roomId || '');
   playerStore.dispatch({ type: 'async:listenTogether/leaveListenTogether', payload: { silent: true } });
+  if (roomId) {
+    void fetch('https://interface.music.163.com/api/listen/together/end', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'x-music-web-os': 'web3' },
+      body: 'roomId=' + encodeURIComponent(roomId),
+    }).catch(() => {});
+  }
   return { ok: true };
 })()`;
 
@@ -455,6 +532,44 @@ export const TOGETHER_ADOPT_SCRIPT = `(() => {
     payload: { command: 'PROGRESS', reason: 'force' },
   });
   return { ok: true, sent: true, songId };
+})()`;
+
+/**
+ * 通知服务端「这里有状态变化，推给房间里的其他客户端」。
+ *
+ * 为什么需要这个：网页版的播放指令（play/command/report）是 HTTP，服务端收得到也记得住，
+ * 但**不会主动推 IM 给手机原生端**——通知这件事走的是 IM，而网页版 IM 是空壳，于是手机那
+ * 边（房主或成员）收不到我们的变化，只能等它自己下一轮 poll。sync/notice 就是那个「告诉
+ * 服务端该推了」的 HTTP 触发点。
+ *
+ * 参数没有权威来源（和 room/check 一样属于「未验证」接口），先用 roomId 最小可用；服务端
+ * 要是嫌不够，会把报文塞进 error 带回来，设置页能看到。测量用：成功/失败都往回带，不静默。
+ */
+export const TOGETHER_SYNC_NOTICE_SCRIPT = `(() => {
+  ${PLAYER_ACCESS_SCRIPT}
+  if (!playerStore) return { ok: false, error: '播放器还没准备好' };
+  const together = playerStore.getState()?.['async:listenTogether'] || {};
+  const status = String(together.status || '');
+  if (status !== 'together' && status !== 'togetherOwner') return { ok: true, sent: false };
+  const roomId = String(together.roomInfo?.roomId || '');
+  if (!roomId) return { ok: true, sent: false };
+  return (async () => {
+    try {
+      const response = await fetch('https://interface.music.163.com/api/listen/together/sync/notice', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'x-music-web-os': 'web3' },
+        body: 'roomId=' + encodeURIComponent(roomId),
+      });
+      const json = await response.json();
+      if (!json || Number(json.code) !== 200) {
+        return { ok: true, sent: false, error: String(json?.message || ('code ' + (json?.code ?? '无响应'))) };
+      }
+      return { ok: true, sent: true };
+    } catch (error) {
+      return { ok: true, sent: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  })();
 })()`;
 
 /**
