@@ -160,6 +160,12 @@ export class PlayerController {
     this.together.start();
   }
 
+  joinTogether(code: string): void {
+    // 进房后页面会切到房间队列，展开播放器才能看到同步效果。
+    this.open();
+    this.together.join(code);
+  }
+
   leaveTogether(): void {
     this.together.leave();
   }

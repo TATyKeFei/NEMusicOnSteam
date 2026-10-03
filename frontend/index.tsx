@@ -78,11 +78,18 @@ function togetherMembersText(together: PlayerSnapshot["together"]): string {
   return names.length ? `房间里还有：${names.join("、")}` : "目前只有你一个人在房间里";
 }
 
+/** 播放状态的最近变化。网页版没有一起听的接收通道，只能靠这个定位是谁在重播。 */
+function probeText(together: PlayerSnapshot["together"]): string {
+  if (!together.inRoom || !together.probe.length) return "";
+  return `最近变化：${together.probe.join(" → ")}`;
+}
+
 function SettingsContent() {
   const player = getPlayer(steamSettings);
   const [snapshot, setSnapshot] = useState<PlayerSnapshot>(() => player.snapshot());
   const [directory, setDirectory] = useState(() => snapshot.settings.downloadDirectory);
   const [nameTemplate, setNameTemplate] = useState(() => snapshot.settings.downloadNameTemplate);
+  const [joinCode, setJoinCode] = useState("");
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -262,7 +269,7 @@ function SettingsContent() {
       <Field label="系统媒体控制" description={snapshot.mprisStatus} />
       <Field
         label="一起听"
-        description={`${together.note}。${togetherMembersText(together)}`}
+        description={`${together.note}。${togetherMembersText(together)}${together.buttonNote ? `播放栏按钮：${together.buttonNote}` : ""}${together.buttonAnchor ? `（挂在 ${together.buttonAnchor}）` : ""}${together.buttonBar ? `｜${together.buttonBar}` : ""}${probeText(together)}`}
         bottomSeparator="standard"
       >
         <DialogButton
@@ -274,6 +281,30 @@ function SettingsContent() {
           disabled={together.busy || !together.supported || (together.inRoom ? false : !together.loggedIn)}
         >
           {together.inRoom ? "退出房间" : "开始一起听"}
+        </DialogButton>
+      </Field>
+      <Field
+        label="加入一起听"
+        description="粘贴对方给的邀请链接或房间码。官方接受接口要房主 uid，复制端给的完整链接里带着它；只有裸房间码时会先问服务端要房主，拿不到就要求完整链接"
+        bottomSeparator="standard"
+      >
+        <TextField
+          value={joinCode}
+          onChange={event => setJoinCode(event.target.value)}
+          onKeyDown={event => {
+            if (event.key !== "Enter" || !joinCode.trim()) return;
+            player.joinTogether(joinCode);
+            setSnapshot(player.snapshot());
+          }}
+        />
+        <DialogButton
+          onClick={() => {
+            player.joinTogether(joinCode);
+            setSnapshot(player.snapshot());
+          }}
+          disabled={together.busy || !together.supported || !together.loggedIn || together.inRoom || !joinCode.trim()}
+        >
+          加入房间
         </DialogButton>
       </Field>
       <Field
