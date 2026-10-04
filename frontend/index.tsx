@@ -72,7 +72,19 @@ function identityText(identity: PlayerSnapshot["together"]["identity"]): string 
 }
 
 function togetherMembersText(together: PlayerSnapshot["together"]): string {
-  if (!together.inRoom || !together.members.length) return "房间成员由网易云推送，这里只显示当前已知的人";
+  if (!together.inRoom) return "不在房间里";
+  // 服务端 status/get 的名单才是真的：页面 store 里那份是 IM 推的，网页版收不到IM，
+  // 有时只剩一个没有头像的自己（那是「鬼房」，服务端根本没登记这次加入）。
+  if (together.serverMembers.length) {
+    const others = together.serverMembers.filter(member => member.userId !== together.accountId);
+    // 昵称和头像是我们自己去用户资料接口补的（服务端 roomUsers 只给 uid），补到了就写出来。
+    const named = others.filter(member => member.nickname);
+    const names = named.map(member => member.nickname);
+    const plain = others.length - named.length;
+    const list = [...names, ...(plain ? [`${plain} 人只有 uid`] : [])].join("、");
+    return list ? `服务端名单：${list}` : "服务端名单里只有你自己，对面还没进来（或对面没把房间码给你）";
+  }
+  if (!together.members.length) return "网易云还没告诉我们房间里有谁";
   const others = together.members.filter(member => member.userId !== together.accountId);
   const names = others.map(member => member.nickname || member.userId);
   return names.length ? `房间里还有：${names.join("、")}` : "目前只有你一个人在房间里";

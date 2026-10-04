@@ -19,6 +19,7 @@ import {
   TOGETHER_SYNC_PULL_SCRIPT,
   TOGETHER_START_SCRIPT,
   TOGETHER_STATE_SCRIPT,
+  type TogetherMember,
   type TogetherState,
 } from "./together-player.ts";
 
@@ -39,6 +40,13 @@ export type TogetherSnapshot = TogetherState & {
   buttonBar: string;
   /** sync/notice 最近一次调用的结果，排查手机端不同步用。 */
   syncNote: string;
+  /**
+   * 服务端 status/get 说的房间状态：真话。页面 store 里的 status 是我们自己写进去的，
+   * 加入没被服务端登记时它照样显示「在房间里」（真机上的「鬼房」）。
+   */
+  serverInRoom: boolean;
+  serverRoomId: string;
+  serverMembers: TogetherMember[];
 };
 
 const IDLE: TogetherState = {
@@ -80,6 +88,8 @@ const BUTTON_FAST_LIMIT = 10;
 const NOTICE_EVERY = 5;
 /** 加入房间最多重试几次。 */
 const JOIN_MAX_RETRIES = 3;
+/** 服务端连着几次说我们不在房间里，才把页面里那个假房间拆掉。 */
+const GHOST_ROOM_TICKS = 2;
 const NOT_READY = "打开播放器后可以使用一起听";
 
 /** deviceId 要在一次会话里保持稳定，网易云拿它做风控画像，每个 tick 换一个反而更显眼。 */
@@ -111,6 +121,68 @@ function describe(state: TogetherState): string {
     default:
       return "打开播放器后可以使用一起听";
   }
+}
+
+/**
+ * 把 TOGETHER_SYNC_PULL_SCRIPT 的回包翻成一句人话。设置页上就这一句能回答
+ * 「为什么还是各听各的」：服务端认不认这个房间、房间里几个人、房间队列搬过来没有、
+ * 房主在听什么、我们在听什么。
+ */
+function describePull(result: unknown): string {
+  const r = result as {
+    error?: string;
+    reason?: string;
+    via?: string;
+    serverInRoom?: boolean;
+    serverMembers?: number;
+    serverRoomId?: string;
+    serverShape?: Record<string, string>;
+    serverRoomShape?: Record<string, string>;
+    rebound?: boolean;
+    queue?: number;
+    local?: number;
+    queueShape?: Record<string, string>;
+    localShape?: Record<string, string>;
+    target?: string;
+    localHas?: boolean;
+    follow?: string;
+    aligned?: boolean;
+    /** 页面认不认识对方：page=认得、sent=刚派了补人、missing=还是不认得。 */
+    otherSide?: string;
+    /** 房间歌单的可播权限条数，otherSide 不是 page 时几乎必然是 0。 */
+    privileges?: number;
+  } | null;
+  if (!r) return "";
+  if (r.error) return `拉取失败：${r.error}`;
+  // 服务端视角先说：本地显示「在房间里」不算数，页面 status 是我们自己写进去的。
+  const parts = [
+    r.serverInRoom ? `服务端在房间 ${r.serverRoomId || ""} 里（${r.serverMembers ?? 0} 人）` : "服务端没有这个房间",
+  ];
+  if (r.rebound) parts.push("页面的房间信息丢了，已补回");
+  if (r.queue !== undefined) parts.push(`房间队列 ${r.queue} 首（本地 ${r.local ?? 0} 首）`);
+  if (r.target) parts.push(r.target === r.follow ? `已跟上 ${r.target}` : `正追上房主的 ${r.target}`);
+  if (r.aligned) parts.push("已搬房间队列");
+  // 房间名单读不到人时把服务端回包的字段名列出来：一起听的字段名换过好几次，
+  // 认错了只能靠这个形状来对（只列字段名和类型，不带值）。
+  if (r.serverInRoom && !r.serverMembers) {
+    parts.push(`回包字段 ${JSON.stringify(r.serverRoomShape || r.serverShape || {})}`);
+  }
+  // otherMember 空时页面的 playTracks 会卡在权限那道门上（只暂停、进度归零，歌换不动），
+  // 所以这一条和权限条数要摆在 reason 旁边，一眼能看出是不是卡在这。
+  if (r.otherSide && r.otherSide !== "page") {
+    parts.push(r.otherSide === "sent" ? "正在补对方信息" : "页面不知道对方是谁（otherMember 空），权限拉不到");
+    if (r.privileges !== undefined) parts.push(`权限 ${r.privileges} 条`);
+  }
+  if (r.reason) parts.push(r.reason);
+  // 切歌失败时把走过的档位带上：playTracks 还是 playByTrackId 停住的，指向的排查方向不一样。
+  if (r.reason && r.via) parts.push(`走过 ${r.via}`);
+  // 房间队列搬不过来的时候，把两个 slice 的字段名列出来——这是唯一能把「搬不过来」变成
+  // 「字段名认错了」的办法，比再猜一轮靠谱。
+  if (r.local === 0 && (r.queue ?? 0) > 0) {
+    parts.push(`房间队列字段 ${JSON.stringify(r.queueShape || {})}`);
+    parts.push(`本地队列字段 ${JSON.stringify(r.localShape || {})}`);
+  }
+  return parts.join("，");
 }
 
 export class TogetherBridge {
@@ -148,6 +220,14 @@ export class TogetherBridge {
   private identityApplied = false;
   /** sync/notice 最近一次的结果文案，排查手机端不同步用。 */
   private syncNote = "";
+  /** 拉房间快照最近一次的结果文案，排查加入房间后不同步用。 */
+  private pullNote = "";
+  /** 服务端连着几次说我们不在房间里了。 */
+  private ghostRoomTicks = 0;
+  /** 服务端 status/get 的答案：真房间还是鬼房间，房间里都有谁。 */
+  private serverInRoom = false;
+  private serverRoomId = "";
+  private serverMembers: TogetherMember[] = [];
   /** 主 tick 的次数，隔几个 tick 发一次 sync/notice。 */
   private noticeTick = 0;
   /** 加入房间的重试计数，重试时不消 pending。 */
@@ -170,6 +250,11 @@ export class TogetherBridge {
       window.clearTimeout(this.buttonTimer);
       this.buttonTimer = 0;
       this.syncNote = "";
+      this.pullNote = "";
+      this.serverInRoom = false;
+      this.serverRoomId = "";
+      this.serverMembers = [];
+      this.ghostRoomTicks = 0;
       this.noticeTick = 0;
       this.joinRetries = 0;
       this.lastInRoom = false;
@@ -194,7 +279,11 @@ export class TogetherBridge {
       buttonNote: this.buttonNote,
       buttonAnchor: this.buttonAnchor,
       buttonBar: this.buttonBar,
-      syncNote: this.syncNote,
+      // 两件事都写在这一个字段里：拉快照看加入房间后跟没跟上，notice 看手机端收不收得到。
+      syncNote: [this.pullNote, this.syncNote].filter(Boolean).join("｜"),
+      serverInRoom: this.serverInRoom,
+      serverRoomId: this.serverRoomId,
+      serverMembers: this.serverMembers,
     };
   }
 
@@ -273,31 +362,85 @@ export class TogetherBridge {
   }
 
   /**
-   * 进房之后补一次播放指令上报开关（见 TOGETHER_SYNC_ARM_SCRIPT）。按 roomId 只补一次：
-   * 页面自己在 playTracks 里会重新维护这个开关，我们不该每 1.5 秒去盖它一遍。
+   * 进房之后调一次播放指令上报开关（见 TOGETHER_SYNC_ARM_SCRIPT）：房主打开、成员关掉。
+   *
+   * 房主一个房间补一次就够了——这个开关本来就该一直开着。
+   * 成员要每个 tick 都看一眼：页面自己的 playTracks（我们采用房间队列时会走到）切完歌会把
+   * isCanReport 打开，成员开着就会去抢服务端的 playCommand。派发前脚本自己会判重，值是对的就
+   * 什么都不做，所以每个 tick 多这一次往返换来的是「成员一定没在上报」。
    */
   private armReport(): void {
     if (!this.state.inRoom || !this.state.roomId) {
       this.armedRoomId = "";
       return;
     }
-    if (this.state.roomId === this.armedRoomId) return;
-    this.armedRoomId = this.state.roomId;
+    const firstTime = this.state.roomId !== this.armedRoomId;
+    if (firstTime) this.armedRoomId = this.state.roomId;
+    // 房主一个房间补一次就够了，这个开关本来就该一直开着。
+    if (!firstTime && this.state.isHost) return;
     void evaluateInPlayer(TOGETHER_SYNC_ARM_SCRIPT).catch(() => {
       // 没派发成功就当作没补过，下个 tick 再试。
       this.armedRoomId = "";
     });
-    // 探子跟开关一起装，省一次 CDP 往返；重复安装由页面自己挡掉。
-    void evaluateInPlayer(TOGETHER_PROBE_SCRIPT).catch(() => {});
+    // 探子跟开关一起装，省一次 CDP 往返；重复安装由页面自己挡掉，所以只装一次。
+    if (firstTime) void evaluateInPlayer(TOGETHER_PROBE_SCRIPT).catch(() => {});
   }
 
   /**
-   * 房间里就定期拉一次别人的播放指令。网页版的 IM 接收是空壳，这一票指令只能从
-   * sync/playlist/get 拿（见 TOGETHER_SYNC_PULL_SCRIPT）。失败了不打扰界面，下个 tick 再来。
+   * 服务端说我们不在房间里，那就把页面里那个我们自己写进去的假房间拆掉。
+   *
+   * 之前 accept 回 200 就直接派 onUpdate 把状态设成 together，服务端到底认没认这次加入我们不知道，
+   * 于是本地显示在房间里、成员列表里只有自己（还没有头像），对面手机上压根没有第二个人。这种房间
+   * 留着只会让人以为还在房间里一直等同步，不如直接退出来，重新拿房间码加一次。
+   */
+  private leaveGhostRoom(): void {
+    if (!this.state.inRoom) return;
+    this.serverInRoom = false;
+    this.serverMembers = [];
+    this.ghostRoomTicks = 0;
+    this.state = { ...this.state, inRoom: false, isHost: false, status: "alone", roomId: "", chatRoomId: "", members: [] };
+    this.status = "服务端没有登记这个房间，已经退出来了。重新用对方的房间码加入一次";
+    this.armedRoomId = "";
+    this.memberCount = -1;
+    void evaluateInPlayer(TOGETHER_LEAVE_SCRIPT, { awaitPromise: true, userGesture: true }).catch(() => {});
+  }
+
+  /**
+   * 房间里就定期拉一次房间快照：房间队列和房主在播的歌都要追平（见 TOGETHER_SYNC_PULL_SCRIPT）。
+   * 网页版的 IM 接收是空壳，这一票东西只能从 sync/playlist/get 拿。失败了不打扰界面，下个 tick
+   * 再来；成功/失败都留一句人话在设置页上，不然「为什么不同步」只能靠猜。
    */
   private pullRemoteCommands(): void {
-    if (!this.state.inRoom || !this.state.roomId) return;
-    void evaluateInPlayer(TOGETHER_SYNC_PULL_SCRIPT, { awaitPromise: true }).catch(() => {});
+    if (!this.state.inRoom || !this.state.roomId) {
+      this.pullNote = "";
+      return;
+    }
+    void evaluateInPlayer(TOGETHER_SYNC_PULL_SCRIPT, { awaitPromise: true })
+      .then((result) => {
+        const r = result as {
+          serverInRoom?: boolean;
+          serverRoomId?: string;
+          serverUsers?: TogetherMember[];
+        } | null;
+        // 服务端说不在房间里时把页面状态也纠正过来：不然设置页一直显示「在房间里」，
+        // 让人以为还在房间、其实对面根本看不到我们。连着两次才拆，免得偶发一次问歪了就把
+        // 好端端的房间拆了。
+        if (r?.serverInRoom === false) {
+          this.ghostRoomTicks += 1;
+          if (this.ghostRoomTicks >= GHOST_ROOM_TICKS) this.leaveGhostRoom();
+        } else {
+          this.ghostRoomTicks = 0;
+        }
+        if (r?.serverInRoom) {
+          this.serverInRoom = true;
+          this.serverRoomId = r.serverRoomId ?? "";
+          this.serverMembers = Array.isArray(r.serverUsers) ? r.serverUsers : [];
+        }
+        this.pullNote = describePull(result);
+      })
+      .catch((error) => {
+        this.pullNote = `拉取异常：${error instanceof Error ? error.message : String(error)}`;
+      });
   }
 
   /**
@@ -332,9 +475,12 @@ export class TogetherBridge {
    * 正常客户端靠 USER_JOIN_IN 房间消息触发这件事，而那个消息走 IM，网页版的 IM 是空壳，
    * 房主这边永远收不到，结果新加入的人一直播自己那首。非首次变化才发：刚进房时成员还在陆续
    * 到达，重复推会互相打断。
+   *
+   * 只有房主做。backupPlayList 拿的是自己的本地队列，成员推一遍就是把房主的歌单顶掉（见
+   * TOGETHER_ADOPT_SCRIPT）。
    */
   private adoptForNewMember(): void {
-    if (!this.state.inRoom) {
+    if (!this.state.inRoom || !this.state.isHost) {
       this.memberCount = -1;
       return;
     }
