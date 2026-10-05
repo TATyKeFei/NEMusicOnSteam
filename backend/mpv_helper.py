@@ -291,6 +291,10 @@ class MpvService:
             position = max(0.0, float(position))
         except (TypeError, ValueError):
             position = 0.0
+        volume = payload.get("volume")
+        if isinstance(volume, (int, float)) and not isinstance(volume, bool):
+            # mpv 默认音量是 100%：先按网页音量落好再放声，否则从网页切过来就是一声爆音。
+            self.mpv.command("set_property", "volume", max(0.0, min(100.0, float(volume) * 100)))
         self.mpv.command("loadfile", url, "replace")
         self.mpv.command("set_property", "pause", True)
         self.mpv.set_position(position)

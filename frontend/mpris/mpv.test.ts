@@ -53,6 +53,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
   const loads: Payload[] = [];
   const webCommands: string[] = [];
   const posts: string[] = [];
+  const volumeCommands: number[] = [];
   let interval: () => void = () => {};
   let web: TrackState | null = options.web === undefined ? { ...webPlaying } : options.web;
   let mpv: Payload = { active: false, playbackStatus: "Stopped", ...(options.mpv ?? {}) };
@@ -61,7 +62,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
     evaluations.push(expression);
     if (isSnapshot(expression)) return web;
     if (expression === "download") return downloadTrack;
-    if (expression.includes("splice")) return { actions: [], volumes: [] };
+    if (expression.includes("splice")) return { actions: [] };
     return true;
   };
   const fetch = async (url: string, init?: { body?: string }) => {
@@ -71,7 +72,9 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
       return { ok: true, json: async () => ({}) };
     }
     if (url.endsWith("/command")) {
-      posts.push(JSON.parse(init!.body!).action);
+      const body = JSON.parse(init!.body!);
+      posts.push(body.action);
+      if (body.action === "volume") volumeCommands.push(body.value);
       return { ok: true, json: async () => ({ handled: true }) };
     }
     if (url.endsWith("/shutdown")) {
@@ -116,6 +119,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
     loads,
     webCommands,
     posts,
+    volumeCommands,
     tick: () => interval(),
     setWeb: (next: TrackState | null) => { web = next; },
     setMpv: (next: Payload) => { mpv = next; },
@@ -309,6 +313,43 @@ describe("MPV bridge tick", () => {
     await flush();
     assert.equal(player.loads.length, 1);
     assert.equal(player.loads[0].autoplay, false);
+  });
+
+  it("hands the page's volume to mpv on load and reconciles the rest", async () => {
+    // 网页滑块是 div[role=slider]，拖动不派发事件，音量只能靠快照跟 mpv 对账。
+    const player = setup({
+      web: { ...webPlaying, volume: 0.4 },
+      mpv: { active: true, playbackStatus: "Playing", trackId: "t1", volume: 1 },
+    });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.equal(player.loads[0].volume, 0.4);
+    assert.deepEqual(player.volumeCommands, [0.4]);
+  });
+
+  it("leaves mpv alone when the volume already matches", async () => {
+    const player = setup({
+      web: { ...webPlaying, volume: 0.4 },
+      mpv: { active: true, playbackStatus: "Playing", trackId: "t1", volume: 0.4 },
+    });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.deepEqual(player.volumeCommands, []);
+    assert.equal(player.loads[0].volume, 0.4);
+  });
+
+  it("writes media-key volume back to the page so the next tick keeps it", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1" } });
+    player.bridge.setEnabled(true);
+    await flush();
+    await player.bridge.command({ action: "volume", value: 0.6 });
+    assert.ok(player.webCommands.includes("volume"));
+    assert.deepEqual(player.volumeCommands, [0.6]);
+    player.setWeb({ ...webPlaying, volume: 0.6 });
+    player.setMpv({ active: true, playbackStatus: "Playing", trackId: "t1", volume: 0.6 });
+    player.tick();
+    await flush();
+    assert.deepEqual(player.volumeCommands, [0.6]);
   });
 
   it("asks the page for the next song when mpv runs out", async () => {

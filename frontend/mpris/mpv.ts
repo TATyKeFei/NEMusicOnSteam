@@ -184,37 +184,16 @@ const MPV_CONTROL_INSTALL_SCRIPT = `(() => {
       bridge.actions.push(action);
     }, true);
   }
-  if (!bridge.volumeInstalled) {
-    bridge.volumeInstalled = true;
-    bridge.volumes = [];
-    const readVolume = element => {
-      const source = element.matches('input') ? element : element.querySelector('input') || element;
-      const value = Number(source.getAttribute('aria-valuenow') ?? source.value);
-      const max = Number(source.getAttribute('aria-valuemax') ?? source.max);
-      if (!Number.isFinite(value) || !Number.isFinite(max) || max <= 0) return null;
-      return Math.max(0, Math.min(1, value / max));
-    };
-    const onVolume = event => {
-      const source = event.target instanceof Element ? event.target : null;
-      const target = source?.closest('[aria-label*="音量"], [aria-label*="volume"]');
-      if (!target) return;
-      const volume = readVolume(target);
-      if (volume != null) bridge.volumes.push(volume);
-    };
-    document.addEventListener('input', onVolume, true);
-    document.addEventListener('change', onVolume, true);
-  }
+  // 音量不走 DOM 监听：滑块是 div[role=slider]，拖动时不派发 input/change；
+  // tick 拿快照里的网页音量跟 mpv 对账（网页 store 才是音量的唯一来源）。
   globalThis[key] = bridge;
   return true;
 })()`;
 
 const MPV_CONTROL_POLL_SCRIPT = `(() => {
   const bridge = globalThis.__NEMusicOnSteamMpvControls;
-  if (!bridge || !Array.isArray(bridge.actions)) return { actions: [], volumes: [] };
-  return {
-    actions: bridge.actions.splice(0, bridge.actions.length),
-    volumes: Array.isArray(bridge.volumes) ? bridge.volumes.splice(0, bridge.volumes.length) : [],
-  };
+  if (!bridge || !Array.isArray(bridge.actions)) return { actions: [] };
+  return { actions: bridge.actions.splice(0, bridge.actions.length) };
 })()`;
 
 function allowWebActionScript(action: string): string {
@@ -245,6 +224,9 @@ type MpvPayload = Partial<TrackState> & { url?: string; autoplay?: boolean; posi
 // 并让 sync 别把正在切歌的页面按住。用 tick 预算而不是布尔，否则一次没有生效的切歌
 // （原地重播、播放列表到底）会让它永久挂着，mpv 暂停之后页面又自己切歌把它带起来。
 const PENDING_AUTOPLAY_TICKS = 12;
+
+// mpv 的 volume 是 0..100、网页 store 是 0..1，来回取整会有抖动，差一个百分点才算数。
+const VOLUME_EPSILON = 0.01;
 
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -324,6 +306,11 @@ export class MpvBridge implements ExternalPlayback {
       return handled;
     }
     if (!this.endpoint || !this.token) return false;
+    if (command.action === "volume") {
+      // 网页 store 是音量的唯一来源：媒体键调的是 mpv，得同时写回网页，
+      // 否则下个 tick 的对账会把 mpv 又改回网页里的旧音量。
+      await this.options.commandWeb(command);
+    }
     // mpv 的播放状态是权威，这些标志要在 /command 之前落好：请求失败时下个 tick 还会照着
     // 它们重试，而播放类命令失败的唯一常见原因就是 mpv 手里已经没歌了。
     if (command.action === "stop") {
@@ -382,15 +369,10 @@ export class MpvBridge implements ExternalPlayback {
       if (!(await this.connect())) return;
       await tryEvaluateInPlayer(MPV_CONTROL_INSTALL_SCRIPT);
       const actions = (await tryEvaluateInPlayer(MPV_CONTROL_POLL_SCRIPT)) as unknown;
-      const controlState = Array.isArray(actions) ? { actions, volumes: [] } : actions as { actions?: unknown; volumes?: unknown } | null;
-      if (Array.isArray(controlState?.actions)) {
-        for (const action of controlState.actions) {
+      const queued = Array.isArray(actions) ? actions : (actions as { actions?: unknown } | null)?.actions;
+      if (Array.isArray(queued)) {
+        for (const action of queued) {
           if (action === "next" || action === "previous" || action === "playpause") await this.command({ action });
-        }
-      }
-      if (Array.isArray(controlState?.volumes)) {
-        for (const volume of controlState.volumes) {
-          if (typeof volume === "number" && Number.isFinite(volume)) await this.command({ action: "volume", value: volume });
         }
       }
       // 先静音再读快照：新一首歌的游离 audio 可能这一 tick 才被 Howler 拿出来。
@@ -403,6 +385,12 @@ export class MpvBridge implements ExternalPlayback {
       if (!response.ok) throw new Error(`mpv state failed: ${response.status}`);
       const payload = (await response.json()) as MpvPayload;
       const next = this.normalize(payload, web);
+      // 网页 store 是音量的唯一来源（网页滑块和媒体键最后都落到它），mpv 只跟着走：
+      // 拖滑块时网页那边的 div[role=slider] 不派发事件，只能靠这里的对账把音量送过去。
+      if (next.active && web?.volume != null && Math.abs(web.volume - next.volume) > VOLUME_EPSILON) {
+        await this.request("/command", { action: "volume", value: web.volume });
+        next.volume = web.volume;
+      }
       // 播完和掉轨是两回事：播完时 path 还在，掉轨时辅助进程连 path 都没有了。
       // 前者往下一首走，后者把原来那首原样接回来，不然 mpv 辅助进程重启一次就跳歌。
       const ended = next.active && this.previousStatus === "Playing" && next.playbackStatus === "Stopped" && !this.stopRequested;
@@ -453,6 +441,8 @@ export class MpvBridge implements ExternalPlayback {
       trackId: web.trackId,
       position: web.position,
       autoplay,
+      // mpv 的初始音量是 100%：不把网页音量带上，从网页切过来就是一声爆音。
+      volume: web.volume,
     });
     if (!response.ok) {
       let message = `mpv load failed: ${response.status}`;
