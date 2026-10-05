@@ -11,6 +11,7 @@ import { parseTogetherCode, type TogetherCode } from "./together-code.ts";
 import {
   TOGETHER_JOIN_SCRIPT,
   TOGETHER_LEAVE_SCRIPT,
+  TOGETHER_CLEAR_SCRIPT,
   TOGETHER_ADOPT_SCRIPT,
   TOGETHER_PROBE_SCRIPT,
   TOGETHER_RESTORE_SCRIPT,
@@ -74,6 +75,7 @@ const IDLE: TogetherState = {
 };
 
 const TICK_MS = 1500;
+const REMOTE_POLL_MS = 500;
 /**
  * 按钮要「一开始就在」，等 1.5 秒的主 tick 会看见它凭空蹦出来。脚本没进去、或者进去了但播放栏
  * 还没渲染出来的时候，按这个间隔连着补几次；一直补不上（播放器压根没开）就停手交回主 tick，
@@ -222,6 +224,8 @@ export class TogetherBridge {
   private syncNote = "";
   /** 拉房间快照最近一次的结果文案，排查加入房间后不同步用。 */
   private pullNote = "";
+  private pulling: { generation: number; roomId: string } | null = null;
+  private pullTimer = 0;
   /** 服务端连着几次说我们不在房间里了。 */
   private ghostRoomTicks = 0;
   /** 服务端 status/get 的答案：真房间还是鬼房间，房间里都有谁。 */
@@ -258,9 +262,12 @@ export class TogetherBridge {
       this.noticeTick = 0;
       this.joinRetries = 0;
       this.lastInRoom = false;
+      window.clearInterval(this.pullTimer);
+      this.pullTimer = 0;
     if (enabled) {
       this.status = "正在读取网易云一起听状态";
       this.timer = window.setInterval((): void => void this.tick(), TICK_MS);
+      this.pullTimer = window.setInterval((): void => this.pullRemoteCommands(), REMOTE_POLL_MS);
       void this.tick();
     } else {
       window.clearInterval(this.timer);
@@ -308,6 +315,8 @@ export class TogetherBridge {
   leave(): void {
     if (!this.timer || this.pending || !this.state.inRoom) return;
     this.pending = "leave";
+    this.clearRoomState();
+    this.status = "正在退出房间";
     void this.tick();
   }
 
@@ -395,14 +404,27 @@ export class TogetherBridge {
    */
   private leaveGhostRoom(): void {
     if (!this.state.inRoom) return;
+    this.clearRoomState();
+    this.status = "房间已结束或你已退出，已清理网页的一起听状态";
+    void evaluateInPlayer(TOGETHER_CLEAR_SCRIPT, { awaitPromise: true }).catch(() => {});
+  }
+
+  private clearRoomState(): void {
     this.serverInRoom = false;
+    this.serverRoomId = "";
     this.serverMembers = [];
     this.ghostRoomTicks = 0;
-    this.state = { ...this.state, inRoom: false, isHost: false, status: "alone", roomId: "", chatRoomId: "", members: [] };
-    this.status = "服务端没有登记这个房间，已经退出来了。重新用对方的房间码加入一次";
+    this.state = {
+      ...this.state, inRoom: false, isHost: false, status: "alone", roomId: "", chatRoomId: "", creatorId: "",
+      hostNickname: "", hostAvatarUrl: "", members: [], songIds: [], action: "",
+    };
     this.armedRoomId = "";
     this.memberCount = -1;
-    void evaluateInPlayer(TOGETHER_LEAVE_SCRIPT, { awaitPromise: true, userGesture: true }).catch(() => {});
+    this.lastInRoom = false;
+    this.started = true;
+    this.noticeTick = 0;
+    this.pullNote = "";
+    this.syncNote = "";
   }
 
   /**
@@ -415,19 +437,29 @@ export class TogetherBridge {
       this.pullNote = "";
       return;
     }
+    if (this.pulling?.generation === this.generation) return;
+    const pulling = { generation: this.generation, roomId: this.state.roomId };
+    this.pulling = pulling;
+    const active = (): boolean => pulling.generation === this.generation && this.state.inRoom
+      && pulling.roomId === this.state.roomId && this.pending !== "leave" && this.pending !== "join";
     void evaluateInPlayer(TOGETHER_SYNC_PULL_SCRIPT, { awaitPromise: true })
       .then((result) => {
+        if (!active()) return;
         const r = result as {
           serverInRoom?: boolean;
+          serverChecked?: boolean;
           serverRoomId?: string;
           serverUsers?: TogetherMember[];
         } | null;
         // 服务端说不在房间里时把页面状态也纠正过来：不然设置页一直显示「在房间里」，
         // 让人以为还在房间、其实对面根本看不到我们。连着两次才拆，免得偶发一次问歪了就把
         // 好端端的房间拆了。
-        if (r?.serverInRoom === false) {
+        if (r?.serverInRoom === false && r.serverChecked !== false) {
           this.ghostRoomTicks += 1;
-          if (this.ghostRoomTicks >= GHOST_ROOM_TICKS) this.leaveGhostRoom();
+          if (this.ghostRoomTicks >= GHOST_ROOM_TICKS) {
+            this.leaveGhostRoom();
+            return;
+          }
         } else {
           this.ghostRoomTicks = 0;
         }
@@ -439,7 +471,11 @@ export class TogetherBridge {
         this.pullNote = describePull(result);
       })
       .catch((error) => {
+        if (!active()) return;
         this.pullNote = `拉取异常：${error instanceof Error ? error.message : String(error)}`;
+      })
+      .finally(() => {
+        if (this.pulling === pulling) this.pulling = null;
       });
   }
 
@@ -570,18 +606,18 @@ export class TogetherBridge {
       } else {
         result = await evaluateInPlayer(TOGETHER_LEAVE_SCRIPT, { awaitPromise: true, userGesture: true });
       }
-      if (generation !== this.generation) return;
+      if (generation !== this.generation || (action == null && this.pending != null)) return;
       if (action == null) {
         this.state = result as TogetherState;
         this.status = describe(this.state);
         // 上一个 tick 还在房间里、这个 tick 没了、又不是我们主动退的——页面把房间弄丢了
         // （刷新、切页、slot 被回收都可能）。补一次 restore 让页面自己把房间捞回来。
         if (this.lastInRoom && !this.state.inRoom && this.pending !== "leave") {
-          void evaluateInPlayer(TOGETHER_RESTORE_SCRIPT).catch(() => {});
+          void evaluateInPlayer(TOGETHER_RESTORE_SCRIPT, { awaitPromise: true }).catch(() => {});
           this.status = "正在恢复房间连接";
         }
         this.lastInRoom = this.state.inRoom;
-        if (this.maybeRestore()) void evaluateInPlayer(TOGETHER_RESTORE_SCRIPT).catch(() => {});
+        if (this.maybeRestore()) void evaluateInPlayer(TOGETHER_RESTORE_SCRIPT, { awaitPromise: true }).catch(() => {});
         this.armReport();
         this.pullRemoteCommands();
         this.maybeSyncNotice();
@@ -599,9 +635,13 @@ export class TogetherBridge {
           this.joinRetries = 0;
           // 建房/退房/进房的结果要等页面自己跑完 saga，所以再读一次状态当作确认。
           this.state = (await evaluateInPlayer(TOGETHER_STATE_SCRIPT)) as TogetherState;
+          if (generation !== this.generation) return;
           if (action === "start") this.status = "已请求建房";
           else if (action === "join") this.status = "已加入房间";
-          else this.status = "已请求退出房间";
+          else {
+            this.clearRoomState();
+            this.status = "已退出房间";
+          }
           this.armReport();
         } else if (action === "join" && response?.retryable && this.joinRetries < JOIN_MAX_RETRIES) {
           this.joinRetries += 1;
@@ -620,7 +660,7 @@ export class TogetherBridge {
     } finally {
       // 加入房间重试时 pending 还挂在 "join" 上，别清掉，否则下个 tick 就不知道该重试了。
       const retrying = this.pending === "join" && this.joinRetries > 0;
-      if (generation === this.generation && !retrying) this.pending = null;
+      if (generation === this.generation && this.pending === action && !retrying) this.pending = null;
       this.busy = false;
       // 按钮点完如果正好赶上一个 tick 的尾巴，就立刻把动作做掉，不然用户要干等一个间隔。
       const queued = this.queued;
@@ -629,6 +669,8 @@ export class TogetherBridge {
         if (queued === "start") this.start();
         else if (queued.startsWith("join:")) this.join(queued.slice("join:".length));
         else this.leave();
+      } else if (generation === this.generation && this.pending != null && !retrying) {
+        void this.tick();
       }
     }
   }

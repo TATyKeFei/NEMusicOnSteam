@@ -14,7 +14,7 @@ import { TOGETHER_PENDING_SCRIPT } from "./together-button.ts";
  * 只会得到一个更差而且更容易坏的实现。这里只做一件事：通过 CDP 找到 store，然后派发
  * 页面自己的 action。
  *
- * 所有脚本都是一次性求值，参数在生成脚本时插进去，不跨调用保存状态。
+ * 脚本通过 CDP 求值，房间信息、同步基准和待确认的本地操作保存在页面上。
  */
 
 /**
@@ -138,6 +138,45 @@ const READ_DIAGNOSTICS = `  const diagKey = '__NEMusicOnSteamDiagnostics';
  */
 const REMEMBERED_ROOM = `  const remembered = globalThis.__NEMusicOnSteamRoom || null;`;
 
+const ROOM_EXIT_HELPER = `  const roomExited = () => globalThis.__NEMusicOnSteamRoomExit?.store === playerStore;
+  const normalizeRoomExit = () => {
+    const exit = globalThis.__NEMusicOnSteamRoomExit;
+    if (!exit || exit.store !== playerStore || exit.clearing) return;
+    exit.clearing = true;
+    try {
+      const exitState = playerStore.getState() || {};
+      const exitRoom = exitState['async:listenTogether'] || {};
+      const status = String(exitRoom.status || '');
+      if ((status && status !== 'alone') || Object.keys(exitRoom.roomInfo || {}).length
+        || exitRoom.roomMembers?.length || exitRoom.otherMember) {
+        playerStore.dispatch({
+          type: 'async:listenTogether/onUpdate',
+          payload: { status: 'alone', roomInfo: null, roomMembers: [], otherMember: null },
+        });
+      }
+      if (playerStore.getState()?.['async:listenTogetherPlayStatus']?.isCanReport) {
+        playerStore.dispatch({ type: 'async:listenTogetherPlayStatus/setCanReport', payload: { isCanReport: false } });
+      }
+    } finally { exit.clearing = false; }
+  };
+  const exitTogetherRoom = () => {
+    const exitRoom = playerStore.getState()?.['async:listenTogether'] || {};
+    const roomId = String(exitRoom.roomInfo?.roomId || globalThis.__NEMusicOnSteamRoom?.roomId || '');
+    const status = String(exitRoom.status || '');
+    globalThis.__NEMusicOnSteamRoomExit = { store: playerStore, roomId, clearing: false };
+    globalThis.__NEMusicOnSteamRoom = null;
+    globalThis.__NEMusicOnSteamSyncPull = null;
+    if (typeof playerStore.subscribe === 'function' && !playerStore.__NEMusicOnSteamExitObserver) {
+      playerStore.__NEMusicOnSteamExitObserver = playerStore.subscribe(normalizeRoomExit) || true;
+    }
+    try {
+      if (roomId || (status && status !== 'alone')) {
+        playerStore.dispatch({ type: 'async:listenTogether/leaveListenTogether', payload: { silent: true } });
+      }
+    } finally { normalizeRoomExit(); }
+    return roomId;
+  };`;
+
 /**
  * 补房间成员的昵称和头像。
  *
@@ -166,20 +205,34 @@ const PROFILE_HELPER = `  const fetchProfiles = async uids => {
     }
     return found;
   };
-  const fillProfiles = async members => {
+  const fillProfiles = async (members, background = false) => {
     const cache = globalThis.__NEMusicOnSteamProfiles || (globalThis.__NEMusicOnSteamProfiles = {});
+    const pending = globalThis.__NEMusicOnSteamProfilesPending || (globalThis.__NEMusicOnSteamProfilesPending = {});
+    const attempts = globalThis.__NEMusicOnSteamProfileAttempts || (globalThis.__NEMusicOnSteamProfileAttempts = {});
     const own = String(playerStore.getState()?.host?.uid ?? '');
     const wanted = members
-      .filter(member => !member.nickname && member.userId !== own && !cache[member.userId])
+      .filter(member => !member.nickname && member.userId !== own && !cache[member.userId]
+        && !pending[member.userId] && (!attempts[member.userId] || Date.now() - attempts[member.userId] >= 30000))
       .map(member => member.userId)
       .slice(0, 5);
-    if (wanted.length) Object.assign(cache, await fetchProfiles(wanted));
-    for (const member of members) {
-      const hit = cache[member.userId];
-      if (!hit) continue;
-      member.nickname = member.nickname || hit.nickname;
-      member.avatarUrl = member.avatarUrl || hit.avatarUrl;
+    const fill = () => {
+      for (const member of members) {
+        const hit = cache[member.userId];
+        if (!hit) continue;
+        member.nickname = member.nickname || hit.nickname;
+        member.avatarUrl = member.avatarUrl || hit.avatarUrl;
+      }
+    };
+    if (wanted.length) {
+      const request = fetchProfiles(wanted).then(found => { Object.assign(cache, found); fill(); })
+        .finally(() => { for (const uid of wanted) delete pending[uid]; });
+      for (const uid of wanted) {
+        pending[uid] = request;
+        attempts[uid] = Date.now();
+      }
     }
+    if (!background) await Promise.all(members.map(member => pending[member.userId]).filter(Boolean));
+    fill();
     return members;
   };`;
 
@@ -248,6 +301,7 @@ const ROOM_STATUS_HELPER = `  /**
    * 不跑。房间号和身份认定不能只靠页面那份。
    */
   const rememberRoom = roomInfo => {
+    globalThis.__NEMusicOnSteamRoomExit = null;
     globalThis.__NEMusicOnSteamRoom = {
       roomId: String(roomInfo?.roomId ?? ''),
       creatorId: String(roomInfo?.creatorId ?? ''),
@@ -258,6 +312,7 @@ const ROOM_STATUS_HELPER = `  /**
   const rememberedRoom = () => globalThis.__NEMusicOnSteamRoom || null;
   /** 页面那份丢了就按我们留的再写回去；顺手把 status 摆回together，页面自己的心跳等生命周期靠它。 */
   const rebindRoom = (roomId, chatRoomId) => {
+    if (globalThis.__NEMusicOnSteamRoomExit?.store === playerStore) return false;
     const saved = rememberedRoom();
     if (!saved?.roomId) return false;
     // 补 chatRoomId：setRoomInfo 缺它就直接不写 store，补几次都是白补（见 parseRoomStatus）。
@@ -316,6 +371,9 @@ const SAVE_DIAGNOSTICS_HELPER = `  const saveDiagnostics = (checkData, acceptDat
  */
 export const TOGETHER_STATE_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
+${ROOM_EXIT_HELPER}
+  if (playerStore && roomExited()) normalizeRoomExit();
+  const exited = roomExited();
 ${REMEMBERED_ROOM}
   // playing 这个名字 PLAYER_ACCESS_SCRIPT 顶层已经占用了，这里只能换个叫法。
   const state = playerStore?.getState() || {};
@@ -366,11 +424,11 @@ ${PROBE_READ}${READ_DIAGNOSTICS}  // 播放栏那个按钮只能记下「用户�
       return '';
     }
   })();
-  for (const member of Array.isArray(together.roomMembers) ? together.roomMembers : []) {
+  for (const member of !exited && Array.isArray(together.roomMembers) ? together.roomMembers : []) {
     if (!member || !member.userId) continue;
     members.push({ userId: String(member.userId), nickname: String(member.nickname || ''), avatarUrl: String(member.avatarUrl || '') });
   }
-  const status = String(together.status || '');
+  const status = exited ? 'alone' : String(together.status || '');
   const currentId = Number(playState.resourceTrackId) || 0;
   // 房主也在 roomMembers 里，昵称要从那儿找，slice 本身不带。
   const hostUid = String(host.uid || together.hostUid || '');
@@ -384,14 +442,14 @@ ${PROBE_READ}${READ_DIAGNOSTICS}  // 播放栏那个按钮只能记下「用户�
     inRoom: status === 'together' || status === 'togetherOwner',
     isHost: status === 'togetherOwner',
     // 页面那份 roomInfo 会被冲掉，房间号退回我们自己存的那份，见 ROOM_STATUS_HELPER 的 rebindRoom。
-    roomId: String(room.roomId || remembered?.roomId || ''),
-    chatRoomId: String(room.chatRoomId || remembered?.chatRoomId || ''),
-    creatorId: String(room.creatorId || remembered?.creatorId || ''),
+    roomId: exited ? '' : String(room.roomId || remembered?.roomId || ''),
+    chatRoomId: exited ? '' : String(room.chatRoomId || remembered?.chatRoomId || ''),
+    creatorId: exited ? '' : String(room.creatorId || remembered?.creatorId || ''),
     hostNickname: hostMember?.nickname || '',
     hostAvatarUrl: hostMember?.avatarUrl || String(host.avatarUrl || ''),
     members,
     currentSongId: currentId > 0 ? String(currentId) : '',
-    songIds: roomQueueOf(togetherList),
+    songIds: exited ? [] : roomQueueOf(togetherList),
     playing: playState.playingState === 2,
     positionMs: Math.max(0, Math.round((Number(playState.resourcePosition) || 0) * 1000)),
     // 本地文件没法分享给房间里的人，只能各听各的。
@@ -421,6 +479,9 @@ export const TOGETHER_START_SCRIPT = `(() => {
   const target = cur && typeof cur === 'object'
     ? cur
     : { resourceType: 'track', resourceId: String(trackId), trackId, track: { id: trackId } };
+  globalThis.__NEMusicOnSteamRoomExit = null;
+  globalThis.__NEMusicOnSteamRoom = null;
+  globalThis.__NEMusicOnSteamSyncPull = null;
   playerStore.dispatch({ type: 'async:listenTogether/startListenTogether', payload: { target, refer: 'songplay_more' } });
   return { ok: true };
 })()`;
@@ -581,15 +642,9 @@ ${SAVE_DIAGNOSTICS_HELPER}
  */
 export const TOGETHER_LEAVE_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
+${ROOM_EXIT_HELPER}
   if (!playerStore) return { ok: false, error: '播放器还没准备好' };
-  const state = playerStore.getState() || {};
-  const together = state['async:listenTogether'] || {};
-  const status = String(together.status || '');
-  if (!status || status === 'alone') return { ok: true };
-  // 页面那份 roomInfo 会被冲掉，退房要用的房间号从我们自己存的那份兜底。
-  const roomId = String(together.roomInfo?.roomId || globalThis.__NEMusicOnSteamRoom?.roomId || '');
-  globalThis.__NEMusicOnSteamRoom = null;
-  playerStore.dispatch({ type: 'async:listenTogether/leaveListenTogether', payload: { silent: true } });
+  const roomId = exitTogetherRoom();
   if (roomId) {
     void fetch('https://interface.music.163.com/api/listen/together/end', {
       method: 'POST',
@@ -598,6 +653,14 @@ export const TOGETHER_LEAVE_SCRIPT = `(() => {
       body: 'roomId=' + encodeURIComponent(roomId),
     }).catch(() => {});
   }
+  return { ok: true };
+})()`;
+
+export const TOGETHER_CLEAR_SCRIPT = `(() => {
+  ${PLAYER_ACCESS_SCRIPT}
+${ROOM_EXIT_HELPER}
+  if (!playerStore) return { ok: false, error: '播放器还没准备好' };
+  exitTogetherRoom();
   return { ok: true };
 })()`;
 
@@ -617,15 +680,16 @@ export const TOGETHER_LEAVE_SCRIPT = `(() => {
  * 当本地改动再发一遍，服务端的 playCommand 被回声顶掉，两边互相把进度按回 0。
  *
  * 关掉不等于单向同步就到此为止：成员在网页上自己切歌/暂停/续播，由 TOGETHER_SYNC_PULL_SCRIPT
- * 对着上一轮读数认出来，再用 reason:'force' 走 reportRequest 补报（force 是这道门唯一放行的
+ * 安装的 store 订阅立即认出，再用 reason:'force' 走 reportRequest 补报（force 是这道门唯一放行的
  * 理由）——套用不回声、本地改动不丢，两边各走各的门。playTracks 收尾会把开关拨回 true
- * （页面自己的行为），所以那边套用完也会顺手关回来，ARM 每轮照旧把值对齐。
+ * （页面自己的行为），所以 dispatch 钩子和 store 订阅会立刻关回来，ARM 仍然兜底对齐。
  *
  * 已经是对的值就不重复派发，免得每 1.5 秒往页面日志里刷一行 setCanReport。
  */
 export const TOGETHER_SYNC_ARM_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
   if (!playerStore) return { ok: false, error: '播放器还没准备好' };
+  if (globalThis.__NEMusicOnSteamRoomExit?.store === playerStore) return { ok: true, armed: false };
   const state = playerStore.getState() || {};
   const status = String(state['async:listenTogether']?.status || '');
   if (status !== 'together' && status !== 'togetherOwner') return { ok: true, armed: false };
@@ -678,7 +742,7 @@ export const TOGETHER_SYNC_ARM_SCRIPT = `(() => {
  * 反过来，本地自己动了播放（网页上手动切歌、暂停、继续、拖进度条）也由这个脚本负责送出去：
  * 页面自己的上报路（handlePlayingChange → reportRequest）被 isCanReport 关死了，开关不能随便
  * 打开（成员一开，套用指令就会把「刚收到的指令」当本地改动发回去，回声互相顶），所以由这里
- * 对着上一轮的本地读数认出「这是用户自己动的」，再用 reason:'force' 走页面那套
+ * 通过 store 订阅立即认出「这是用户自己动的」，轮询比对仍然兜底，再用 reason:'force' 走页面那套
  * assembleRequestParam / cmdFilter / HTTP 补报——切歌/暂停/续播见「双向同步的上半段」，
  * 拖进度条见下面 dispatch 钩子那段（页面自己那条拖动上报没带 ids，被 cmdFilter 拦死）。
  *
@@ -691,6 +755,7 @@ export const TOGETHER_SYNC_PULL_SCRIPT = `(() => {
 ${ROOM_STATUS_HELPER}
 ${PROFILE_HELPER}
   if (!playerStore) return { ok: false, error: '播放器还没准备好' };
+  if (globalThis.__NEMusicOnSteamRoomExit?.store === playerStore) return { ok: true, applied: false, reason: '已经退出房间' };
   const together = playerStore.getState()?.['async:listenTogether'] || {};
   const status = String(together.status || '');
   if (status !== 'together' && status !== 'togetherOwner') return { ok: true, applied: false };
@@ -700,7 +765,43 @@ ${PROFILE_HELPER}
   if (!roomId) return { ok: true, applied: false, reason: '没有房间号' };
   const isHost = status === 'togetherOwner';
   const storeKey = '__NEMusicOnSteamSyncPull';
-  const own = globalThis[storeKey] || (globalThis[storeKey] = { last: '', at: 0, queue: '', queueAt: 0, membersAt: 0 });
+  let own = globalThis[storeKey];
+  if (!own || own.version !== 2 || own.store !== playerStore || own.roomId !== roomId) {
+    own = globalThis[storeKey] = {
+      version: 2,
+      store: playerStore, roomId, last: '', at: 0, queue: '', queueAt: 0, membersAt: 0,
+      busy: false, revision: 0, pending: null, serverSeq: 0, handled: false,
+      remoteDepth: 0, remote: null, intent: null, knownSongs: {},
+    };
+  }
+  if (own.busy) return { ok: true, applied: false, reason: '上一轮同步尚未结束' };
+  const activeRoom = () => {
+    const fresh = playerStore.getState()?.['async:listenTogether'] || {};
+    return globalThis[storeKey] === own
+      && ['together', 'togetherOwner'].includes(String(fresh.status || ''))
+      && String(fresh.roomInfo?.roomId || globalThis.__NEMusicOnSteamRoom?.roomId || '') === roomId;
+  };
+  const cancelled = () => ({ ok: true, applied: false, reason: '房间已变更，忽略旧快照' });
+  const REPORT_RETRY = 1000;
+  const REPORT_WAIT = 10000;
+  own.dispatchRemote = action => {
+    own.remoteDepth += 1;
+    try { return playerStore.dispatch(action); }
+    finally { own.remoteDepth -= 1; }
+  };
+  own.reportLocal = payload => {
+    if (!activeRoom()) return;
+    own.revision += 1;
+    own.pending = {
+      payload, at: Date.now(), reportAt: Date.now(), seen: own.lastRemote || '', sequence: own.serverSeq,
+      positions: Number.isFinite(payload.position) ? [payload.position] : [],
+    };
+    own.intent = {
+      target: payload.ids[1], position: payload.position ?? (Number(playerStore.getState()?.playing?.resourcePosition) || 0),
+      playStatus: payload.playStatus, at: Date.now(), remoteTarget: own.lastRemoteTarget || '', guardUntil: 0,
+    };
+    playerStore.dispatch({ type: 'async:listenTogetherPlayStatus/reportRequest', payload });
+  };
   /**
    * 拖进度条的上报钩子（双向同步里「进度」那一半）。
    *
@@ -714,34 +815,44 @@ ${PROFILE_HELPER}
    * 我们套用房间进度那一下会被认出来跳过，不产生回声。
    * 装一次就够（钩子自己有旗标），且只在房间里装：房主也受益（页面自己那条被 cmdFilter 拦着）。
    */
-  const seekMark = playerStore.__NEMusicOnSteamSeekMark || (playerStore.__NEMusicOnSteamSeekMark = { pos: -1, at: 0 });
-  if (!playerStore.dispatch.__NEMusicOnSteamSeekHooked) {
+  const seekMark = playerStore.__NEMusicOnSteamSeekMark || (playerStore.__NEMusicOnSteamSeekMark = { action: null });
+  if (playerStore.dispatch.__NEMusicOnSteamSyncHookVersion !== 2) {
     const original = playerStore.dispatch.bind(playerStore);
     const hooked = action => {
+      if (action?.type === 'async:listenTogetherPlayStatus/setCanReport'
+        && action.payload?.isCanReport && playerStore.getState()?.['async:listenTogether']?.status === 'together') {
+        return original({ ...action, payload: { ...action.payload, isCanReport: false } });
+      }
       if (action && action.type === 'playing/setPlayingPosition') {
         const duration = Number(action.payload?.duration);
-        const ours = Number.isFinite(duration)
-          && seekMark.pos >= 0
-          && Math.abs(duration - seekMark.pos) < 0.75
-          && Date.now() - seekMark.at < 1500;
+        const ours = action === seekMark.action;
         if (ours) {
-          seekMark.pos = -1;
+          seekMark.action = null;
         } else if (Number.isFinite(duration) && duration >= 0) {
           const fresh = playerStore.getState() || {};
           const playingState = fresh.playing || {};
           const cur = playingState.curPlaying || {};
           const id = String(cur.trackId ?? cur.resourceId ?? '');
-          if (id) {
-            original({
-              type: 'async:listenTogetherPlayStatus/reportRequest',
-              payload: { command: 'PROGRESS', position: duration, reason: 'force', ids: [id, id], playStatus: playingState.playingState },
-            });
+          const sync = globalThis[storeKey];
+          const room = fresh['async:listenTogether'] || {};
+          const activeId = String(room.roomInfo?.roomId || globalThis.__NEMusicOnSteamRoom?.roomId || '');
+          const staleRemote = sync?.remote && Date.now() < sync.remote.until && sync.remote.revision < sync.revision
+            && id === sync.remote.target && id !== sync.intent?.target;
+          if (id && ['together', 'togetherOwner'].includes(String(room.status || ''))
+            && sync?.store === playerStore && sync.roomId === activeId && !sync.remoteDepth && !staleRemote) {
+            sync.reportLocal({ command: 'PROGRESS', position: duration, reason: 'force', ids: [id, id], playStatus: playingState.playingState });
           }
         }
+      }
+      if (action?.type === 'playing/setPlayingPosition') {
+        seekMark.action = action;
+        try { return original(action); }
+        finally { seekMark.action = null; }
       }
       return original(action);
     };
     hooked.__NEMusicOnSteamSeekHooked = true;
+    hooked.__NEMusicOnSteamSyncHookVersion = 2;
     playerStore.dispatch = hooked;
   }
   const PLAYING = 2;
@@ -751,9 +862,9 @@ ${PROFILE_HELPER}
   const QUEUE_GAP = 3000;
   /** syncPlayList 是异步 effect，要等它把队列落库，最多等 1.2 秒。 */
   const QUEUE_WAIT = 12;
-  /** playTracks 要联网把房间歌单的 id 解析成 track，等久一点。 */
+  /** playTracks 要联网把房间歌单的 id 解析成 track，最多等这么久，换好就立即结束。 */
   const TRACK_WAIT = 1500;
-  /** 其余几档只是派个 action，等页面把歌换上。 */
+  /** 其余几档只是派个 action，短暂等页面把歌换上，换好就立即结束。 */
   const SWITCH_WAIT = 400;
   const queueSlice = () => playerStore.getState()?.['async:listenTogetherPlayList'] || {};
   /**
@@ -822,26 +933,105 @@ ${PROFILE_HELPER}
     const cur = playerStore.getState()?.playing?.curPlaying || {};
     return String(cur.trackId ?? cur.resourceId ?? '');
   };
+  if (!own.lastSong) {
+    own.lastSong = currentSong();
+    own.lastState = playerStore.getState()?.playing?.playingState === PLAYING ? 'playing' : 'paused';
+  }
+  own.knownSongs[own.lastSong] = true;
+  own.finishRepair = () => {
+    const intent = own.intent;
+    if (!intent || currentSong() !== intent.target) return;
+    own.repairing = null;
+    const position = Math.max(0, intent.position + (intent.playStatus === PLAYING ? (Date.now() - intent.at) / 1000 : 0));
+    const action = { type: 'playing/setPlayingPosition', payload: { duration: position } };
+    seekMark.action = action;
+    own.dispatchRemote(action);
+    const playing = playerStore.getState()?.playing || {};
+    if ((playing.playingState === PLAYING) !== (intent.playStatus === PLAYING)) {
+      own.dispatchRemote({ type: intent.playStatus === PLAYING ? 'playing/resume' : 'playing/pause' });
+    }
+  };
+  const observe = () => {
+    if (!activeRoom()) return;
+    const fresh = playerStore.getState() || {};
+    const playing = fresh.playing || {};
+    const song = currentSong();
+    if (!song) return;
+    const lastSong = own.lastSong;
+    const lastState = own.lastState;
+    const playState = playing.playingState === PLAYING ? 'playing' : 'paused';
+    own.knownSongs[song] = true;
+    own.lastSong = song;
+    own.lastState = playState;
+    if (own.remoteDepth || fresh['async:listenTogether']?.status !== 'together') return;
+    if (own.repairing?.target === song && Date.now() < own.repairing.until) {
+      own.finishRepair();
+      return;
+    }
+    const remote = own.remote;
+    if (remote && Date.now() < remote.until && song === remote.target) {
+      const intent = own.intent;
+      if (remote.revision < own.revision && intent && song !== intent.target
+        && (!own.repairing || Date.now() >= own.repairing.until)) {
+        own.repairing = { target: intent.target, until: Date.now() + 3000 };
+        own.dispatchRemote({
+          type: 'async:listenTogetherPlayList/playByTrackId',
+          payload: { id: intent.target, playStatus: intent.playStatus, commandType: 'GOTO' },
+        });
+        own.finishRepair();
+      }
+      return;
+    }
+    if (song !== lastSong && lastSong && localQueue().includes(song)) {
+      own.reportLocal({ command: 'GOTO', reason: 'force', ids: [lastSong, song], position: 0, playStatus: playing.playingState });
+    } else if (song === lastSong && lastState && playState !== lastState
+      && (!remote || remote.target !== song || Date.now() >= remote.until)) {
+      own.reportLocal({ command: playState === 'paused' ? 'PAUSE' : 'PLAY', reason: 'force', ids: [song, song], playStatus: playing.playingState });
+    }
+  };
+  own.observe = () => {
+    try { observe(); }
+    finally {
+      const fresh = playerStore.getState() || {};
+      if (activeRoom() && !own.closingReport && fresh['async:listenTogether']?.status === 'together'
+        && fresh['async:listenTogetherPlayStatus']?.isCanReport) {
+        own.closingReport = true;
+        try { own.dispatchRemote({ type: 'async:listenTogetherPlayStatus/setCanReport', payload: { isCanReport: false } }); }
+        finally { own.closingReport = false; }
+      }
+    }
+  };
+  if (typeof playerStore.subscribe === 'function' && !playerStore.__NEMusicOnSteamSyncObserver) {
+    playerStore.__NEMusicOnSteamSyncObserver = playerStore.subscribe(() => {
+      const sync = globalThis[storeKey];
+      if (sync?.store === playerStore) sync.observe?.();
+    }) || true;
+  }
+  own.busy = true;
   return (async () => {
     // 先问服务端自己我们在不在房间里。页面 store 里的 status 是我们上次派 onUpdate 写进去的，
     // 服务端要是没登记这次加入，它照样显示「在房间里」——这种假房间怎么同步都没用。
     let server = { inRoom: false, roomId: '', creatorId: '', chatRoomId: '', members: [] };
     try {
       server = parseRoomStatus(await fetchRoomStatus(roomId));
+      if (server.code !== 200) server.failed = true;
     } catch (error) {
       // 问不到就当没查到，不因此中断同步：这一轮只是少一份旁证。
       server = { inRoom: false, roomId: '', creatorId: '', chatRoomId: '', members: [], failed: true };
     }
+    if (!activeRoom()) return cancelled();
     // 顺手把丢掉的 roomInfo 写回去（带上服务端的 chatRoomId 兜底）：页面自己的心跳、队列、
     // mini 状态都靠它，缺了手机那边也会觉得我们掉线。
-    const rebound = rebindRoom(roomId, server.chatRoomId || '');
-    if (server.inRoom) await fillProfiles(server.members);
-    if (!server.inRoom) {
+    const rebound = server.inRoom && !server.failed ? rebindRoom(roomId, server.chatRoomId || '') : false;
+    if (server.inRoom) await fillProfiles(server.members, true);
+    if (!activeRoom()) return cancelled();
+    if (!server.inRoom || server.failed) {
       return {
         ok: true,
         applied: false,
         reason: server.failed ? '问不到服务端房间状态' : '服务端说我们不在这个房间里',
         serverInRoom: false,
+        serverChecked: !server.failed,
         serverMembers: server.members.length,
         serverUsers: server.members.slice(0, 20),
         serverRoomId: server.roomId,
@@ -891,6 +1081,8 @@ ${PROFILE_HELPER}
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
+    if (!activeRoom()) return cancelled();
+    await fillProfiles(server.members, true);
     const data = json?.data && typeof json.data === 'object' ? json.data : {};
     const command = data.playCommand || null;
     const songs = remoteQueue(data.playlist);
@@ -921,23 +1113,7 @@ ${PROFILE_HELPER}
     if (!isHost && state['async:listenTogetherPlayStatus']?.isCanReport) {
       playerStore.dispatch({ type: 'async:listenTogetherPlayStatus/setCanReport', payload: { isCanReport: false } });
     }
-    // 采用房间队列。同一份队列只问一次（own.queue 就是问过的指纹），问不出结果也不反复问：
-    // 空队列那条分支会让页面无条件 playTracks，1.5 秒一次能把歌从头重播一遍。
-    const fingerprint = songs.join(',');
     let aligned = false;
-    if (songs.length && fingerprint !== own.queue && Date.now() - own.queueAt >= QUEUE_GAP) {
-      own.queue = fingerprint;
-      own.queueAt = Date.now();
-      aligned = true;
-      playerStore.dispatch({
-        type: 'async:listenTogetherPlayList/syncPlayList',
-        // forceUpdatePlaylist 让页面把房间队列当成自己的队列（官方客户端加入房间时走的就是
-        // 这条路）。enableDispatchQueueChange 一起打开：这一票就是要让 store 里的队列换掉，
-        // 不换的话 playByTrackId 还在旧队列里按 id 找歌。isIgnorePlayCommand 传 false——指令
-        // 由我们自己套用，别让页面顺手也来一遍（它那套会把「别人暂停」变成强制续播）。
-        payload: { roomId, forceUpdatePlaylist: true, enableDispatchQueueChange: true, isIgnorePlayCommand: false },
-      });
-    }
     /** 回给设置页的现场信息：服务端房间状态、房间队列几首、房主在听什么、我们在听什么。 */
     const scene = () => {
       const fresh = playerStore.getState() || {};
@@ -965,6 +1141,16 @@ ${PROFILE_HELPER}
         privileges: Array.isArray(list.commonPrivilegeList) ? list.commonPrivilegeList.length : 0,
       };
     };
+    const seen = command ? JSON.stringify(command) : '';
+    const sender = String(command?.userId ?? '');
+    const hostUid = String(state.host?.uid ?? '');
+    const sequence = Number(command?.serverSeq) || 0;
+    const outOfOrder = sequence > 0 && sequence < own.serverSeq;
+    if (!outOfOrder) {
+      own.lastRemote = seen;
+      own.lastRemoteTarget = target;
+      if (sequence > 0) own.serverSeq = sequence;
+    }
     /**
      * 双向同步的上半段：本地（网页上）自己动了播放——切歌、暂停、续播——就上报给房间。
      *
@@ -985,41 +1171,84 @@ ${PROFILE_HELPER}
      */
     if (!isHost && prevSong) {
       const serverPaused = /PAUSE/i.test(String(command?.playStatus || ''));
-      if (current && current !== prevSong && current !== target) {
+      const pendingTarget = own.pending?.payload?.ids?.[1] || '';
+      const expectedPaused = own.pending ? own.pending.payload.playStatus !== PLAYING : serverPaused;
+      if (current && current !== prevSong && (current !== target || (pendingTarget && current !== pendingTarget))) {
         if (localQueue().includes(current)) {
-          playerStore.dispatch({
-            type: 'async:listenTogetherPlayStatus/reportRequest',
-            payload: { command: 'GOTO', reason: 'force', ids: [prevSong, current], position: 0, playStatus: playing.playingState },
-          });
+          own.reportLocal({ command: 'GOTO', reason: 'force', ids: [prevSong, current], position: 0, playStatus: playing.playingState });
           return { ...scene(), ok: true, applied: false, reported: 'GOTO', reason: '本地切了歌，已上报给房间' };
         }
         return { ...scene(), ok: true, applied: false, reason: '本地这首歌不在房间队列里，上报不了' };
       }
-      if (current && prevState && current === target
-        && paused !== (prevState === 'paused') && paused !== serverPaused) {
+      if (current && prevState && (current === target || current === pendingTarget)
+        && paused !== (prevState === 'paused') && paused !== expectedPaused) {
         const reported = paused ? 'PAUSE' : 'PLAY';
-        playerStore.dispatch({
-          type: 'async:listenTogetherPlayStatus/reportRequest',
-          payload: { command: reported, reason: 'force', ids: [current, current], playStatus: playing.playingState },
-        });
+        own.reportLocal({ command: reported, reason: 'force', ids: [current, current], playStatus: playing.playingState });
         return { ...scene(), ok: true, applied: false, reported, reason: paused ? '本地暂停了，已上报给房间' : '本地继续播了，已上报给房间' };
       }
     }
+    if (own.pending) {
+      const pending = own.pending;
+      const payload = pending.payload;
+      const acknowledged = !outOfOrder && sender && sender === hostUid && target === payload.ids[1]
+        && (pending.sequence > 0 ? sequence > pending.sequence : seen !== pending.seen)
+        && (payload.command === 'GOTO'
+          || (payload.command === 'PROGRESS' && pending.positions.some(position => Math.abs(Number(command?.progress) - position * 1000) < 1500))
+          || (['PAUSE', 'PLAY'].includes(payload.command)
+            && /PAUSE/i.test(String(command?.playStatus || '')) === (payload.command === 'PAUSE')));
+      if (acknowledged || Date.now() - pending.at >= REPORT_WAIT) {
+        if (acknowledged && own.intent) own.intent.guardUntil = Date.now() + 1500;
+        own.pending = null;
+      } else {
+        if (Date.now() - pending.reportAt >= REPORT_RETRY) {
+          pending.reportAt = Date.now();
+          const fresh = playerStore.getState()?.playing || {};
+          const matching = currentSong() === payload.ids[1];
+          const position = matching ? Math.max(0, Number(fresh.resourcePosition) || 0)
+            : Math.max(0, own.intent.position + (own.intent.playStatus === PLAYING ? (Date.now() - own.intent.at) / 1000 : 0));
+          const retry = ['GOTO', 'PROGRESS'].includes(payload.command)
+            ? { ...payload, command: 'PROGRESS', ids: [payload.ids[1], payload.ids[1]], position, playStatus: matching ? fresh.playingState : own.intent.playStatus }
+            : payload;
+          if (Number.isFinite(retry.position)) pending.positions.push(retry.position);
+          playerStore.dispatch({ type: 'async:listenTogetherPlayStatus/reportRequest', payload: retry });
+        }
+        return { ...scene(), ok: true, applied: false, reason: '本地操作等待房间确认，忽略旧快照' };
+      }
+    }
+    if (outOfOrder) return { ...scene(), ok: true, applied: false, reason: '指令序号过旧' };
+    const intent = own.intent;
+    const heartbeat = String(command?.commandType || '').toUpperCase() === 'PROGRESS';
+    const expectedPosition = intent ? intent.position + (intent.playStatus === PLAYING ? (Date.now() - intent.at) / 1000 : 0) : 0;
+    const staleHeartbeat = intent && Date.now() < intent.guardUntil && heartbeat && sender !== hostUid
+      && (target !== intent.target ? target === intent.remoteTarget : Math.abs(Number(command?.progress) / 1000 - expectedPosition) > 3);
+    if (staleHeartbeat || (seen && seen === own.ignoredHeartbeat)) {
+      own.ignoredHeartbeat = seen;
+      return { ...scene(), ok: true, applied: false, reason: '手机仍在回传操作前的状态，忽略旧心跳' };
+    }
+    const fingerprint = songs.join(',');
+    if (songs.length && fingerprint !== own.queue && Date.now() - own.queueAt >= QUEUE_GAP) {
+      own.queue = fingerprint;
+      own.queueAt = Date.now();
+      aligned = true;
+      if (target) own.remote = { target, revision: own.revision, until: Date.now() + 5000 };
+      own.dispatchRemote({
+        type: 'async:listenTogetherPlayList/syncPlayList',
+        payload: { roomId, forceUpdatePlaylist: true, enableDispatchQueueChange: true, isIgnorePlayCommand: false },
+      });
+    }
     if (!command) return { ...scene(), ok: true, applied: false, reason: '没拿到指令' };
-    const seen = JSON.stringify(command);
     /**
-     * 同一条指令别每个 tick 都往里灌：套用过了就 5 秒内不重复灌，「拖回同一个进度」这类真需要
-     * 重新应用的场景不会被永久吃掉。
+     * 成功套用的同一条指令不再重复灌。新的同进度拖动由 serverSeq 区分，旧进度不会每五秒回拉。
      *
-     * 但上次**没套上**（比如队列里还没有那首歌）就得早点再来：等 5 秒才重试一次，用户听着就是
+     * 但上次**没套上**（比如队列里还没有那首歌）就得早点再来：等太久才重试一次，用户听着就是
      * 一直各听各的，每 1.5 秒重试一次才像在干活。own.applied 记的就是上一次到底成没成。
      */
-    const wait = own.applied ? 5000 : 1500;
-    if (seen === own.last && Date.now() - own.at < wait) {
+    if (seen === own.last && (own.handled || Date.now() - own.at < 1500)) {
       return { ...scene(), ok: true, applied: false, reason: '指令没变' };
     }
     own.last = seen;
     own.at = Date.now();
+    own.handled = false;
     /**
      * 记下这一轮到底有没有真的改动播放，出去之前统一写回 own.applied。
      *
@@ -1028,8 +1257,9 @@ ${PROFILE_HELPER}
      * isCanReport 也在成员端顺手关掉——playTracks 的收尾会把它拨回 true（页面自己的行为，
      * 见 ARM 注释），那扇窗开着，页面下一次本地状态变化就会把回声发出去。
      */
-    const settle = result => {
+    const settle = (result, handled = Boolean(result?.applied)) => {
       own.applied = Boolean(result?.applied);
+      own.handled = handled;
       own.lastSong = currentSong();
       own.lastState = playerStore.getState()?.playing?.playingState === PLAYING ? 'playing' : 'paused';
       const ps = playerStore.getState()?.['async:listenTogetherPlayStatus'] || {};
@@ -1038,17 +1268,18 @@ ${PROFILE_HELPER}
       }
       return result;
     };
-    const sender = String(command.userId ?? '');
-    const hostUid = String(state.host?.uid ?? '');
-    if (sender && hostUid && sender === hostUid) return { ...scene(), ok: true, applied: false, reason: '自己发的' };
+    const repairOwnCommand = sender === hostUid && target && target !== currentSong() && own.intent?.target === target;
+    if (sender && hostUid && sender === hostUid && !repairOwnCommand) {
+      return settle({ ...scene(), ok: true, applied: false, reason: '自己发的' }, true);
+    }
     const type = String(command.commandType ?? '');
     const applyPosition = () => {
       const progress = Number(command.progress);
       if (!Number.isInteger(progress) || progress < 0) return false;
       // 先打标记再派发：dispatch 钩子认出这是套用房间进度，不拿它当用户的拖动上报。
-      seekMark.pos = progress / 1000;
-      seekMark.at = Date.now();
-      playerStore.dispatch({ type: 'playing/setPlayingPosition', payload: { duration: progress / 1000 } });
+      const action = { type: 'playing/setPlayingPosition', payload: { duration: progress / 1000 } };
+      seekMark.action = action;
+      own.dispatchRemote(action);
       return true;
     };
     const applyStatus = () => {
@@ -1056,21 +1287,43 @@ ${PROFILE_HELPER}
       const now = playerStore.getState()?.playing || {};
       if (stopped) {
         if (now.playingState !== PLAYING) return '';
-        playerStore.dispatch({ type: 'playing/pause' });
+        own.dispatchRemote({ type: 'playing/pause' });
         return 'pause';
       }
       if (now.playingState === PLAYING) return '';
-      playerStore.dispatch({ type: 'playing/resume' });
+      own.dispatchRemote({ type: 'playing/resume' });
       return 'resume';
     };
     // 成员：房主在听的歌不是我这首，就追过去。不限指令类型——房主的心跳是 PROGRESS，只认
     // GOTO/NEXT/PREV 的话成员永远不会换歌（这就是各听各的最后一环）。
     if (!isHost && target && target !== current) {
+      const revision = own.revision;
+      own.remote = { target, revision, until: Date.now() + 5000 };
+      const canContinue = () => activeRoom() && own.revision === revision
+        && ['', current, target].includes(currentSong());
+      const interrupted = () => ({ ...scene(), ok: true, applied: false, reason: '本地播放已变化，忽略旧快照' });
+      const waitForSong = async timeout => {
+        for (let elapsed = 0; elapsed < timeout && currentSong() !== target && canContinue(); elapsed += 50) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        return canContinue();
+      };
+      const playIds = displayQueue(data.playlist);
       // 队列里没有这首歌就先等刚才那次 syncPlayList 落库，否则 playByTrackId 按 id 找不到歌。
-      for (let i = 0; i < QUEUE_WAIT && !localQueue().includes(target); i += 1) {
+      for (let i = 0; !playIds.length && i < QUEUE_WAIT && !localQueue().includes(target); i += 1) {
         await new Promise(resolve => setTimeout(resolve, 100));
+        if (!canContinue()) return interrupted();
       }
+      if (!canContinue()) return interrupted();
       const steps = [];
+      if (own.knownSongs[target] || songIds(playerStore.getState()?.playingList?.curPlayingList).includes(target)) {
+        own.dispatchRemote({
+          type: 'async:listenTogetherPlayList/playByTrackId',
+          payload: { id: target, playStatus: PLAYING, commandType: SWITCH.includes(type) ? type : 'GOTO' },
+        });
+        steps.push('playByTrackId');
+        if (!await waitForSong(250)) return interrupted();
+      }
       /**
        * 第一档：让页面自己播房间队列。
        *
@@ -1084,37 +1337,36 @@ ${PROFILE_HELPER}
        * 早先传 {clear, playId}，第一步 g.map 就 TypeError，这一档从来没生效过——四档全靠
        * 后面的退档硬顶，探针里才一直是「暂停 + 进度 0」。
        */
-      const playIds = displayQueue(data.playlist);
-      if (playIds.length) {
-        playerStore.dispatch({
+      if (playIds.length && currentSong() !== target) {
+        own.dispatchRemote({
           type: 'async:listenTogetherPlayList/playTracks',
           payload: { displayTrackIds: playIds, options: { playId: target, play: true } },
         });
         steps.push('playTracks');
-        await new Promise(resolve => setTimeout(resolve, TRACK_WAIT));
+        if (!await waitForSong(TRACK_WAIT)) return interrupted();
       }
       // playByTrackId 在队列里按 id 找歌。队列刚解析出来时它也能用，留着当第二档。
       if (currentSong() !== target) {
-        playerStore.dispatch({
+        own.dispatchRemote({
           type: 'async:listenTogetherPlayList/playByTrackId',
           // 指令类型不在切歌那一族时按 GOTO 处理：playByTrackId 只在切歌语义下才会换歌。
           payload: { id: target, playStatus: PLAYING, commandType: SWITCH.includes(type) ? type : 'GOTO' },
         });
         steps.push('playByTrackId');
-        await new Promise(resolve => setTimeout(resolve, SWITCH_WAIT));
+        if (!await waitForSong(SWITCH_WAIT)) return interrupted();
       }
       if (currentSong() !== target) {
         // 再退一步：直接让播放器播这一首，不经过房间队列。真机实测不带 clear 的那一版只会把
         // 播放状态从 2 掰成 1 再掰回 2，歌还是原来那首（探针里 pos 恒为 0 就是它）。
-        playerStore.dispatch({ type: 'playing/play', payload: { playId: target } });
+        own.dispatchRemote({ type: 'playing/play', payload: { playId: target } });
         steps.push('playing/play');
-        await new Promise(resolve => setTimeout(resolve, SWITCH_WAIT));
+        if (!await waitForSong(SWITCH_WAIT)) return interrupted();
       }
       if (currentSong() !== target) {
         // 最后一档：照页面 playTracks 的原样来，带 clear 让它重建队列。
-        playerStore.dispatch({ type: 'playing/play', payload: { playId: target, clear: true } });
+        own.dispatchRemote({ type: 'playing/play', payload: { playId: target, clear: true } });
         steps.push('playing/play+clear');
-        await new Promise(resolve => setTimeout(resolve, SWITCH_WAIT));
+        if (!await waitForSong(SWITCH_WAIT)) return interrupted();
       }
       if (currentSong() !== target) {
         // 几档都不奏效。三件事分开说，指向的下一步完全不同：
@@ -1154,9 +1406,9 @@ ${PROFILE_HELPER}
       // 反复派没意义（自己刚上报的 GOTO 落地后下一轮就会走到这）。还停着才派——GOTO 语义下
       // 它顺带把「跟着房间继续播」补上。
       if (target === current && playing.playingState === PLAYING) {
-        return settle({ ...scene(), ok: true, applied: false, reason: '已经在播这首' });
+        return settle({ ...scene(), ok: true, applied: false, reason: '已经在播这首' }, true);
       }
-      playerStore.dispatch({
+      own.dispatchRemote({
         type: 'async:listenTogetherPlayList/playByTrackId',
         payload: { id: target, playStatus: PLAYING, commandType: type },
       });
@@ -1165,11 +1417,11 @@ ${PROFILE_HELPER}
     const sameSong = !!target && (target === String(cur.trackId ?? '') || target === String(cur.resourceId ?? ''));
     if (!sameSong) return settle({ ...scene(), ok: true, applied: false, reason: '不是同一首歌' });
     if (type === 'PAUSE') {
-      if (playing.playingState === PLAYING) playerStore.dispatch({ type: 'playing/pause' });
+      if (playing.playingState === PLAYING) own.dispatchRemote({ type: 'playing/pause' });
       return settle({ ...scene(), ok: true, applied: true, via: 'playing/pause', commandType: type });
     }
     if (type === 'PLAY') {
-      if (playing.playingState !== PLAYING) playerStore.dispatch({ type: 'playing/resume' });
+      if (playing.playingState !== PLAYING) own.dispatchRemote({ type: 'playing/resume' });
       return settle({ ...scene(), ok: true, applied: true, via: 'playing/resume', commandType: type });
     }
     if (type === 'PROGRESS' || type === 'seek' || type === 'SEEK') {
@@ -1179,7 +1431,10 @@ ${PROFILE_HELPER}
       return settle({ ...scene(), ok: true, applied: Boolean(via), via, reason: via ? '' : '进度无效', commandType: type });
     }
     return settle({ ...scene(), ok: true, applied: false, reason: '不认识的指令 ' + type });
-  })();
+  })().finally(() => {
+    own.busy = false;
+    if (own.remote && own.remote.revision === own.revision && own.handled && currentSong() === own.remote.target) own.remote = null;
+  });
 })()`;
 
 /**
@@ -1261,7 +1516,32 @@ export const TOGETHER_SYNC_NOTICE_SCRIPT = `(() => {
  */
 export const TOGETHER_RESTORE_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
+${ROOM_EXIT_HELPER}
+${ROOM_STATUS_HELPER}
   if (!playerStore) return { ok: false, error: '播放器还没准备好' };
+  if (roomExited()) {
+    normalizeRoomExit();
+    return { ok: true, restored: false, reason: '已经退出房间' };
+  }
+  const saved = rememberedRoom();
+  const status = String(playerStore.getState()?.['async:listenTogether']?.status || '');
+  if (saved?.roomId && status !== 'together' && status !== 'togetherOwner') {
+    return (async () => {
+      try {
+        const server = parseRoomStatus(await fetchRoomStatus(saved.roomId));
+        if (roomExited() || saved !== rememberedRoom()) return { ok: true, restored: false };
+        if (server.code !== 200) return { ok: true, restored: false, reason: '房间状态未确认' };
+        if (!server.inRoom) {
+          exitTogetherRoom();
+          return { ok: true, restored: false, reason: '房间已结束' };
+        }
+        playerStore.dispatch({ type: 'async:listenTogether/restore' });
+        return { ok: true, restored: true };
+      } catch (error) {
+        return { ok: true, restored: false, reason: '房间状态未确认' };
+      }
+    })();
+  }
   playerStore.dispatch({ type: 'async:listenTogether/restore' });
   return { ok: true };
 })()`;

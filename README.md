@@ -1,6 +1,6 @@
 # NEMuxicOnSteam
 
-这是一个 [Millennium](https://github.com/SteamClientHomebrew/Millennium) 插件，可以让你的Steam运行`网易云Web版`
+这是一个 [Millennium](https://github.com/SteamClientHomebrew/Millennium) 插件，可以让你的Steam运行 网易云Web版
 
 > 注意! 使用的是官网那个页面，不是重写的客户端：`https://music.163.com/st/webplayer`
 
@@ -16,7 +16,8 @@
 - 非任何官方插件! 本项目与网易、Valve 都没关系。我要有关系我还在这写这个sb项目早躺平了
 - 登录态在 Steam 自带的浏览器里，和系统其他浏览器不共享
 - 不会窃取任何数据，程序就开源在这了，不放心就自己构建插件
-- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的（声明：我虽然用Arch + rust但我不是那种xnnLGBT，我只是爱好者别给我扣帽子）
+- 不承担封号风险: 如果被封号建议去测丁磊老冯
+- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的（声明的声明：我虽然用Arch + rust但我不是那种xnnLGBT，我只是爱好者别给我扣帽子）
 
 # 支持
 
@@ -24,26 +25,28 @@
 
 | 系统    | 可用性                 | 备注及注意事项       |
 | :---    | :---                   | :---                 |
-| Linux   | 支持                   | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不爆改应该都支持                       |
+| Linux   | 支持（主要推荐）       | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不爆改应该都支持                       |
+| Windows | 残废不推荐，仅保证能听歌就行 | 本项目依赖MPRIS实现大部分功能，由于Windows没有MPRIS且我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份  |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
 | Mac OS  | 不支持                 | 我是穷鬼安卓人没钱买苹果测试，不过Millennium好像也没支持MacOS                          |
-| Windows | 残废，只能听歌         | 本项目依赖MPRIS实现大部分功能，由于Windows没有MPRIS且我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份  |
 
 # 特色功能
 
 在Web版网易云的基础下添加更多的功能
 
+详细介绍可看 [Wiki](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D) 中查看
+
 | 内容       | 支持状况                                              | 备注   |
 | :---       | :---                                                  | :---   |
-| MPRIS      | 支持媒体键、控制音量进度条; 循环、列表播放还未支持    | 仅Linux支持  |
-| 通知       | 支持发送系统通知显示歌曲信息、封面                    | Mako、Windows未测试，仅测试了KDE通知        |
+| MPRIS      | 仅 Linux 支持                                                  | 仅Linux支持，Windows没有MPRIS不支持  |
+| 通知       | 支持                                                  | 支持KDE原生通知、Mako等通知服务; Windows未测试        |
 | 一起听     | 支持           | 可以加入/创建一起听房间。无法使用消息和麦克风语音聊天功能 |
 | 音质设置   | 支持           | 在**Steam → 设置 → 网易云音乐**里可以设置。但要注意账号是否有vip不然开不了高音质 |
 | 后台播放   | 支持           | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
 | 下载歌曲   | 支持           | 列表里的歌曲更多菜单里新增了“下载”按钮，在**Steam → 设置 → 网易云音乐**里可以选下载音质和目录，默认路径 `~/Music/网易云音乐` |
 | 听歌识曲   | 仅 Linux 支持  | 支持桌面音频、麦克风输入录制                     |
 | 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#歌词](#歌词)            |
-| 全局快捷键 | 利用媒体键     | 依赖 MPRIS 连接，做法见[#全局快捷键](#全局快捷键)       |
+| 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#全局快捷键](#全局快捷键)       |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | API 接口   | 后续支持       |        |
 
@@ -51,7 +54,7 @@
 
 | 内容       | 支持状况                                              | 备注   |
 | :--- | :--- | :--- |
-| 好友状态显示当前播放歌曲 | 不支持   | 目前没有稳定良好的思路方法实现，也怕有坏人用来骚扰好友         |
+| Steam好友状态显示当前播放歌曲 | 不支持   | 目前没有稳定良好的思路方法实现，也怕有坏人用来骚扰好友         |
 
 # 预览
 
@@ -79,71 +82,9 @@
   <sub>切换、下一首歌曲弹窗通知支持</sub>
 </p>
 
-# 安装教程
-
-## 需求
-
-- 需要 [Millennium](https://github.com/SteamClientHomebrew/Millennium) **3.4.0+**
-- 不支持通过 Flatpak / Snap / Linyaps 等第三方包管理器安装的 Steam (本来也不建议通过第三方包管理器安装Steam)
-
-### Arch系发行版
-
-#### 通过Pacman安装(推荐)
-
-如果配置过archlinuxcn仓库，Millennium在archlinuxcn上有，你可以从archlinuxcn仓库安装
-
-没配置过archlinuxcn仓库的人也强烈建议去弄下老好用了
-
-```
-sudo pacman -S millennium
-```
-
-#### 通过Aur安装
-
-没配置过archlinuxcn可以通过Aur安装
-
-```
-paru: `paru -S millennium`
-yay:  `yay -S millennium`
-```
-
-#### 可选安装
-
-如需要媒体键控制需要额外依赖
-
-MPIRS依赖Python3、PyGObject和D-Bus，可通过安装以下包解决
-
-```
-sudo pacman -S python-gobject
-```
-
-### Windows
-
-不知道，好像是通过exe安装包安装的。可以看看Millennium官网
-
-https://docs.steambrew.app/users/getting-started/installation
-
-### 其他Linux发行版/系统
-
-复制下面命令下载其他发行版的预编译脚本并执行，官方推荐的我没试过，装之前建议自己先看一遍
-
-```bash
-curl -fsSL "https://steambrew.app/install.sh" | bash
-```
-
-## 开始安装插件
-
-从[Releases](https://github.com/TATyKeFei/NEMusicOnSteam/releases)页面下载最新版插件，放入这个路径里
-
-Linux: `~/.local/share/millennium/plugins/`
-
-Windows: `不知道`
-
-然后完全终止 Steam 进程再打开，在 **Steam → Millennium → Plugins**里可以配置启用/禁用（默认已经是启用了）
-
 # 怎么用?
 
-装好并启用之后，「库」「社区」那一行的右侧有一个 **网易云** 文字，点击即可打开
+装好并启用之后，「库」「社区」导航行的右侧有一个 **网易云** 文字，点击即可打开
 
 设置里可以开「启动时打开」。默认不开，避免一启动 Steam 就被播放器盖住
 
@@ -151,125 +92,9 @@ Windows: `不知道`
 
 第一次打开会让你扫码登录一下，之后都不会弹登录了
 
-# 功能介绍
+# 安装教程
 
-## 后台播放
-
-Steam 语音通话会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`
-
-但关闭播放器时会把那个节流开关调回去。这时候如果正在语音，有可能和通话抢同一个开关
-
-插件在播放器还活着的时候，每隔几秒把同一个开关打开。这是为了 Steam 窗口最小化之后，页面里的定时器和切歌逻辑还能跑。
-
-这是对照当前 Steam 的 `steamui` 写的，**还没有在最小化状态下实际听完一首再切歌的验证**。如果最小化之后声音还在、但播完不切下一首，多半是网页自己暂停了，或者 CEF 没理会这个接口。插件解决不了那种情况。收起时如果连那 4 像素也关掉，切歌更容易停。
-
-## MPRIS
-
-> 需要 Python3、PyGObject和D-Bus
-
-Arch系可以安装这个解决`sudo pacman -S python-gobject`、Debian系安装`python3-gi`、Windows不知道
-
-MPRIS 使用 Millennium 的 Chrome DevTools 接口读取内嵌网页，再由随插件打包的 Python 辅助进程在用户会话 D-Bus 上注册 `org.mpris.MediaPlayer2.NEMusicOnSteam`。打开 Steam 后可用 `playerctl -l` 查看；关闭 Steam 或卸载插件后，辅助进程会在约 15 秒内自行退出。网页改版可能使歌曲信息或上一首、下一首按钮失效
-
-播放一首歌后可以用 `playerctl -p NEMusicOnSteam metadata` 查看信息，或用 `playerctl -p NEMusicOnSteam play-pause` 测试控制。插件设置页会显示 MPRIS 连接状态
-
-Linux 上首次开始播放或切换歌曲后开始播放时，会发送系统桌面通知：标题为当前歌名，正文为歌手，图标优先显示歌曲封面。封面在后台加载并临时缓存，加载失败时使用默认音乐图标。同一首歌暂停后继续播放、持续播放、调整进度和音量不会重复通知；通知遵循桌面系统的勿扰设置，默认显示约 5 秒
-
-进度跳转和音量控制通过网页现有的 Redux 播放器动作执行，音量读取播放器确认后的状态，关闭音量浮层也能操作。可以用 `playerctl -p NEMusicOnSteam position 60` 跳到第 60 秒，用 `playerctl -p NEMusicOnSteam volume 0.3` 调到 30%，再用 `playerctl -p NEMusicOnSteam volume` 查看回报。如果网页改版后无法找到播放器状态，插件设置页和 Steam 控制台会报告命令未执行
-
-## 听歌识曲
-
-> - 需要运行中的 PulseAudio 或 PipeWire 的 PulseAudio 兼容服务。Arch 的 `libpulse`，以及 `parec`（Debian/Ubuntu 的 `pulseaudio-utils`）
-> - 也可使用支持 PulseAudio 输入的 `ffmpeg`。设备选择跟随系统默认输入／输出
-> - 使用系统声音时建议暂停网易云自身播放，避免混音影响识别
-
-首次使用会从 GitHub 下载固定版本且校验 SHA-256 的音频指纹引擎，缓存在辅助进程内存中
-
-需要能够访问 `raw.githubusercontent.com` 和网易云识曲接口。实现参考 [NeteaseCloudMusicApiEnhanced 的 audio_match_demo](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced/tree/a8c781fd64faab17fedfd46e0615a2609307f163/public/audio_match_demo)
-
-录音仅在本机内存中处理，不存录音文件，只向网易云发送音频指纹
-
-识别成功率和可用性取决于音源及网易云会不会意淫，不保证哼唱识别。只要你别故意测试想看看会返回什么歌，一般都会识别正确
-
-## 一起听
-
-Web端 有一起听的残留代码未被调用，我还原修复并调用了他
-
-播放栏左下角分享按钮左边新加了一个一起听按钮，点开是创建房间、解散房间、复制房间码、复制房间链接
-
-目前加入房间的问题较多，建议创房邀请好友bug少些
-
-## 歌词
-
-依赖 MPRIS 且仅 Linux，可以使用支持 MPRIS 的工具例如KDE小部件或其他软件
-
-<p align="center">
-  <img src=".docs/p6.png" width="800">
-  <br>
-  <sub>MPRIS 歌词支持，顶部栏中间和桌面上的那个<br>此处演示使用部件为 <a href="https://github.com/swim233/plasma-lyrics">Plasma Lyrics</a></sub>
-</p>
-
-### 限制
-
-- 在播放器页面内直接向网易云接口取歌词，原文和翻译按时间戳合并成纯文本（不带时间戳）
-- 通过标准 MPRIS 元数据通过 xesam:asText 暴露
-- 为避免元数据过大卡顿最多只同步 32KB
-- 没有歌词的歌（纯音乐、播客之类）只会请求一次，不会反复请求；接口取不到时回退为读取页面上显示的歌词
-- 逐字高亮（卡拉OK）和罗马音传不出去，MPRIS 的歌词只有 asText 一个纯文本字段。但也不必太伤心，有支持逐字高亮的比如这个 KDE 小部件 [Plasma Lyrics](https://github.com/swim233/plasma-lyrics)，支持的歌可以显示逐字高亮
-
-可能有些 MPRIS 客户端不显示 xesam:asText，播放器或桌面工具需要支持该字段
-
-如果不支持也最好换一个或叫作者支持
-
-## 全局快捷键
-
-依赖 MPRIS 且仅 Linux，插件不抢键盘（Wayland 本来也不允许），利用了 MPIRS + 媒体控制器
-
-这是代码量最少、不抢键盘、易维护、最原生、最通用、性能最好的方案，不用考虑桌面环境和 Wayland 以及 x11 的问题
-
-代价只是没法切心动模式和给歌点小心心无痛不痒
-
-<p align="center">
-  <img src=".docs/p5.png" width="800">
-  <br>
-  <sub>在KDE设置→快捷键→媒体控制器中可以设置<br>除了"向后播放xx秒"其他媒体键全正常使用</sub>
-</p>
-
-### 其他方式
-
-| 桌面 | 在哪绑 |
-| :--- | :--- |
-| KDE | 系统设置 → 键盘 → 快捷键 → 添加 → 媒体控制器 |
-| Niri | `bind "Mod+Alt+P" { spawn "playerctl" "-p" "NEMusicOnSteam" "play-pause"; }` 此处使用 playerctl 演示 |
-| GNOME | 设置 → 键盘 → 查看及自定义快捷键 → 自定义快捷键 |
-| Xfce | 设置 → 键盘 → 应用程序快捷键 |
-| Cinnamon / MATE / LXQt | 各自的键盘设置里都有自定义快捷键 |
-| Sway | `bindsym --release Ctrl+Alt+p exec playerctl -p NEMusicOnSteam play-pause` |
-| Hyprland | `bind = CTRL ALT, P, exec, playerctl -p NEMusicOnSteam play-pause` |
-
-> 网上搜的问ai答的不一定准确，我只用过 KDE Niri 其他不知道
-
-#### 如您有其他需求或使用的桌面环境没有类似功能可以自己弄命令快捷键
-
-> 需要 MPIRS 客户端，推荐 playerctl
->
-> sudo pacman -S playerctl
-
-| 用途 | 命令 |
-| :--- | :--- |
-| 暂停 / 继续 | `playerctl -p NEMusicOnSteam play-pause` |
-| 下一首 | `playerctl -p NEMusicOnSteam next` |
-| 上一首 | `playerctl -p NEMusicOnSteam previous` |
-
-
-键盘上那些多媒体键（播放/暂停/上一首/下一首）多数桌面会自动接管 MPRIS 客户端，通常不用自己绑；只有自定义组合键才需要上面这套。
-
-不想装 `playerctl` 也能用，直接走 D-Bus 一样。就是打得字要贼多，人类难阅读。把 `PlayPause` 换成 `Next`、`Previous`：
-
-```bash
-dbus-send --session --dest=org.mpris.MediaPlayer2.NEMusicOnSteam --type=method_call \
-  /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player.PlayPause
-```
+详细介绍可看 [Wiki](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%AE%89%E8%A3%85%E6%95%99%E7%A8%8B)
 
 # 构建
 

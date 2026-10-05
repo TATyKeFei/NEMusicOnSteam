@@ -5,6 +5,7 @@ import {
   TOGETHER_ADOPT_SCRIPT,
   TOGETHER_JOIN_SCRIPT,
   TOGETHER_LEAVE_SCRIPT,
+  TOGETHER_CLEAR_SCRIPT,
   TOGETHER_RESTORE_SCRIPT,
   TOGETHER_START_SCRIPT,
   TOGETHER_STATE_SCRIPT,
@@ -31,6 +32,9 @@ type FixtureOptions = {
   onDispatch?: (action: { type: string; payload?: unknown }, store: { dispatch: (a: unknown) => unknown }) => void;
   /** 共用一个 vm context 跑多次求值，脚本写在 globalThis 上的去重状态才能跨调用保留。 */
   keep?: boolean;
+  now?: () => number;
+  wait?: (callback: () => void, delay: number) => unknown;
+  reduceTogether?: boolean;
 };
 
 /**
@@ -55,11 +59,24 @@ function fixture(options: FixtureOptions = {}) {
     "async:listenTogetherPlayList": options.togetherList ?? {},
   };
   const dispatched: { type: string; payload?: unknown }[] = [];
+  const listeners = new Set<() => void>();
+  const notify = () => { for (const listener of listeners) listener(); };
   const store = options.store ?? {
     getState: () => state,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
     dispatch: (action: { type: string; payload?: unknown }) => {
       dispatched.push(action);
+      if (options.reduceTogether && action.type === "async:listenTogether/onUpdate") {
+        state["async:listenTogether"] = {
+          ...(state["async:listenTogether"] as Record<string, unknown>),
+          ...(action.payload as Record<string, unknown>),
+        };
+      }
       options.onDispatch?.(action, store);
+      notify();
       return action;
     },
   };
@@ -68,7 +85,8 @@ function fixture(options: FixtureOptions = {}) {
     document: { querySelector: () => null, querySelectorAll: (selector: string) => (selector.includes("#root > *") ? [root] : []) },
     getComputedStyle: () => ({ display: "block", visibility: "visible" }),
     // 拉指令的脚本要 await 页面里的 setTimeout，vm context 默认没有这个全局。
-    setTimeout,
+    setTimeout: options.wait ?? setTimeout,
+    Date: options.now ? class extends Date { static now() { return options.now!(); } } : Date,
     fetch: options.fetch ?? (() => Promise.reject(new Error("测试里没给 fetch"))),
   };
   const context = options.keep ? createContext(sandbox) : null;
@@ -77,7 +95,7 @@ function fixture(options: FixtureOptions = {}) {
   const run = <T>(script: string) => plain(evaluate(script)) as T;
   // 拉指令脚本返回 Promise：等它跑完再拍平，普通 run 会把 Promise 直接 JSON 成 {}。
   const runAsync = async <T>(script: string): Promise<T> => plain(await evaluate(script)) as T;
-  return { state, dispatched, run, runAsync, storeRef: store as { dispatch: unknown } };
+  return { state, dispatched, run, runAsync, notify, storeRef: store as { dispatch: unknown } };
 }
 
 /** 只填房间状态那一块，其余保持默认。 */
@@ -479,6 +497,107 @@ describe("加入房间", () => {
 });
 
 describe("退房与恢复", () => {
+  const roomInfo = { roomId: "123456", chatRoomId: "chat-9", creatorId: "20002" };
+
+  it("主动退房立即清除网页房间状态和成员，不等页面异步收尾", () => {
+    const fixture = room({
+      status: "together", roomInfo,
+      roomMembers: [{ userId: "20002", nickname: "房主" }], otherMember: { userId: "20002" },
+    }, { keep: true, reduceTogether: true, fetch: async () => ({ json: async () => ({ code: 200 }) }) });
+    fixture.run(TOGETHER_LEAVE_SCRIPT);
+    const state = fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT);
+    assert.equal(state.status, "alone");
+    assert.equal(state.inRoom, false);
+    assert.equal(state.roomId, "");
+    assert.equal(state.chatRoomId, "");
+    assert.equal(state.creatorId, "");
+    assert.deepEqual(state.members, []);
+  });
+
+  it("主动退房之后自动恢复脚本不能把房间拉回来", async () => {
+    const fixture = room({ status: "together", roomInfo }, {
+      keep: true, reduceTogether: true, fetch: async () => ({ json: async () => ({ code: 200 }) }),
+    });
+    fixture.run(TOGETHER_LEAVE_SCRIPT);
+    const before = fixture.dispatched.length;
+    await fixture.runAsync(TOGETHER_RESTORE_SCRIPT);
+    assert.equal(fixture.dispatched.slice(before).some(action => action.type === "async:listenTogether/restore"), false);
+  });
+
+  it("退房前的 restore 异步结果迟到，也不能重新写入正在一起听", () => {
+    const fixture = room({ status: "together", roomInfo }, {
+      keep: true, reduceTogether: true, fetch: async () => ({ json: async () => ({ code: 200 }) }),
+    });
+    fixture.run(TOGETHER_LEAVE_SCRIPT);
+    (fixture.storeRef.dispatch as (action: unknown) => unknown)({
+      type: "async:listenTogether/onUpdate", payload: { status: "together", roomInfo },
+    });
+    assert.equal((fixture.state["async:listenTogether"] as { status: string }).status, "alone");
+    assert.equal(fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT).inRoom, false);
+  });
+
+  it("页面已经 alone 但仍留有房间缓存时，退房也会清掉缓存", async () => {
+    const fixture = room({}, {
+      keep: true, reduceTogether: true,
+      fetch: async (url: string) => ({ json: async () => url.includes("/status/get")
+        ? { code: 200, data: { inRoom: true, roomInfo } } : { code: 200, data: roomInfo } }),
+    });
+    await fixture.runAsync(TOGETHER_JOIN_SCRIPT("123456", "20002"));
+    fixture.state["async:listenTogether"] = { status: "alone" };
+    fixture.run(TOGETHER_LEAVE_SCRIPT);
+    assert.equal(fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT).roomId, "");
+  });
+
+  it("退出后明确重新加入房间可以解除退出保护", async () => {
+    const fixture = room({ status: "together", roomInfo }, {
+      keep: true, reduceTogether: true,
+      fetch: async (url: string) => ({ json: async () => url.includes("/status/get")
+        ? { code: 200, data: { inRoom: true, roomInfo } } : { code: 200, data: roomInfo } }),
+    });
+    fixture.run(TOGETHER_LEAVE_SCRIPT);
+    assert.equal((await fixture.runAsync<{ ok: boolean }>(TOGETHER_JOIN_SCRIPT("123456", "20002"))).ok, true);
+    assert.equal(fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT).inRoom, true);
+  });
+
+  it("退出后明确重新建房可以解除退出保护", () => {
+    const fixture = room({ status: "together", roomInfo }, {
+      keep: true, reduceTogether: true, fetch: async () => ({ json: async () => ({ code: 200 }) }),
+    });
+    fixture.run(TOGETHER_LEAVE_SCRIPT);
+    assert.equal(fixture.run<{ ok: boolean }>(TOGETHER_START_SCRIPT).ok, true);
+    (fixture.storeRef.dispatch as (action: unknown) => unknown)({
+      type: "async:listenTogether/onUpdate", payload: { status: "togetherOwner", roomInfo },
+    });
+    assert.equal(fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT).inRoom, true);
+  });
+
+  it("服务端已退出时仅清理网页，不重复补发 end 请求", () => {
+    const calls: string[] = [];
+    const fixture = room({ status: "together", roomInfo }, {
+      keep: true, reduceTogether: true,
+      fetch: async (url: string) => { calls.push(url); return { json: async () => ({ code: 200 }) }; },
+    });
+    fixture.run(TOGETHER_CLEAR_SCRIPT);
+    assert.equal(fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT).inRoom, false);
+    assert.deepEqual(calls, []);
+  });
+
+  it("页面自行退出后恢复前先查服务端，已结束的房间不能恢复", async () => {
+    const statusReply = { code: 200, data: { inRoom: true, roomInfo } };
+    const fixture = room({}, {
+      keep: true, reduceTogether: true,
+      fetch: async (url: string) => ({ json: async () => url.includes("/status/get")
+        ? statusReply : { code: 200, data: roomInfo } }),
+    });
+    await fixture.runAsync(TOGETHER_JOIN_SCRIPT("123456", "20002"));
+    fixture.state["async:listenTogether"] = { status: "alone" };
+    statusReply.data.inRoom = false;
+    const before = fixture.dispatched.length;
+    await fixture.runAsync(TOGETHER_RESTORE_SCRIPT);
+    assert.equal(fixture.dispatched.slice(before).some(action => action.type === "async:listenTogether/restore"), false);
+    assert.equal(fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT).roomId, "");
+  });
+
   it("退房派发 leaveListenTogether 并带 silent", () => {
     const { dispatched, run } = room({ status: "togetherOwner" });
     assert.deepEqual(run(TOGETHER_LEAVE_SCRIPT), { ok: true });
@@ -897,6 +1016,9 @@ describe("加入房间的人跟着房主走", () => {
     local?: number[];
     playingState?: unknown;
     keep?: boolean;
+    now?: () => number;
+    wait?: FixtureOptions["wait"];
+    fetch?: FixtureOptions["fetch"];
     /**
      * 模拟页面换歌的灵敏度：
      *   true（默认）任何一档都能换；false 一档都换不了（歌不在队列里）；
@@ -915,7 +1037,9 @@ describe("加入房间的人跟着房主走", () => {
         },
         togetherList: { playingList: (options.local ?? []).map(id => ({ track: { id } })) },
         keep: options.keep,
-        fetch: stubFetch(
+        now: options.now,
+        wait: options.wait,
+        fetch: options.fetch ?? stubFetch(
           {
             playlist: { playMode: "PLAY_ORDER", displayList: { result: options.remote ?? [HOST_SONG, OTHER_SONG] } },
             ...(command ? { playCommand: command } : {}),
@@ -923,6 +1047,20 @@ describe("加入房间的人跟着房主走", () => {
           calls,
         ),
         onDispatch: action => {
+          if (action.type === "async:listenTogetherPlayStatus/setCanReport") {
+            fixture.state["async:listenTogetherPlayStatus"] = {
+              ...(fixture.state["async:listenTogetherPlayStatus"] as Record<string, unknown>),
+              ...(action.payload as Record<string, unknown>),
+            };
+            return;
+          }
+          if (action.type === "playing/setPlayingPosition") {
+            fixture.state.playing = {
+              ...(fixture.state.playing as Record<string, unknown>),
+              resourcePosition: (action.payload as { duration: number }).duration,
+            };
+            return;
+          }
           // 换歌在真实页面里是异步的，这里让它当场换上，后面的进度才对得上。
           const id = action.type === "async:listenTogetherPlayList/playByTrackId"
             ? Number((action.payload as { id?: unknown }).id)
@@ -950,7 +1088,7 @@ describe("加入房间的人跟着房主走", () => {
         },
       },
     );
-    return { dispatched: fixture.dispatched, runAsync: fixture.runAsync, calls, state: fixture.state, storeRef: fixture.storeRef };
+    return { dispatched: fixture.dispatched, runAsync: fixture.runAsync, calls, state: fixture.state, storeRef: fixture.storeRef, notify: fixture.notify };
   }
 
   const follow = (fixture: { runAsync: <T>(s: string) => Promise<T> }) =>
@@ -1215,6 +1353,7 @@ describe("加入房间的人跟着房主走", () => {
     fixture.state.playing = {
       ...(fixture.state.playing as Record<string, unknown>),
       resourceTrackId: id,
+      resourcePosition: 0,
       curPlaying: { resourceId: id, trackId: id, resourceType: "track", track: { id } },
     };
   }
@@ -1385,6 +1524,423 @@ describe("加入房间的人跟着房主走", () => {
     assert.deepEqual(plain(closed?.payload), { isCanReport: false });
   });
 
+  it("本地切歌上报尚未确认时，后续旧快照不能把歌切回手机端", async () => {
+    let now = 10000;
+    const fixture = follower({
+      keep: true, local: [HOST_SONG, OTHER_SONG, "777"],
+      now: () => now, wait: callback => callback(),
+    });
+    await follow(fixture);
+    localSwitch(fixture, 777);
+    assert.equal((await follow(fixture)).reported, "GOTO");
+    const before = fixture.dispatched.length;
+    now += 6000;
+    const result = await follow(fixture);
+    assert.equal(result.applied, false);
+    assert.equal(result.follow, "777");
+    assert.match(result.reason ?? "", /确认/);
+    assert.equal(fixture.dispatched.slice(before).some(action => action.type.endsWith("/playTracks")), false);
+  });
+
+  it("拖进度条上报尚未确认时，旧手机进度不能覆盖本地拖动", async () => {
+    let now = 10000;
+    const fixture = follower({ keep: true, local: [HOST_SONG], command: heartbeat(HOST_SONG), now: () => now });
+    await follow(fixture);
+    userSeek(fixture, 120);
+    const before = fixture.dispatched.length;
+    now += 6000;
+    const result = await follow(fixture);
+    assert.equal(result.applied, false);
+    assert.match(result.reason ?? "", /确认/);
+    assert.equal((fixture.state.playing as Record<string, unknown>).resourcePosition, 120);
+    assert.equal(fixture.dispatched.slice(before).some(action => action.type === "playing/setPlayingPosition"), false);
+  });
+
+  it("同一条成功套用的进度指令超过五秒也不能重复回拉", async () => {
+    let now = 10000;
+    const fixture = follower({ keep: true, local: [HOST_SONG], command: heartbeat(HOST_SONG), now: () => now });
+    await follow(fixture);
+    fixture.state.playing = { ...(fixture.state.playing as Record<string, unknown>), resourcePosition: 36 };
+    const before = fixture.dispatched.length;
+    now += 6000;
+    assert.equal((await follow(fixture)).reason, "指令没变");
+    assert.equal((fixture.state.playing as Record<string, unknown>).resourcePosition, 36);
+    assert.equal(fixture.dispatched.slice(before).some(action => action.type === "playing/setPlayingPosition"), false);
+  });
+
+  it("服务端确认本地拖动后解除保护，新的手机指令仍可同步", async () => {
+    let now = 10000;
+    const command = { ...heartbeat(HOST_SONG), serverSeq: 1 };
+    const fixture = follower({ keep: true, local: [HOST_SONG], command, now: () => now });
+    await follow(fixture);
+    userSeek(fixture, 120);
+    Object.assign(command, { userId: "10001", progress: 120000, serverSeq: 2 });
+    assert.equal((await follow(fixture)).reason, "自己发的");
+    Object.assign(command, { userId: "20002", progress: 60000, serverSeq: 3 });
+    now += 1500;
+    assert.equal((await follow(fixture)).applied, true);
+    assert.equal((fixture.state.playing as Record<string, unknown>).resourcePosition, 60);
+  });
+
+  it("已收到更新序号后丢弃乱序返回的旧手机指令", async () => {
+    let now = 10000;
+    const command = { ...heartbeat(HOST_SONG, 60000), serverSeq: 20 };
+    const fixture = follower({ keep: true, local: [HOST_SONG], command, now: () => now });
+    await follow(fixture);
+    Object.assign(command, { progress: 30000, serverSeq: 19 });
+    now += 6000;
+    assert.equal((await follow(fixture)).applied, false);
+    assert.equal((fixture.state.playing as Record<string, unknown>).resourcePosition, 60);
+  });
+
+  it("一轮拉取未结束时不会再发另一轮房间请求", async () => {
+    let release!: (value: unknown) => void;
+    let statusCalls = 0;
+    const response = new Promise(resolve => { release = resolve; });
+    const fixture = follower({
+      keep: true, local: [HOST_SONG], command: heartbeat(HOST_SONG),
+      fetch: (url: string) => {
+        if (url.includes("/status/get")) {
+          statusCalls += 1;
+          return response;
+        }
+        return Promise.resolve({ json: async () => ({ code: 200, data: { playCommand: heartbeat(HOST_SONG) } }) });
+      },
+    });
+    const first = follow(fixture);
+    const second = follow(fixture);
+    release({ json: async () => ({ code: 200, data: { inRoom: true, roomInfo: { roomId: "123456" } } }) });
+    await Promise.all([first, second]);
+    assert.equal(statusCalls, 1);
+  });
+
+  it("追歌等待期间用户又切歌时，旧快照不能继续退档覆盖", async () => {
+    let fixture: ReturnType<typeof follower>;
+    fixture = follower({
+      keep: true, local: [HOST_SONG, OTHER_SONG, "777"], switches: "onlyByTrackId",
+      wait: (callback, delay) => {
+        if (delay === 50) localSwitch(fixture, 777);
+        callback();
+      },
+    });
+    const result = await follow(fixture);
+    assert.equal(result.applied, false);
+    assert.equal(result.follow, "777");
+    assert.equal(types(fixture).includes("async:listenTogetherPlayList/playByTrackId"), false);
+    assert.equal((await follow(fixture)).reported, "GOTO");
+  });
+
+  it("追歌等待期间用户拖进度时，旧快照不能覆盖新进度", async () => {
+    let fixture: ReturnType<typeof follower>;
+    fixture = follower({
+      keep: true, local: [HOST_SONG, OTHER_SONG], switches: "onlyByTrackId",
+      wait: (callback, delay) => {
+        if (delay === 50) userSeek(fixture, 120);
+        callback();
+      },
+    });
+    const result = await follow(fixture);
+    assert.equal(result.applied, false);
+    assert.equal((fixture.state.playing as Record<string, unknown>).resourcePosition, 120);
+  });
+
+  it("退房后遗留的拖动钩子不会继续上报一起听进度", async () => {
+    const fixture = follower({ keep: true, local: [HOST_SONG], command: heartbeat(HOST_SONG) });
+    await follow(fixture);
+    fixture.state["async:listenTogether"] = { status: "alone" };
+    userSeek(fixture, 120);
+    assert.equal(types(fixture).includes("async:listenTogetherPlayStatus/reportRequest"), false);
+  });
+
+  it("暂停上报未确认时，旧快照不能把网页重新续播", async () => {
+    let now = 10000;
+    const fixture = follower({ keep: true, local: [HOST_SONG], command: heartbeat(HOST_SONG), now: () => now });
+    await follow(fixture);
+    fixture.state.playing = { ...(fixture.state.playing as Record<string, unknown>), playingState: 1 };
+    assert.equal((await follow(fixture)).reported, "PAUSE");
+    now += 6000;
+    assert.equal((await follow(fixture)).applied, false);
+    assert.equal((fixture.state.playing as Record<string, unknown>).playingState, 1);
+  });
+
+  it("连续拖动以最后一次为准，前一次的服务端回声不能解除保护", async () => {
+    const command = { ...heartbeat(HOST_SONG), serverSeq: 1 };
+    const fixture = follower({ keep: true, local: [HOST_SONG], command });
+    await follow(fixture);
+    userSeek(fixture, 120);
+    userSeek(fixture, 60);
+    Object.assign(command, { userId: "10001", progress: 120000, serverSeq: 2 });
+    assert.match((await follow(fixture)).reason ?? "", /确认/);
+    Object.assign(command, { progress: 60000, serverSeq: 3 });
+    assert.equal((await follow(fixture)).reason, "自己发的");
+    Object.assign(command, { userId: "20002", commandType: "SEEK", progress: 90000, serverSeq: 4 });
+    assert.equal((await follow(fixture)).applied, true);
+    assert.equal((fixture.state.playing as Record<string, unknown>).resourcePosition, 90);
+  });
+
+  it("未确认的上报限速重试，超时后不永久阻挡新的手机指令", async () => {
+    let now = 10000;
+    const command = { ...heartbeat(HOST_SONG), serverSeq: 1 };
+    const fixture = follower({ keep: true, local: [HOST_SONG], command, now: () => now });
+    await follow(fixture);
+    userSeek(fixture, 120);
+    now += 500;
+    await follow(fixture);
+    assert.equal(types(fixture).filter(type => type.endsWith("/reportRequest")).length, 1);
+    now += 1000;
+    await follow(fixture);
+    assert.equal(types(fixture).filter(type => type.endsWith("/reportRequest")).length, 2);
+    now += 9000;
+    Object.assign(command, { progress: 60000, serverSeq: 2 });
+    assert.equal((await follow(fixture)).applied, true);
+    assert.equal((fixture.state.playing as Record<string, unknown>).resourcePosition, 60);
+  });
+
+  it("房间请求返回前已退房时，旧结果不能补回房间或套用播放", async () => {
+    let release!: (value: unknown) => void;
+    const response = new Promise(resolve => { release = resolve; });
+    const fixture = follower({ keep: true, fetch: () => response });
+    const pending = follow(fixture);
+    fixture.state["async:listenTogether"] = { status: "alone" };
+    release({ json: async () => ({ code: 200, data: { inRoom: true, roomInfo: { roomId: "123456" } } }) });
+    const result = await pending;
+    assert.equal(result.applied, false);
+    assert.match(result.reason ?? "", /房间已变更/);
+    assert.deepEqual(fixture.dispatched, []);
+  });
+
+  it("切换房间后重置序号和待确认操作，已安装的钩子使用新房间状态", async () => {
+    const command = { ...heartbeat(HOST_SONG), serverSeq: 100 };
+    const status = { code: 200, data: { inRoom: true, roomInfo: { roomId: "123456" } } };
+    const fixture = follower({
+      keep: true, local: [HOST_SONG], command,
+      fetch: stubFetch({ playCommand: command }, [], status),
+    });
+    await follow(fixture);
+    userSeek(fixture, 120);
+    fixture.state["async:listenTogether"] = { status: "together", roomInfo: { roomId: "654321" } };
+    status.data.roomInfo.roomId = "654321";
+    Object.assign(command, { progress: 60000, serverSeq: 1 });
+    assert.equal((await follow(fixture)).applied, true);
+    assert.equal((fixture.state.playing as Record<string, unknown>).resourcePosition, 60);
+    userSeek(fixture, 90);
+    Object.assign(command, { userId: "10001", progress: 90000, serverSeq: 2 });
+    assert.equal((await follow(fixture)).reason, "自己发的");
+  });
+
+  it("拉取失败后释放同步锁，下一轮仍能重新请求", async () => {
+    let fail = true;
+    const fetch = stubFetch({ playCommand: heartbeat(HOST_SONG) });
+    const fixture = follower({
+      keep: true, local: [HOST_SONG],
+      fetch: (url: string, init: unknown) => {
+        if (fail && url.includes("/sync/playlist/get")) return Promise.reject(new Error("连接中断"));
+        return fetch(url, init);
+      },
+    });
+    assert.equal((await follow(fixture)).ok, false);
+    fail = false;
+    assert.equal((await follow(fixture)).applied, true);
+  });
+
+  it("连续切歌又切回手机旧曲目时，最后一次选择仍需上报", async () => {
+    const command = { ...heartbeat(HOST_SONG), serverSeq: 1 };
+    const fixture = follower({ keep: true, local: [HOST_SONG, OTHER_SONG], command });
+    await follow(fixture);
+    localSwitch(fixture, Number(OTHER_SONG));
+    assert.equal((await follow(fixture)).reported, "GOTO");
+    localSwitch(fixture, Number(HOST_SONG));
+    assert.equal((await follow(fixture)).reported, "GOTO");
+    Object.assign(command, { userId: "10001", targetSongId: OTHER_SONG, serverSeq: 2 });
+    assert.match((await follow(fixture)).reason ?? "", /确认/);
+    Object.assign(command, { targetSongId: HOST_SONG, serverSeq: 3 });
+    assert.equal((await follow(fixture)).reason, "自己发的");
+    const reports = fixture.dispatched.filter(action => action.type.endsWith("/reportRequest"));
+    assert.deepEqual(plain((reports[1].payload as { ids: string[] }).ids), [OTHER_SONG, HOST_SONG]);
+  });
+
+  it("切歌还在等待确认时暂停新歌，也会替换待确认操作", async () => {
+    const fixture = follower({ keep: true, local: [HOST_SONG, OTHER_SONG], command: heartbeat(HOST_SONG) });
+    await follow(fixture);
+    localSwitch(fixture, Number(OTHER_SONG));
+    assert.equal((await follow(fixture)).reported, "GOTO");
+    fixture.state.playing = { ...(fixture.state.playing as Record<string, unknown>), playingState: 1 };
+    assert.equal((await follow(fixture)).reported, "PAUSE");
+  });
+
+  it("暂停还在等待确认时又继续播放，不会被旧待确认暂停覆盖", async () => {
+    const fixture = follower({ keep: true, local: [HOST_SONG], command: heartbeat(HOST_SONG) });
+    await follow(fixture);
+    fixture.state.playing = { ...(fixture.state.playing as Record<string, unknown>), playingState: 1 };
+    assert.equal((await follow(fixture)).reported, "PAUSE");
+    fixture.state.playing = { ...(fixture.state.playing as Record<string, unknown>), playingState: 2 };
+    assert.equal((await follow(fixture)).reported, "PLAY");
+  });
+
+  it("本地切歌在 store 变化时立即上报，不等下一轮网络拉取", async () => {
+    const fixture = follower({ keep: true, local: [HOST_SONG, OTHER_SONG, "777"] });
+    await follow(fixture);
+    localSwitch(fixture, 777);
+    fixture.notify();
+    const reports = fixture.dispatched.filter(action => action.type.endsWith("/reportRequest"));
+    assert.equal(reports.length, 1);
+    assert.equal((reports[0].payload as { command: string }).command, "GOTO");
+    assert.deepEqual(plain((reports[0].payload as { ids: string[] }).ids), [OTHER_SONG, "777"]);
+    assert.equal((await follow(fixture)).reported, undefined);
+  });
+
+  it("套用手机切歌时 store 订阅不会把远端变化重新报回手机", async () => {
+    const fixture = follower({ keep: true, local: [HOST_SONG, OTHER_SONG] });
+    await follow(fixture);
+    assert.equal(types(fixture).includes("async:listenTogetherPlayStatus/reportRequest"), false);
+  });
+
+  it("已经换到目标歌曲时立即结束，不固定等待队列和一秒半", async () => {
+    const waits: number[] = [];
+    const fixture = follower({ wait: (callback, delay) => { waits.push(delay); callback(); } });
+    assert.equal((await follow(fixture)).followed, true);
+    assert.deepEqual(waits, []);
+  });
+
+  it("播过的曲目优先复用本地队列，不再次联网解析整份歌单", async () => {
+    const command = { ...heartbeat(OTHER_SONG), serverSeq: 1 };
+    const fixture = follower({ keep: true, local: [HOST_SONG, OTHER_SONG], command });
+    await follow(fixture);
+    const before = fixture.dispatched.length;
+    Object.assign(command, { targetSongId: HOST_SONG, serverSeq: 2 });
+    const result = await follow(fixture);
+    assert.equal(result.follow, HOST_SONG);
+    assert.equal(result.via, "playByTrackId");
+    assert.equal(fixture.dispatched.slice(before).some(action => action.type.endsWith("/playTracks")), false);
+  });
+
+  it("成员端页面异步打开上报开关时立即拦住，不能留下回声窗口", async () => {
+    const fixture = follower({ keep: true, local: [HOST_SONG], command: heartbeat(HOST_SONG) });
+    await follow(fixture);
+    (fixture.storeRef.dispatch as (action: unknown) => unknown)({
+      type: "async:listenTogetherPlayStatus/setCanReport", payload: { isCanReport: true },
+    });
+    assert.deepEqual(plain(fixture.dispatched.at(-1)?.payload), { isCanReport: false });
+  });
+
+  it("旧的异步切歌迟到时恢复最新本地选择，不上报旧歌造成两端来回切", async () => {
+    let fixture: ReturnType<typeof follower>;
+    let changed = false;
+    fixture = follower({
+      keep: true, local: [HOST_SONG, OTHER_SONG, "777"], switches: "onlyByTrackId",
+      wait: callback => {
+        if (!changed) {
+          changed = true;
+          localSwitch(fixture, 777);
+          fixture.notify();
+        }
+        callback();
+      },
+    });
+    assert.equal((await follow(fixture)).applied, false);
+    localSwitch(fixture, Number(OTHER_SONG));
+    fixture.notify();
+    assert.equal((fixture.state.playing as { curPlaying: { trackId: unknown } }).curPlaying.trackId, 777);
+    const reports = fixture.dispatched.filter(action => action.type.endsWith("/reportRequest"));
+    assert.deepEqual(reports.map(action => plain((action.payload as { ids: string[] }).ids)), [[HOST_SONG, "777"]]);
+  });
+
+  it("页面 saga 绕过 dispatch 钩子打开上报时，store 订阅也立即关回去", async () => {
+    const fixture = follower({ keep: true, local: [HOST_SONG], command: heartbeat(HOST_SONG) });
+    await follow(fixture);
+    fixture.state["async:listenTogetherPlayStatus"] = { isCanReport: true };
+    fixture.notify();
+    assert.equal((fixture.state["async:listenTogetherPlayStatus"] as { isCanReport: boolean }).isCanReport, false);
+    assert.equal(types(fixture).includes("async:listenTogetherPlayStatus/reportRequest"), false);
+  });
+
+  it("成员资料请求迟迟不返回也不会阻塞播放同步", async () => {
+    const fixture = follower({
+      keep: true, local: [HOST_SONG],
+      fetch: (url: string) => {
+        if (url.includes("/user/detail/")) return new Promise(() => {});
+        const data = url.includes("/status/get")
+          ? { inRoom: true, roomInfo: { roomId: "123456", roomUsers: [{ userId: "20002" }] } }
+          : { playCommand: heartbeat(HOST_SONG) };
+        return Promise.resolve({ json: async () => ({ code: 200, data }) });
+      },
+    });
+    const result = await follow(fixture);
+    assert.equal(result.applied, true);
+    assert.equal(result.serverMembers, 1);
+  });
+
+  it("切歌重试改报当前进度，而不是反复把手机切回零秒", async () => {
+    let now = 10000;
+    const fixture = follower({ keep: true, local: [HOST_SONG, OTHER_SONG], command: heartbeat(HOST_SONG), now: () => now });
+    await follow(fixture);
+    localSwitch(fixture, Number(OTHER_SONG));
+    fixture.notify();
+    fixture.state.playing = { ...(fixture.state.playing as Record<string, unknown>), resourcePosition: 1.25 };
+    now += 1250;
+    await follow(fixture);
+    const reports = fixture.dispatched.filter(action => action.type.endsWith("/reportRequest"));
+    assert.deepEqual(plain(reports.at(-1)?.payload), {
+      command: "PROGRESS", reason: "force", ids: [OTHER_SONG, OTHER_SONG], position: 1.25, playStatus: 2,
+    });
+  });
+
+  it("迟到的旧歌尚未修复时，其进度归零也不能上报成新的本地意图", async () => {
+    let fixture: ReturnType<typeof follower>;
+    let changed = false;
+    fixture = follower({
+      keep: true, local: [HOST_SONG, OTHER_SONG, "777"], switches: false,
+      wait: callback => {
+        if (!changed) {
+          changed = true;
+          localSwitch(fixture, 777);
+          fixture.notify();
+        }
+        callback();
+      },
+    });
+    await follow(fixture);
+    localSwitch(fixture, Number(OTHER_SONG));
+    fixture.notify();
+    userSeek(fixture, 0);
+    const reports = fixture.dispatched.filter(action => action.type.endsWith("/reportRequest"));
+    assert.deepEqual(reports.map(action => plain((action.payload as { ids: string[] }).ids)), [[HOST_SONG, "777"]]);
+  });
+
+  it("本地切歌刚确认时手机仍回传旧歌心跳，不能把网页切回去", async () => {
+    let now = 10000;
+    const command = { ...heartbeat(HOST_SONG), serverSeq: 1 };
+    const fixture = follower({ keep: true, local: [HOST_SONG, OTHER_SONG], command, now: () => now });
+    await follow(fixture);
+    localSwitch(fixture, Number(OTHER_SONG));
+    fixture.notify();
+    Object.assign(command, { userId: "10001", targetSongId: OTHER_SONG, progress: 0, serverSeq: 2 });
+    assert.equal((await follow(fixture)).reason, "自己发的");
+    Object.assign(command, { userId: "20002", targetSongId: HOST_SONG, progress: 30000, serverSeq: 3 });
+    now += 200;
+    assert.match((await follow(fixture)).reason ?? "", /旧心跳/);
+    now += 1600;
+    assert.match((await follow(fixture)).reason ?? "", /旧心跳/);
+    assert.equal((fixture.state.playing as { curPlaying: { trackId: unknown } }).curPlaying.trackId, Number(OTHER_SONG));
+    Object.assign(command, { commandType: "GOTO", serverSeq: 4 });
+    assert.equal((await follow(fixture)).follow, HOST_SONG);
+    assert.equal(fixture.dispatched.filter(action => action.type.endsWith("/reportRequest")).length, 1);
+  });
+
+  it("手机显式切歌不受本地确认后的旧心跳保护窗口拦截", async () => {
+    let now = 10000;
+    const command = { ...heartbeat(HOST_SONG), serverSeq: 1 };
+    const fixture = follower({ keep: true, local: [HOST_SONG, OTHER_SONG], command, now: () => now });
+    await follow(fixture);
+    localSwitch(fixture, Number(OTHER_SONG));
+    fixture.notify();
+    Object.assign(command, { userId: "10001", targetSongId: OTHER_SONG, progress: 0, serverSeq: 2 });
+    await follow(fixture);
+    now += 200;
+    Object.assign(command, { userId: "20002", commandType: "NEXT", targetSongId: HOST_SONG, serverSeq: 3 });
+    assert.equal((await follow(fixture)).follow, HOST_SONG);
+  });
+
 });
 
 describe("房间信息丢了要能自己补回来", () => {
@@ -1448,7 +2004,9 @@ describe("房间信息丢了要能自己补回来", () => {
   it("退房时房间号也从我们这份兜底", async () => {
     const fixture = await joinedThenDropped();
     assert.deepEqual(fixture.run<{ ok: boolean }>(TOGETHER_LEAVE_SCRIPT), { ok: true });
-    assert.deepEqual(fixture.dispatched.map(action => action.type), ["async:listenTogether/leaveListenTogether"]);
+    assert.equal(fixture.dispatched[0].type, "async:listenTogether/leaveListenTogether");
+    assert.equal(fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT).inRoom, false);
+    assert.equal(fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT).roomId, "");
   });
 });
 
