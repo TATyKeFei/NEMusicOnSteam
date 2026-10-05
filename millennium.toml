@@ -10,7 +10,7 @@ entry = "backend/main.lua"
 sources = ["backend/**/*.lua"]
 
 [assets]
-resources = ["backend/mpris_helper.py", "backend/recognition.py"]
+resources = ["backend/mpris_helper.py", "backend/mpv_helper.py", "backend/recognition.py"]
 
 [frontend]
 entry = "frontend/index.tsx"

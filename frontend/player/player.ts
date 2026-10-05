@@ -4,7 +4,10 @@ import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "../constants.ts
 import { DownloadBridge, type DownloadSnapshot } from "../download/download.ts";
 import { sameBounds, type Bounds } from "../widget/layout.ts";
 import { MprisBridge } from "../mpris/mpris.ts";
+import { MpvBridge } from "../mpris/mpv.ts";
+import { commandScript } from "../mpris/mpris-player.ts";
 import { releasePlayerSession } from "./player-target.ts";
+import { tryEvaluateInPlayer } from "./player-target.ts";
 import { RecognitionBridge } from "../recognition/recognition.ts";
 import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
 import { TogetherBridge, type TogetherSnapshot } from "../together/together.ts";
@@ -49,6 +52,7 @@ export type PlayerSnapshot = {
   hasView: boolean;
   throttlingSupported: boolean | null;
   mprisStatus: string;
+  mpvStatus: string;
   recognitionStatus: string;
   navEntry: NavEntryStatus;
   settingsEntry: "native" | "injected" | "waiting";
@@ -61,6 +65,10 @@ export type PlayerSnapshot = {
 export class PlayerController {
   private readonly chrome = new PlayerChrome();
   private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); }, () => this.settings.notificationMode);
+  private readonly mpv = new MpvBridge({
+    quality: () => this.settings.downloadQuality,
+    commandWeb: async command => Boolean(await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true })),
+  });
   private readonly recognition = new RecognitionBridge();
   private readonly quality = new QualityBridge();
   private readonly together = new TogetherBridge();
@@ -108,6 +116,7 @@ export class PlayerController {
     this.pendingOpen = this.settings.openOnStart;
     this.timer = window.setInterval(this.tick, TICK_MS);
     this.mpris.start();
+    this.mpv.start();
     this.tick();
   }
 
@@ -116,6 +125,7 @@ export class PlayerController {
     this.timer = 0;
     this.unbindWindow();
     this.pendingOpen = false;
+    this.stopExternalPlayback();
     this.destroyView();
     void this.mpris.stop();
     this.forceThrottle(false);
@@ -132,6 +142,7 @@ export class PlayerController {
       hasView: this.view != null,
       throttlingSupported: this.throttlingSupported,
       mprisStatus: this.mpris.getStatus(),
+      mpvStatus: this.mpv.getStatus(),
       recognitionStatus: this.recognition.getStatus(),
       navEntry: this.chrome.navEntryStatus(),
       settingsEntry: this.steamSettings?.entryStatus() ?? "waiting",
@@ -146,6 +157,7 @@ export class PlayerController {
   updateSettings(patch: Partial<PlayerSettings>): PlayerSnapshot {
     this.settings = { ...this.settings, ...patch, launcher: patch.launcher ?? this.settings.launcher };
     writeSettings(browserStorage(), this.settings);
+    if (patch.playbackBackend != null) this.applyPlaybackBackend();
     this.syncView(true, this.render());
     return this.snapshot();
   }
@@ -224,6 +236,8 @@ export class PlayerController {
     this.pendingOpen = false;
     this.mode = "closed";
     this.status = "已关闭";
+    // 关掉播放器要连 mpv 一起停：destroyView 只在换父窗口时也会走，那里音乐得继续。
+    this.stopExternalPlayback();
     this.destroyView();
     this.forceThrottle(false);
     this.render();
@@ -381,6 +395,7 @@ export class PlayerController {
     this.view = created;
     this.viewVisible = false;
     this.mpris.setEnabled(true);
+    this.applyPlaybackBackend();
     this.recognition.setEnabled(true);
     this.quality.setEnabled(true);
     this.together.setEnabled(true);
@@ -439,6 +454,7 @@ export class PlayerController {
     this.unbindPopup();
     this.view = null;
     this.mpris.setEnabled(false);
+    this.stopExternalPlayback();
     this.recognition.setEnabled(false);
     this.quality.setEnabled(false);
     this.together.setEnabled(false);
@@ -466,6 +482,21 @@ export class PlayerController {
     });
     if (bounds != null) this.applyBounds(bounds, false);
     return bounds;
+  }
+
+  private applyPlaybackBackend(): void {
+    if (this.view != null && this.settings.playbackBackend === "mpv") {
+      this.mpris.setExternalPlayback(this.mpv);
+      this.mpv.setEnabled(true);
+      return;
+    }
+    this.stopExternalPlayback();
+  }
+
+  /** 播放器没了就得把音频还给页面，并让 MPRIS 回到直接读页面状态。 */
+  private stopExternalPlayback(): void {
+    this.mpris.setExternalPlayback(null);
+    this.mpv.setEnabled(false);
   }
 
   // 直接复用 render() 已经算好的 bounds：排一次界面要对整个客户端文档做一次遍历，

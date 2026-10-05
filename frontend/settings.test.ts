@@ -6,6 +6,7 @@ describe("settings", () => {
   it("drops garbage and keeps defaults", () => {
     const settings = sanitizeSettings({ openOnStart: "yes", launcher: { left: "12" } });
     assert.equal(settings.openOnStart, false);
+    assert.equal(settings.playbackBackend, "web");
     assert.equal(settings.keepAliveWhenCollapsed, true);
     assert.deepEqual(settings.launcher, { left: 16, bottom: 16 });
     assert.equal(settings.downloadDirectory, "");
@@ -29,6 +30,7 @@ describe("settings", () => {
     };
     writeSettings(storage, {
       openOnStart: true,
+      playbackBackend: "mpv",
       keepAliveWhenCollapsed: false,
       disableBackgroundThrottling: true,
       launcher: { left: 20, top: 30 },
@@ -38,6 +40,7 @@ describe("settings", () => {
     assert.equal(saved.has(SETTINGS_KEY), true);
     assert.deepEqual(readSettings(storage).launcher, { left: 20, top: 30 });
     assert.equal(readSettings(storage).keepAliveWhenCollapsed, false);
+    assert.equal(readSettings(storage).playbackBackend, "mpv");
     assert.equal(readSettings(storage).downloadDirectory, "~/Music/网易云音乐");
     assert.equal(readSettings(storage).downloadQuality, 999);
   });

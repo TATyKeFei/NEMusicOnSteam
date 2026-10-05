@@ -3,8 +3,10 @@ import { DEFAULT_DOWNLOAD_NAME_TEMPLATE, DEFAULT_DOWNLOAD_QUALITY, isDownloadQua
 export type LauncherPosition = { left: number; bottom: number } | { left: number; top: number };
 
 export type NotificationMode = "system" | "steam" | "none";
+export type PlaybackBackend = "web" | "mpv";
 
 export type PlayerSettings = {
+  playbackBackend: PlaybackBackend;
   openOnStart: boolean;
   keepAliveWhenCollapsed: boolean;
   disableBackgroundThrottling: boolean;
@@ -19,6 +21,7 @@ export type PlayerSettings = {
 export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
 
 export const defaultSettings: PlayerSettings = {
+  playbackBackend: "web",
   openOnStart: false,
   keepAliveWhenCollapsed: true,
   disableBackgroundThrottling: true,
@@ -47,6 +50,10 @@ function notificationModeOr(value: unknown, fallback: NotificationMode): Notific
   return value === "system" || value === "steam" || value === "none" ? value : fallback;
 }
 
+function playbackBackendOr(value: unknown, fallback: PlaybackBackend): PlaybackBackend {
+  return value === "web" || value === "mpv" ? value : fallback;
+}
+
 function templateOr(value: unknown, fallback: string): string {
   if (typeof value !== "string") return fallback;
   const cleaned = value.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200);
@@ -66,6 +73,7 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
   const record = value != null && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const notificationMode = notificationModeOr(record.notificationMode, defaultSettings.notificationMode);
   return {
+    playbackBackend: playbackBackendOr(record.playbackBackend, defaultSettings.playbackBackend),
     openOnStart: booleanOr(record.openOnStart, defaultSettings.openOnStart),
     keepAliveWhenCollapsed: booleanOr(record.keepAliveWhenCollapsed, defaultSettings.keepAliveWhenCollapsed),
     disableBackgroundThrottling: booleanOr(record.disableBackgroundThrottling, defaultSettings.disableBackgroundThrottling),

@@ -5,7 +5,7 @@ import { steamToast } from "../widget/toast.ts";
 import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
 import { commandScript, LYRICS_SCRIPT, type Command } from "./mpris-player.ts";
 
-type TrackState = {
+export type TrackState = {
   active: boolean;
   playbackStatus: "Playing" | "Paused" | "Stopped";
   title: string;
@@ -68,6 +68,11 @@ const EMPTY_STATE: TrackState = {
   rate: 1,
 };
 
+export type ExternalPlayback = {
+  snapshot(): TrackState;
+  command(command: Command): Promise<boolean>;
+};
+
 export class MprisBridge {
   private timer = 0;
   private busy = false;
@@ -87,6 +92,7 @@ export class MprisBridge {
   private commandError = "";
   private commandRequest: AbortController | null = null;
   private pendingCommands: Command[] = [];
+  private external: ExternalPlayback | null = null;
 
   private readonly open: () => void;
   private readonly close: () => void;
@@ -131,6 +137,15 @@ export class MprisBridge {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
+  }
+
+  setExternalPlayback(external: ExternalPlayback | null): void {
+    this.external = external;
+    this.lastSentState = null;
+    this.lastSentLyrics = null;
+    this.lastLyricsTrackId = "";
+    this.settledLyricsTrackId = "";
+    this.fetchedLyrics = null;
   }
 
   getStatus(): string {
@@ -241,7 +256,9 @@ export class MprisBridge {
           if (command.action === "open") this.open();
           else if (command.action === "close") this.close();
           else {
-            const handled = await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true });
+            const handled = this.external
+              ? await this.external.command(command)
+              : await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true });
             if (["volume", "seek", "setposition"].includes(command.action)) {
               this.commandError = handled ? "" : `MPRIS ${command.action} 未执行；未找到可用的网易云播放器状态`;
               if (!handled) console.warn("[NEMusic] MPRIS command not handled", command.action);
@@ -250,9 +267,11 @@ export class MprisBridge {
         }
       }
       // 播放器关闭时没有页面可读，直接上报 Stopped，不必每个 tick 都跑一趟 CDP。
-      const snapshot = this.enabled
-        ? ((await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null) ?? EMPTY_STATE
-        : EMPTY_STATE;
+      const snapshot = this.external
+        ? this.external.snapshot()
+        : this.enabled
+          ? ((await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null) ?? EMPTY_STATE
+          : EMPTY_STATE;
       this.requestLyrics(snapshot);
       this.state = snapshot;
       if (!this.timer) return;

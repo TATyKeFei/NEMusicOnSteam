@@ -5,6 +5,8 @@ local fs = require("fs")
 
 local mpris_dir = nil
 local mpris_token = nil
+local mpv_dir = nil
+local mpv_token = nil
 
 -- 前端每 500ms 轮询一次，而每次尝试拉起辅助进程都会 fork 一个 python3，并在它启动
 -- 期间阻塞本进程最长一秒。没有喘息间隔的话，一个根本起不来的辅助进程会把这些阻塞连
@@ -17,6 +19,9 @@ local mpris_token = nil
 local RESPAWN_SKIP_POLLS = { 10, 20, 40, 80, 120 }
 local respawn_failures = 0
 local respawn_skip = 0
+local mpv_respawn_failures = 0
+local mpv_respawn_skip = 0
+local mpv_last_failure = "!retry"
 
 local function shell_quote(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
@@ -90,6 +95,74 @@ function mpris_endpoint()
     local detail = last_log_line(log_path)
     if detail == "" then return "!spawn" end
     return "!spawn:" .. detail
+end
+
+local MPV_RESPAWN_SKIP_POLLS = { 10, 20, 40, 80, 120 }
+
+---@ffi
+---@return string
+function mpv_endpoint()
+    if mpv_dir ~= nil then
+        local port = utils.read_file(mpv_dir .. "/port")
+        if port ~= nil and port:match("^%d+$") then
+            mpv_respawn_failures = 0
+            mpv_respawn_skip = 0
+            mpv_last_failure = "!retry"
+            return "http://127.0.0.1:" .. port .. "|" .. mpv_token
+        end
+        mpv_dir = nil
+        mpv_token = nil
+    end
+    if mpv_respawn_skip > 0 then
+        mpv_respawn_skip = mpv_respawn_skip - 1
+        return mpv_last_failure
+    end
+    mpv_respawn_failures = mpv_respawn_failures + 1
+    mpv_respawn_skip = MPV_RESPAWN_SKIP_POLLS[math.min(mpv_respawn_failures, #MPV_RESPAWN_SKIP_POLLS)]
+    local script = millennium.assets.read("backend/mpv_helper.py")
+    if script == nil then
+        mpv_last_failure = "!asset-helper"
+        return mpv_last_failure
+    end
+    local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
+    local dir = base .. "/nemusic-mpv-" .. utils.uuid()
+    local token = utils.uuid()
+    if not fs.create_directories(dir) then
+        mpv_last_failure = "!mkdir:" .. base
+        return mpv_last_failure
+    end
+    utils.exec("chmod 700 " .. shell_quote(dir))
+    local path = dir .. "/helper.py"
+    if not utils.write_file(path, script) then
+        mpv_last_failure = "!write-helper"
+        return mpv_last_failure
+    end
+    if not utils.write_file(dir .. "/token", token) then
+        mpv_last_failure = "!write-token"
+        return mpv_last_failure
+    end
+    local log_path = base .. "/nemusic-mpv.log"
+    utils.exec("python3 " .. shell_quote(path) .. " " .. shell_quote(dir) .. " </dev/null >" .. shell_quote(log_path) .. " 2>&1 &")
+    for _ = 1, 200 do
+        local port = utils.read_file(dir .. "/port")
+        if port ~= nil and port:match("^%d+$") then
+            mpv_dir = dir
+            mpv_token = token
+            mpv_respawn_failures = 0
+            mpv_respawn_skip = 0
+            mpv_last_failure = "!retry"
+            fs.remove(log_path)
+            return "http://127.0.0.1:" .. port .. "|" .. token
+        end
+        utils.sleep(50)
+    end
+    local detail = last_log_line(log_path)
+    if detail == "" then
+        mpv_last_failure = "!spawn"
+    else
+        mpv_last_failure = "!spawn:" .. detail
+    end
+    return mpv_last_failure
 end
 
 local function on_load()

@@ -26,9 +26,9 @@
 | 系统    | 可用性                 | 备注及注意事项       |
 | :---    | :---                   | :---                 |
 | Linux   | 支持（主要推荐）       | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不爆改应该都支持                       |
-| Windows | 残废不推荐，仅保证能听歌就行 | 本项目依赖MPRIS实现大部分功能，由于Windows没有MPRIS且我不用Windows，对于Win的支持完全不保证。如果你有需求且愿意维护测试可以自己fork一份  |
+| Windows | 残废不推荐             | 本项目依赖MPRIS实现大部分功能，由于Windows没有MPRIS且我不用身边没有Windows设备测试，对于Win的支持完全不保证  |
+| Mac OS  | 未测试适配             | 我是穷鬼安卓人没钱买苹果测试，但如您看上此项目且愿意长期帮忙测试我会很感谢             |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
-| Mac OS  | 不支持                 | 我是穷鬼安卓人没钱买苹果测试，不过Millennium好像也没支持MacOS                          |
 
 # 特色功能
 
@@ -47,10 +47,11 @@
 | 听歌识曲   | 仅 Linux 支持  | 支持桌面音频、麦克风输入录制                     |
 | 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#歌词](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E6%AD%8C%E8%AF%8D)            |
 | 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#全局快捷键](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E5%85%A8%E5%B1%80%E5%BF%AB%E6%8D%B7%E9%94%AE)       |
+| 多播放引擎支持 | 仅 Linux 支持 | 可选 mpv、mpd 作为音频播放器引擎              |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为sbSteam还不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
-| s |
-| UnblockNeteaseMusic | 后续支持 |  |
-| API 接口   | 后续支持       |        |
+| UnblockNeteaseMusic | 后续支持 | 解锁灰色无版权音乐                     |
+| last.fm    | 后续支持       |  |
+| API 接口   | 后续支持       | 其他插件可以使用api控制播放暂停歌曲       |
 
 # 不支持功能
 
@@ -93,6 +94,8 @@
 播放器展开时，如果 Steam 自己打开了网页（商店、社区、新闻这类），播放器会自己收起到右下角把画面让开，音乐照常播；你从那个页面退出来，播放器就回来，也可以点顶栏的「网易云」手动叫回来
 
 第一次打开会让你扫码登录一下，之后都不会弹登录了
+
+在 **Steam → 设置 → 网易云音乐 → 播放后端** 中可以选择「内嵌网页播放器」或「mpv（外部音频）」。使用 mpv 前需要先安装 `mpv`；网页仍负责登录、选歌、歌单和一起听，mpv 负责实际音频输出。当前 mpv 后端仅支持 Linux。
 
 # 安装教程
 
@@ -143,6 +146,7 @@ cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 - 播放器页面使用 Steam 的 BrowserView 承载网页；Steam 本身没有供插件注册独立主窗口路由的稳定接口
 - Steam 更新可能改掉 `BrowserView` 或主窗口名字 `SP Desktop`可能导致打不开，需要时间适配
 - MPRIS 通过 DevTools 在网易云页面读取状态并调用现有播放器动作，依赖网页的 React/Redux 结构；网易云音乐Web版改版可能需要时间更新适配
+- mpv 后端依赖本机安装 `mpv`，启动时会避开 Steam Runtime 的动态库环境；目前由网易云网页提供歌曲地址和播放列表，网页登录失效或网易云改版时，mpv 也无法继续解析新歌曲
 - 后台播放依赖 Steam 的通话功能，会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`函数。如果你正在通话时暂停播放音乐可能导致通话出问题
 - 检测「Steam 有没有打开自己的网页」靠的是网页容器的类名，Steam 大更新后类名会变，判断可能失效。失效时 Steam 的网页会盖住播放器，手动点「收起」一样能看
 
@@ -158,6 +162,7 @@ cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 | MusicFox   | [Github仓库](https://github.com/go-musicfox/go-musicfox)         | 好用的网易云终端工具，本项目的MPIRS功能参考了此项目 |
 | open orpheus | [Github仓库](https://github.com/YUCLing/open-orpheus)          | 能让Linux运行网易云客户端，听歌识曲功能参考了此项目 |
 | NeteaseCloudMusicApiEnhanced | [Github仓库](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | 听歌识曲api接口功能用了他 |
+| Qplayer    | [Github仓库](https://github.com/TIMER-err/qplayer)               | 第三方网易云音乐客户端，一起听功能参考了他          |
 
 # 为什么有网易云客户端还要去写这个？
 

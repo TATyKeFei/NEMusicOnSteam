@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactElement } from "react";
 import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player/player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
 import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
-import type { NotificationMode } from "./settings.ts";
+import type { NotificationMode, PlaybackBackend } from "./settings.ts";
 import { SteamSettingsEntry } from "./widget/steam-settings.ts";
 
 const steamSettings = new SteamSettingsEntry(() => <SettingsContent />);
@@ -12,6 +12,11 @@ const NOTIFICATION_OPTIONS = [
   { data: "system", label: "系统通知" },
   { data: "steam", label: "Steam 弹窗" },
   { data: "none", label: "无" },
+];
+
+const PLAYBACK_BACKEND_OPTIONS: { data: PlaybackBackend; label: string }[] = [
+  { data: "web", label: "内嵌网页播放器" },
+  { data: "mpv", label: "mpv（外部音频）" },
 ];
 
 function NoteIcon() {
@@ -33,6 +38,7 @@ function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
     && a.hasView === b.hasView
     && a.throttlingSupported === b.throttlingSupported
     && a.mprisStatus === b.mprisStatus
+    && a.mpvStatus === b.mpvStatus
     && a.recognitionStatus === b.recognitionStatus
     && a.navEntry === b.navEntry
     && a.settingsEntry === b.settingsEntry
@@ -141,6 +147,19 @@ function SettingsContent() {
 
   return (
     <>
+      <Field
+        label="播放后端"
+        description={settings.playbackBackend === "mpv"
+          ? `使用 mpv 输出音频，网易云网页仍用于登录、选歌和一起听。${snapshot.mpvStatus}`
+          : "使用网易云网页内嵌播放器；切换到 mpv 前请先安装 mpv。"}
+        bottomSeparator="standard"
+      >
+        <Dropdown
+          rgOptions={PLAYBACK_BACKEND_OPTIONS}
+          selectedOption={settings.playbackBackend}
+          onChange={option => setSnapshot(player.updateSettings({ playbackBackend: option.data }))}
+        />
+      </Field>
       <Field
         label="播放音质"
         description="播放歌曲时切换音质会短暂暂停重新加载并保留播放进度；可能需要下一首才生效"
