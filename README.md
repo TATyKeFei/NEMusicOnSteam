@@ -36,7 +36,7 @@
 
 详细介绍可看 [Wiki](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D) 中查看
 
-| 内容       | 支持状况                                              | 备注   |
+| 支持功能   | 支持状况                                              | 备注   |
 | :---       | :---                                                  | :---   |
 | MPRIS      | 仅 Linux 支持                                                  | 仅Linux支持，Windows没有MPRIS不支持  |
 | 通知       | 支持                                                  | 支持KDE原生通知、Mako等通知服务; Windows未测试        |
@@ -45,9 +45,11 @@
 | 后台播放   | 支持           | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
 | 下载歌曲   | 支持           | 列表里的歌曲更多菜单里新增了“下载”按钮，在**Steam → 设置 → 网易云音乐**里可以选下载音质和目录，默认路径 `~/Music/网易云音乐` |
 | 听歌识曲   | 仅 Linux 支持  | 支持桌面音频、麦克风输入录制                     |
-| 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#歌词](#歌词)            |
-| 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#全局快捷键](#全局快捷键)       |
-| Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为Steam还tm不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
+| 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#歌词](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E6%AD%8C%E8%AF%8D)            |
+| 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#全局快捷键](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E5%85%A8%E5%B1%80%E5%BF%AB%E6%8D%B7%E9%94%AE)       |
+| Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为sbSteam还不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
+| s |
+| UnblockNeteaseMusic | 后续支持 |  |
 | API 接口   | 后续支持       |        |
 
 # 不支持功能

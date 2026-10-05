@@ -28,7 +28,7 @@ type Bridge = {
   pullRemoteCommands(): void;
 };
 
-function setup(options: { firstState?: Promise<unknown>; remote?: Record<string, unknown> } = {}) {
+function setup(options: { firstState?: Promise<unknown>; remote?: Record<string, unknown>; leaveResult?: { ok: boolean; error?: string } } = {}) {
   const evaluations: string[] = [];
   let stateReads = 0;
   let page: TogetherState = {
@@ -36,7 +36,7 @@ function setup(options: { firstState?: Promise<unknown>; remote?: Record<string,
     roomId: "123456", chatRoomId: "chat-9", creatorId: "20002", hostNickname: "房主", hostAvatarUrl: "avatar",
     members: [{ userId: "20002", nickname: "房主", avatarUrl: "avatar" }],
     currentSongId: "999", songIds: ["999"], playing: true, positionMs: 10000, localOnly: false,
-    probe: [], action: "", error: "", diagnostic: "",
+    probe: [], action: "", diagnostic: "",
   };
   const Class = runInNewContext(`${source}; TogetherBridge`, {
     IDENTITY_IDLE: {},
@@ -50,6 +50,7 @@ function setup(options: { firstState?: Promise<unknown>; remote?: Record<string,
     TOGETHER_PROBE_SCRIPT: "probe",
     togetherButtonScript: () => "button",
     togetherButtonUpdateScript: () => "button",
+    togetherButtonFailureScript: (message: string) => `button-failure:${message}`,
     window: { setTimeout: () => 1, clearTimeout() {}, setInterval: () => 1, clearInterval() {} },
     evaluateInPlayer: async (script: string) => {
       evaluations.push(script);
@@ -57,6 +58,7 @@ function setup(options: { firstState?: Promise<unknown>; remote?: Record<string,
         stateReads += 1;
         return stateReads === 1 && options.firstState ? options.firstState : { ...page };
       }
+      if (script === "leave" && options.leaveResult) return options.leaveResult;
       if (script === "leave" || script === "clear") {
         page = { ...page, status: "alone", inRoom: false, roomId: "", chatRoomId: "", creatorId: "", members: [] };
       }
@@ -76,6 +78,14 @@ function setup(options: { firstState?: Promise<unknown>; remote?: Record<string,
 }
 
 describe("一起听退房生命周期", () => {
+  it("退出请求失败时立即把错误回报给播放栏菜单", async () => {
+    const { bridge, evaluations } = setup({ leaveResult: { ok: false, error: "网易云拒绝退出" } });
+    bridge.leave();
+    await flush();
+    assert.equal(bridge.snapshot().note, "网易云拒绝退出");
+    assert.equal(evaluations.includes("button-failure:网易云拒绝退出"), true);
+  });
+
   it("主动退出立即清理设置页状态，之后不会自动恢复旧房间", async () => {
     const { bridge, evaluations } = setup();
     bridge.leave();

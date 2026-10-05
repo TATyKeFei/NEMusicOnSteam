@@ -18,6 +18,13 @@ describe("一起听房间信息解析", () => {
     );
   });
 
+  it("网易云官方手机分享链接也能直接加入", () => {
+    assert.deepEqual(
+      parseTogetherCode("https://st.music.163.com/listen-together/share/?songId=1900172235&roomId=123456&inviterId=10001"),
+      { roomId: "123456", inviterId: "10001" },
+    );
+  });
+
   it("裸 query 也认", () => {
     assert.deepEqual(parseTogetherCode("roomId=123456&inviterId=10001"), { roomId: "123456", inviterId: "10001" });
   });

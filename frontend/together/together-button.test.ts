@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
 import {
   TOGETHER_PENDING_SCRIPT,
+  togetherButtonFailureScript,
   togetherButtonScript,
   togetherButtonUpdateScript,
 } from "./together-button.ts";
@@ -25,21 +26,6 @@ type WebpackModule = { exports: unknown };
 type WebpackRequire = ((moduleId: string) => unknown) & { c: Record<string, WebpackModule> };
 type WebpackFactory = (module: WebpackModule, exports: unknown, require: WebpackRequire) => void;
 type WebpackChunk = [unknown[], Record<string, WebpackFactory>, [string][]];
-type Row = {
-  tag: string;
-  id?: string;
-  disabled?: boolean;
-  text?: string;
-  parent?: FakeNode | null;
-  next?: FakeNode | null;
-  style: Record<string, string>;
-  attrs: Record<string, string>;
-  listeners: Record<string, ((event: unknown) => void)[]>;
-  children: FakeNode[];
-  dataset: Record<string, string>;
-  innerHTML?: string;
-};
-
 /** 测试里区分「原有按钮」和「我们挂上去的按钮」用的标签。 */
 const FILLER = "原有按钮";
 
@@ -67,9 +53,7 @@ class FakeNode {
   id = "";
   className = "";
   style: Record<string, string> = {};
-  dataset: Record<string, string> = {};
   attrs: Record<string, string> = {};
-  listeners: Record<string, ((event: unknown) => void)[]> = {};
   children: FakeNode[] = [];
   parent: FakeNode | null = null;
   innerHTML = "";
@@ -294,7 +278,6 @@ type FixtureOptions = {
   share?: boolean;
   bar?: boolean;
   lateBar?: boolean;
-  clipboard?: string;
   nativeTogether?: boolean;
   nativeInvite?: boolean;
   nativeInviteError?: "throw" | "reject";
@@ -445,7 +428,6 @@ function fixture(options: FixtureOptions = {}) {
       clipboard: {
         writeText: async (value: string) => {
           copied.push(value);
-          options.clipboard = value;
         },
       },
     },
@@ -783,6 +765,7 @@ describe("播放栏一起听按钮", () => {
       expiresAt: Date.now() + 30000,
       roomId: "",
       creatorId: "10001",
+      createdByUs: true,
     };
     f.install();
     const button = f.bar.querySelector("[data-nemusic-together-button]")!;
@@ -1218,10 +1201,10 @@ describe("播放栏一起听按钮", () => {
     await Promise.resolve();
     assert.equal(f.copied[0], "123456");
     // 加入端要拿 inviterId 过 accept 校验，房主复制链接时就得带上自己的 uid。
-    assert.equal(f.copied[1], "https://music.163.com/st/webplayer?roomId=123456&inviterId=10001");
+    assert.equal(f.copied[1], "https://st.music.163.com/listen-together/share/?songId=1900172235&roomId=123456&inviterId=10001");
   });
 
-  it("未登录时链接只带房间码，不编空 uid", async () => {
+  it("未登录时不复制缺少房主 uid 的无效链接", async () => {
     const f = fixture({ status: { status: "togetherOwner", roomInfo: { roomId: "123456" } }, hostUid: null });
     f.install();
     const button = f.bar.querySelector("[data-nemusic-together-button]")!;
@@ -1229,7 +1212,69 @@ describe("播放栏一起听按钮", () => {
     button.dispatch("click", click);
     f.body.querySelector('[data-nemusic-together-item="link"]')!.dispatch("click", click);
     await Promise.resolve();
-    assert.equal(f.copied[0], "https://music.163.com/st/webplayer?roomId=123456");
+    assert.deepEqual(f.copied, []);
+    assert.match(f.body.querySelector("[data-nemusic-together-toast]")!.textContent, /房主账号/);
+  });
+
+  it("没有歌曲时不复制无法打开的邀请链接", async () => {
+    const f = fixture({ status: { status: "togetherOwner", roomInfo: { roomId: "123456" } }, playing: { resourceDuration: 200, resourceTrackId: 0 } });
+    f.install();
+    const click = { preventDefault() {}, stopPropagation() {} };
+    f.bar.querySelector("[data-nemusic-together-button]")!.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="link"]')!.dispatch("click", click);
+    await Promise.resolve();
+    assert.deepEqual(f.copied, []);
+    assert.match(f.body.querySelector("[data-nemusic-together-toast]")!.textContent, /先播放/);
+  });
+
+  it("建房处理中隐藏创建和加入，成功后显示房间操作", () => {
+    const status: Status = { status: "alone" };
+    const f = fixture({ status });
+    f.install();
+    const click = { preventDefault() {}, stopPropagation() {} };
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="start"]')!.dispatch("click", click);
+    button.dispatch("click", click);
+    assert.equal(f.body.querySelector('[data-nemusic-together-item="start"]'), null);
+    assert.equal(f.body.querySelector('[data-nemusic-together-item="join"]'), null);
+    assert.equal(f.body.querySelector('[data-nemusic-together-item="busy"]')?.disabled, true);
+    status.status = "togetherOwner";
+    status.roomInfo = { roomId: "123456", creatorId: "10001" };
+    f.run(togetherButtonUpdateScript());
+    assert.equal(f.body.querySelector('[data-nemusic-together-item="busy"]'), null);
+    assert.ok(f.body.querySelector('[data-nemusic-together-item="invite"]'));
+  });
+
+  it("建房失败立即给出错误并恢复菜单，不必等待超时", () => {
+    const f = fixture({ status: { status: "alone" } });
+    f.install();
+    const click = { preventDefault() {}, stopPropagation() {} };
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="start"]')!.dispatch("click", click);
+    button.dispatch("click", click);
+    assert.ok(f.body.querySelector('[data-nemusic-together-item="busy"]'));
+    f.run(togetherButtonFailureScript("创建失败，请重试"));
+    assert.ok(f.body.querySelector('[data-nemusic-together-item="start"]'));
+    assert.match(f.body.querySelector("[data-nemusic-together-toast]")!.textContent, /创建失败/);
+  });
+
+  it("退出处理中不重复提交，退出后恢复创建和加入", () => {
+    const status: Status = { status: "togetherOwner", roomInfo: { roomId: "123456" } };
+    const f = fixture({ status });
+    f.install();
+    const click = { preventDefault() {}, stopPropagation() {} };
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="dissolve"]')!.dispatch("click", click);
+    button.dispatch("click", click);
+    assert.equal(f.body.querySelector('[data-nemusic-together-item="busy"]')?.disabled, true);
+    status.status = "alone";
+    status.roomInfo = undefined;
+    f.run(togetherButtonUpdateScript());
+    assert.ok(f.body.querySelector('[data-nemusic-together-item="start"]'));
+    assert.ok(f.body.querySelector('[data-nemusic-together-item="join"]'));
   });
 
   it("取走动作时会清空，不会重复执行", () => {

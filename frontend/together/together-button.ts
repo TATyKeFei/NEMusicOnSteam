@@ -1,4 +1,5 @@
 import { PLAYER_ACCESS_SCRIPT } from "../player/player-access.ts";
+import { ROOM_HOST_HELPER } from "./together-role.ts";
 
 /**
  * 一起听按钮：挂在网易云播放栏里，分享按钮左边。
@@ -16,7 +17,7 @@ import { PLAYER_ACCESS_SCRIPT } from "../player/player-access.ts";
  */
 
 /** 注入页面的 api 一有变化就递增，升级时才能替换掉旧脚本留下的闭包。 */
-const BUTTON_API_VERSION = 14;
+const BUTTON_API_VERSION = 16;
 
 /**
  * 素材取自 assets/icon/together.svg（测试会拿素材原文比一遍，改这里就得改素材）。
@@ -31,23 +32,18 @@ const ICON = "<svg width=\"22\" height=\"22\" viewBox=\"0 0 1024 1024\" aria-hid
  */
 const MENU_ITEMS = `
   const ITEMS = [
-    { key: 'start', label: '创建房间', visible: room => !room.inRoom },
-    { key: 'join', label: '加入房间', visible: room => !room.inRoom },
-    { key: 'leave', label: '退出房间', visible: room => room.inRoom && !room.isHost },
-    { key: 'dissolve', label: '解散房间', visible: room => room.inRoom && room.isHost },
-    { key: 'invite', label: '邀请好友', visible: room => room.inRoom && room.isHost },
-    { key: 'code', label: '复制房间码', visible: room => room.inRoom && !!room.roomId },
-    { key: 'link', label: '复制房间链接', visible: room => room.inRoom && !!room.roomId },
+    { key: 'busy', label: '正在处理房间操作…', visible: room => room.busy },
+    { key: 'start', label: '创建房间', visible: room => !room.busy && !room.inRoom },
+    { key: 'join', label: '加入房间', visible: room => !room.busy && !room.inRoom },
+    { key: 'leave', label: '退出房间', visible: room => !room.busy && room.inRoom && !room.isHost },
+    { key: 'dissolve', label: '解散房间', visible: room => !room.busy && room.inRoom && room.isHost },
+    { key: 'invite', label: '邀请好友', visible: room => !room.busy && room.inRoom && room.isHost },
+    { key: 'code', label: '复制房间码', visible: room => !room.busy && room.inRoom && !!room.roomId },
+    { key: 'link', label: '复制房间链接', visible: room => !room.busy && room.inRoom && !!room.roomId },
   ];
-  // 网易云没有网页版的邀请链接：官方邀请是原生 App 的 ListenTogetherInviteModal，网页播放器
-  // 只读 main / route 两个参数，不认房间号。所以这个链接是给插件自己的「加入房间」用的——
-  // 官方接受接口必须同时有 roomId 和房主 uid，而没有任何「roomId → 房主 uid」的接口，所以复制
-  // 端（房主）把自己的 uid 一起编进去，加入端才拆得出来。inviterId 缺省时只带房间码。
-  const roomLink = (roomId, inviterId) => {
-    let url = 'https://music.163.com/st/webplayer?roomId=' + encodeURIComponent(roomId);
-    if (inviterId) url += '&inviterId=' + encodeURIComponent(inviterId);
-    return url;
-  };
+  const roomLink = (songId, roomId, inviterId) =>
+    'https://st.music.163.com/listen-together/share/?songId=' + encodeURIComponent(songId)
+    + '&roomId=' + encodeURIComponent(roomId) + '&inviterId=' + encodeURIComponent(inviterId);
   const visibleItems = room => ITEMS.filter(item => item.visible(room));
 `;
 
@@ -75,46 +71,56 @@ const STRIP_SELECTOR = '[title],[id^="btn_pc_"],[class*="cmd-button"]';
 // 列表里的行内菜单拉进来。
 const STRIP_TOLERANCE = 26;
 const SHARE_OID = 'btn_pc_minibar_share';
-  const api = { version, pending: '', button: null, menu: null, toastTimer: 0, note: '', anchorName: '', anchor: null, barInfo: '', middleY: 0, healTimer: 0, healSeq: 0, retries: 0, observer: null };
+  const api = { version, pending: '', operation: null, button: null, menu: null, toastTimer: 0, anchorName: '', barInfo: '', middleY: 0, healTimer: 0, healSeq: 0, retries: 0, observer: null };
   // 分享按钮的两种认法：可访问名 title 是组件里写死的，埋点 oid 更死（哪版改文案都不会变）。
   api.isShare = node => {
     if ((node.getAttribute?.('title') || '') === '分享') return true;
     return String(node.getAttribute?.('data-log') || '').includes(SHARE_OID);
   };
-  ${MENU_ITEMS}  const readRoom = () => {
+  ${MENU_ITEMS}${ROOM_HOST_HELPER}
+  const readRoom = () => {
     const store = findPlayerStore();
-    if (globalThis.__NEMusicOnSteamRoomExit?.store === store) {
-      return { status: 'alone', roomId: '', inviterId: '', inRoom: false, isHost: false };
-    }
+    const exited = globalThis.__NEMusicOnSteamRoomExit?.store === store;
     const state = store?.getState() || {};
     const together = state['async:listenTogether'] || {};
     const status = String(together.status || '');
     const remembered = globalThis.__NEMusicOnSteamRoom || null;
     const room = together.roomInfo && typeof together.roomInfo === 'object' ? together.roomInfo : {};
     const roomId = String(room.roomId || together.roomId || remembered?.roomId || '');
-    const creatorId = String(room.creatorId || together.creatorId || remembered?.creatorId || '');
-    const pendingCreation = Boolean(remembered?.pending && Number(remembered.expiresAt || 0) > Date.now());
-    const rememberedOwnRoom = remembered?.createdByUs === true
-      && (!remembered?.roomId || !roomId || String(remembered.roomId) === roomId);
+    const saved = !remembered?.roomId || remembered.roomId === roomId ? remembered : null;
+    const creatorId = String(room.creatorId || together.creatorId || saved?.creatorId || '');
+    const pendingCreation = Boolean(saved?.pending && Number(saved.expiresAt || 0) > Date.now());
     const activeStatus = status === 'together' || status === 'togetherOwner'
       || status === 'waiting' || status === 'opening';
     // 建房流程可能先写 roomInfo、再写 status；只要页面已经拿到房间号，且不是明确的结束状态，
     // 就不要再显示创建/加入，避免用户重复建房。
-    const inRoom = !['closing', 'closed', 'timeout'].includes(status)
+    const inRoom = !exited && !['closing', 'closed', 'timeout'].includes(status)
       && (activeStatus || !!roomId || pendingCreation);
     const ownUid = String(state.host?.uid || together.hostUid || '');
+    const isHost = inRoom && isRoomHost(together, ownUid, roomId);
+    const operation = api.operation;
+    if (operation) {
+      const done = operation.kind === 'leave' ? !inRoom
+        : operation.kind === 'start' ? inRoom && !!roomId
+          : inRoom && !!roomId && (status === 'together' || status === 'togetherOwner');
+      if (done) api.operation = null;
+      else if (Date.now() - operation.at > 15000) {
+        api.operation = null;
+        toast('房间操作尚未完成，请检查状态后重试');
+      }
+    }
     return {
-      status,
+      status: exited ? 'alone' : status,
       roomId: inRoom ? roomId : '',
       // 房主 uid：复制链接时要编进去，加入端靠它过 accept 的 inviterId 校验。
-      inviterId: String(together.hostUid || creatorId || remembered?.ownerUid || ownUid),
+      inviterId: String(together.hostUid || creatorId || saved?.ownerUid || (isHost ? ownUid : '')),
       inRoom,
-      isHost: status === 'togetherOwner' || status === 'waiting' || status === 'opening' || pendingCreation
-        || rememberedOwnRoom
-        || (inRoom && !!creatorId && creatorId === ownUid),
+      isHost,
+      busy: api.operation?.kind || '',
     };
   };
   const toast = message => {
+    window.clearTimeout(api.toastTimer);
     let node = document.querySelector('[data-nemusic-together-toast]');
     if (!node) {
       node = document.createElement('div');
@@ -204,19 +210,31 @@ const SHARE_OID = 'btn_pc_minibar_share';
     }
   };
   const run = (key, room) => {
-    if (key === 'start') { api.pending = 'start'; toast('正在创建房间…'); return; }
-    if (key === 'leave') { api.pending = 'leave'; toast('正在退出房间…'); return; }
-    if (key === 'dissolve') { api.pending = 'leave'; toast('正在解散房间…'); return; }
+    if (api.pending || api.operation) return;
+    if (key === 'start') { api.pending = 'start'; api.operation = { kind: 'start', at: Date.now() }; toast('正在创建房间…'); return; }
+    if (key === 'leave') { api.pending = 'leave'; api.operation = { kind: 'leave', at: Date.now() }; toast('正在退出房间…'); return; }
+    if (key === 'dissolve') { api.pending = 'leave'; api.operation = { kind: 'leave', at: Date.now() }; toast('正在解散房间…'); return; }
     if (key === 'invite') return void openInvite(room);
     if (key === 'code') return void copy(room.roomId, '房间码');
-    if (key === 'link') return void copy(roomLink(room.roomId, room.inviterId), '房间链接');
+    if (key === 'link') {
+      const playState = findPlayerStore()?.getState()?.playing || {};
+      const songId = String(playState.resourceTrackId || playState.curTrack?.id || '');
+      if (!room.inviterId) { toast('暂时无法获取房主账号，请稍后再试'); return; }
+      if (playState.trackFileType === 'local' || playState.resourceType === 'localTrack') {
+        toast('本地歌曲不支持一起听邀请'); return;
+      }
+      if (!songId || songId === '0') { toast('请先播放一首网易云歌曲'); return; }
+      return void copy(roomLink(songId, room.roomId, room.inviterId), '房间链接');
+    }
   };
   // 「加入房间」不直接动作：先问房间码，再把这个动作摞到 api.pending 上交给 TogetherBridge——
   // 和建房 / 退房同一条通路，页面这边只负责收输入。
   const submitJoin = value => {
+    if (api.pending || api.operation) return;
     const code = String(value || '').trim();
     if (!code) { toast('请输入房间码或邀请链接'); return; }
     api.pending = 'join:' + code;
+    api.operation = { kind: 'join', at: Date.now() };
     toast('正在加入房间…');
     closeMenu();
   };
@@ -230,8 +248,11 @@ const SHARE_OID = 'btn_pc_minibar_share';
     row.type = 'button';
     row.setAttribute('role', 'menuitem');
     row.setAttribute('data-nemusic-together-item', item.key);
-    row.textContent = item.label;
-    row.style.cssText = 'display:block;width:100%;padding:9px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer';
+    row.textContent = item.key === 'busy'
+      ? ({ start: '正在创建房间…', join: '正在加入房间…', leave: '正在退出房间…' }[readRoom().busy] || item.label)
+      : item.label;
+    if (item.key === 'busy') row.disabled = true;
+    row.style.cssText = 'display:block;width:100%;padding:9px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:' + (item.key === 'busy' ? 'default' : 'pointer');
     row.addEventListener('mouseenter', () => { row.style.background = '#3a3a44'; });
     row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
     row.addEventListener('click', event => {
@@ -301,6 +322,12 @@ const SHARE_OID = 'btn_pc_minibar_share';
     const actual = Array.from(api.menu.querySelectorAll('[data-nemusic-together-item]'))
       .map(row => row.getAttribute('data-nemusic-together-item') || '').join('|');
     if (expected !== actual) renderMenu(api.menu, room);
+  };
+  api.failOperation = message => {
+    if (!api.operation) return;
+    api.operation = null;
+    toast(message || '房间操作失败');
+    refreshMenu();
   };
   const openMenu = () => {
     if (api.menu) return closeMenu();
@@ -459,7 +486,6 @@ const SHARE_OID = 'btn_pc_minibar_share';
     api.barInfo = described + (api.button && api.button.isConnected ? '' : '｜按钮当前不在页面里');
     if (!found) {
       const note = '播放栏里没找到可放一起听按钮的位置（' + described + '）';
-      api.note = note;
       // 一次没挂上可能要连着追几十次，同一个原因别刷屏。
       if (!api.retries) { try { console.warn('[NEMusic] together anchor', note); } catch (error) {} }
       return note;
@@ -494,7 +520,6 @@ const SHARE_OID = 'btn_pc_minibar_share';
     if (sibling) found.node.parentElement.insertBefore(api.button, sibling);
     else found.node.parentElement.append(api.button);
     api.anchorName = found.selector;
-    api.note = '';
     return '';
   };
   /**
@@ -583,7 +608,6 @@ const SHARE_OID = 'btn_pc_minibar_share';
   document.addEventListener('keydown', onDocumentKey, true);
   window[key] = api;
   const note = api.ensure();
-  api.note = note;
   return { ok: true, note, anchor: String(api.anchorName || ''), bar: String(api.barInfo || '') };
 })()`;
 
@@ -607,4 +631,9 @@ export const TOGETHER_PENDING_SCRIPT = `(() => {
   const action = api && api.pending ? String(api.pending) : '';
   if (api) api.pending = '';
   return action;
+})()`;
+
+export const togetherButtonFailureScript = (message: string): string => `(() => {
+  window.__nemusicTogetherButton?.failOperation?.(${JSON.stringify(message)});
+  return true;
 })()`;

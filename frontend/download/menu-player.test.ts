@@ -42,7 +42,7 @@ function pageStub() {
     Math,
     clearTimeout: () => {},
     setTimeout: () => 0,
-    setInterval: (handler: unknown) => {
+    setInterval: () => {
       intervals.push(1);
       return 1;
     },

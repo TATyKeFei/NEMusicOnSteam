@@ -3,7 +3,7 @@
  *
  * 加入接口 play/invitation/accept 必须同时带 roomId 和房主 uid（inviterId），而网页版没有任何
  * 「roomId → 房主 uid」的接口。所以复制端（房主）把自己的 uid 一起编进链接里；用户粘贴的既可能是
- * 完整链接，也可能是我们自己约定的 `房间码:房主uid`，也可能只是裸房间码（这种只能再去 room/check
+ * 网易云官方手机分享链接，也可能是我们自己约定的 `房间码:房主uid`，也可能只是裸房间码（这种只能再去 room/check
  * 碰运气，见 TOGETHER_JOIN_SCRIPT）。这里只负责把这几种形状统一拆成 {roomId, inviterId}。
  */
 

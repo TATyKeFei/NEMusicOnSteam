@@ -6,12 +6,7 @@
 export const PLAYER_ACCESS_SCRIPT = `
   const findPlayerStore = () => {
     const seeds = document.querySelectorAll('#btn_pc_minibar_play, [aria-label="播放进度调节"], #root > *');
-    const cached = globalThis.__NEMusicOnSteamPlayerStore;
-    if (seeds.length && cached && typeof cached.getState === 'function' && typeof cached.dispatch === 'function') {
-      const playing = cached.getState()?.playing;
-      if (playing && ('playingVolume' in playing || 'resourceDuration' in playing)) return cached;
-    }
-    for (const element of seeds) {
+    const storeFromElement = element => {
       const key = Object.keys(element).find(name => name.startsWith('__reactFiber$') || name.startsWith('__reactInternalInstance$'));
       let fiber = key ? element[key] : null;
       const visited = new Set();
@@ -27,12 +22,29 @@ export const PLAYER_ACCESS_SCRIPT = `
           if (typeof store?.getState !== 'function' || typeof store?.dispatch !== 'function') continue;
           const playing = store.getState()?.playing;
           if (playing && ('playingVolume' in playing || 'resourceDuration' in playing)) {
-            globalThis.__NEMusicOnSteamPlayerStore = store;
             return store;
           }
         }
         fiber = fiber.return;
       }
+      return null;
+    };
+    const cached = globalThis.__NEMusicOnSteamPlayerStore;
+    if (cached && globalThis.__NEMusicOnSteamPlayerStoreSource
+      && cached !== globalThis.__NEMusicOnSteamPlayerStoreSource
+      && typeof cached.getState === 'function' && typeof cached.dispatch === 'function') {
+      const playing = cached.getState()?.playing;
+      if (playing && ('playingVolume' in playing || 'resourceDuration' in playing)) return cached;
+    }
+    const source = globalThis.__NEMusicOnSteamPlayerStoreSeed;
+    if (source && Array.from(seeds).includes(source) && storeFromElement(source) === cached) return cached;
+    for (const element of seeds) {
+      const store = storeFromElement(element);
+      if (!store) continue;
+      globalThis.__NEMusicOnSteamPlayerStore = store;
+      globalThis.__NEMusicOnSteamPlayerStoreSource = store;
+      globalThis.__NEMusicOnSteamPlayerStoreSeed = element;
+      return store;
     }
     return null;
   };

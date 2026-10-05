@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createContext, runInContext, type Context } from "node:vm";
+import { createContext, runInContext } from "node:vm";
 import { describe, it } from "node:test";
 import {
   ANDROID_APP_VERSION,
@@ -7,7 +7,6 @@ import {
   IDENTITY_IDLE,
   PC_LATEST_VERSION,
   TOGETHER_IDENTITY_APPLY_SCRIPT,
-  TOGETHER_IDENTITY_READ_SCRIPT,
   normalizeIdentity,
   type IdentityVariant,
 } from "./identity-player.ts";
@@ -144,16 +143,6 @@ describe("一起听身份补丁", () => {
     assert.equal(downgraded.os, IDENTITY_BASELINE.os);
     assert.equal(downgraded.appver, PC_LATEST_VERSION);
   });
-  it("回读就是读 conf 本身，不是我们写进去的目标值", () => {
-    const { conf } = makeConf();
-    const run = player(conf);
-    const applied = apply(run, "pc-latest");
-    const read = run<{ ok: boolean; appver: string }>(TOGETHER_IDENTITY_READ_SCRIPT);
-    assert.equal(read.ok, true);
-    assert.equal(read.appver, applied.appver);
-    assert.equal(read.appver, PC_LATEST_VERSION);
-  });
-
   it("重复应用是幂等的", () => {
     const { conf } = makeConf();
     const run = player(conf);
@@ -208,19 +197,6 @@ describe("一起听身份补丁", () => {
     const result = run<{ ok: boolean; note: string }>(TOGETHER_IDENTITY_APPLY_SCRIPT("pc-latest", DEVICE_ID));
     assert.equal(result.ok, false);
     assert.match(result.note, /APP_CONF/);
-    const read = run<{ ok: boolean; note: string }>(TOGETHER_IDENTITY_READ_SCRIPT);
-    assert.equal(read.ok, false);
-    assert.match(read.note, /APP_CONF/);
-  });
-
-  it("读脚本能看到当前生效的是哪个变体", () => {
-    const { conf } = makeConf();
-    const run = player(conf);
-    assert.equal(run<{ variant: string }>(TOGETHER_IDENTITY_READ_SCRIPT).variant, "off");
-    apply(run, "pc-latest");
-    assert.equal(run<{ variant: string }>(TOGETHER_IDENTITY_READ_SCRIPT).variant, "pc-latest");
-    apply(run, "off");
-    assert.equal(run<{ variant: string }>(TOGETHER_IDENTITY_READ_SCRIPT).variant, "off");
   });
 });
 
@@ -292,15 +268,12 @@ describe("一起听身份 cookie", () => {
     assert.deepEqual(result.cookie, {});
   });
 
-  it("同名多份会在回读里用 | 拼出来", () => {
-    const { conf } = makeConf();
-    const { run } = cookieRun(conf, [
-      { name: "appver", value: "stale-host-only", domain: "music.163.com" },
-      { name: "appver", value: "stale-domain", domain: ".music.163.com" },
-    ]);
-    const read = run<{ cookie: Record<string, string[]> }>(TOGETHER_IDENTITY_READ_SCRIPT);
-    assert.deepEqual(read.cookie.appver, ["stale-host-only", "stale-domain"]);
-    const snapshot = normalizeIdentity(read, "off");
+  it("同名多份 cookie 在快照里用 | 拼出来", () => {
+    const snapshot = normalizeIdentity({
+      ok: true,
+      variant: "off",
+      cookie: { appver: ["stale-host-only", "stale-domain"] },
+    }, "off");
     assert.equal(snapshot.cookie.appver, "stale-host-only|stale-domain");
   });
 });

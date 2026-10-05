@@ -1,5 +1,6 @@
 import { PLAYER_ACCESS_SCRIPT } from "../player/player-access.ts";
 import { TOGETHER_PENDING_SCRIPT } from "./together-button.ts";
+import { ROOM_HOST_HELPER } from "./together-role.ts";
 
 /**
  * 网易云 st/webplayer 自带官方一起听，redux 里有一整套 listenTogether 模块：
@@ -26,21 +27,6 @@ export type TogetherStatus = "alone" | "opening" | "waiting" | "together" | "tog
 /** 房间成员。网易云只在成员变动时推 memberEnter/memberClear，所以要自己攒起来。 */
 export type TogetherMember = { userId: string; nickname: string; avatarUrl: string };
 
-/**
- * 服务端自己的房间状态（/api/listen/together/status/get）。
- *
- * 为什么非看它不可：页面 store 里的 `status: together` 是**我们自己**派 onUpdate 写进去的，
- * accept 到底有没有被服务端登记，页面不知道。实测就是这里骗人的——本地显示进了房间、成员列表里
- * 只有一个没有头像的假人（那是我们自己，服务端只给了个 uid），而对方手机上根本没出现有人加入。
- * 服务端的 inRoom 和 roomUsers 才是这件事的真话。
- */
-export type RoomStatus = {
-  inRoom: boolean;
-  roomId: string;
-  creatorId: string;
-  members: TogetherMember[];
-};
-
 export type TogetherState = {
   supported: boolean;
   loggedIn: boolean;
@@ -63,7 +49,6 @@ export type TogetherState = {
   probe: string[];
   /** 播放栏按钮攒下的动作（start / leave），由 TogetherBridge 取走执行。 */
   action: string;
-  error: string;
   /** 上次加入房间时 room/check 和 play/invitation/accept 的实际回包形状，
    *  脱敏后的摘要，用来验证「creatorId 在哪」和「refer 是否被校验」。 */
   diagnostic: string;
@@ -373,6 +358,7 @@ const SAVE_DIAGNOSTICS_HELPER = `  const saveDiagnostics = (checkData, acceptDat
  */
 export const TOGETHER_STATE_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
+${ROOM_HOST_HELPER}
 ${ROOM_EXIT_HELPER}
   if (playerStore && roomExited()) normalizeRoomExit();
   const exited = roomExited();
@@ -434,8 +420,6 @@ ${PROBE_READ}${READ_DIAGNOSTICS}  // 播放栏那个按钮只能记下「用户�
   const currentId = Number(playState.resourceTrackId) || 0;
   // 房主也在 roomMembers 里，昵称要从那儿找，slice 本身不带。
   const hostUid = String(host.uid || together.hostUid || '');
-  const rememberedOwnRoom = !exited && remembered?.createdByUs === true
-    && (!remembered?.roomId || !room.roomId || String(remembered.roomId) === String(room.roomId));
   const creatorId = exited ? '' : String(room.creatorId || remembered?.creatorId || '');
   const hostMember = members.find(member => member.userId === hostUid);
   return {
@@ -445,8 +429,8 @@ ${PROBE_READ}${READ_DIAGNOSTICS}  // 播放栏那个按钮只能记下「用户�
     accountId: hostUid,
     status,
     inRoom: status === 'together' || status === 'togetherOwner',
-    isHost: status === 'togetherOwner' || rememberedOwnRoom
-      || (!!creatorId && !!hostUid && creatorId === hostUid),
+    isHost: !exited && (status === 'together' || status === 'togetherOwner')
+      && isRoomHost(together, String(host.uid || ''), String(room.roomId || remembered?.roomId || '')),
     // 页面那份 roomInfo 会被冲掉，房间号退回我们自己存的那份，见 ROOM_STATUS_HELPER 的 rebindRoom。
     roomId: exited ? '' : String(room.roomId || remembered?.roomId || ''),
     chatRoomId: exited ? '' : String(room.chatRoomId || remembered?.chatRoomId || ''),
@@ -496,18 +480,18 @@ export const TOGETHER_START_SCRIPT = `(() => {
     const status = String(together.status || '');
     const roomId = String(info.roomId || together.roomId || '');
     const previous = globalThis.__NEMusicOnSteamRoom;
+    if (!previous?.createdByUs || (previous.roomId && previous.roomId !== roomId)) return;
     if (!roomId || ['alone', 'closing', 'closed', 'timeout'].includes(status)) return;
     globalThis.__NEMusicOnSteamRoom = {
       roomId,
       creatorId: String(info.creatorId || fresh.host?.uid || host.uid || ''),
-      ownerUid: String(host.uid),
+      ownerUid: String(fresh.host?.uid || host.uid),
       chatRoomId: String(info.chatRoomId || ''),
       roomInfo: info,
       createdByUs: true,
       pending: false,
       expiresAt: 0,
     };
-    if (previous?.roomId === roomId) return;
   };
   globalThis.__NEMusicOnSteamRoom = {
     roomId: '',
@@ -729,12 +713,15 @@ ${ROOM_EXIT_HELPER}
  */
 export const TOGETHER_SYNC_ARM_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
+${ROOM_HOST_HELPER}
   if (!playerStore) return { ok: false, error: '播放器还没准备好' };
   if (globalThis.__NEMusicOnSteamRoomExit?.store === playerStore) return { ok: true, armed: false };
   const state = playerStore.getState() || {};
-  const status = String(state['async:listenTogether']?.status || '');
+  const together = state['async:listenTogether'] || {};
+  const status = String(together.status || '');
   if (status !== 'together' && status !== 'togetherOwner') return { ok: true, armed: false };
-  const wanted = status === 'togetherOwner';
+  const roomId = String(together.roomInfo?.roomId || globalThis.__NEMusicOnSteamRoom?.roomId || '');
+  const wanted = isRoomHost(together, String(state.host?.uid || ''), roomId);
   if (state['async:listenTogetherPlayStatus']?.isCanReport === wanted) return { ok: true, armed: false };
   playerStore.dispatch({ type: 'async:listenTogetherPlayStatus/setCanReport', payload: { isCanReport: wanted } });
   return { ok: true, armed: true, canReport: wanted };
@@ -793,6 +780,7 @@ export const TOGETHER_SYNC_ARM_SCRIPT = `(() => {
  */
 export const TOGETHER_SYNC_PULL_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
+${ROOM_HOST_HELPER}
 ${ROOM_STATUS_HELPER}
 ${PROFILE_HELPER}
   if (!playerStore) return { ok: false, error: '播放器还没准备好' };
@@ -804,7 +792,7 @@ ${PROFILE_HELPER}
   // 一旦拿不到房间号就直接返回，整个同步就静默停掉了——所以不能只信页面。
   const roomId = String(together.roomInfo?.roomId || globalThis.__NEMusicOnSteamRoom?.roomId || '');
   if (!roomId) return { ok: true, applied: false, reason: '没有房间号' };
-  const isHost = status === 'togetherOwner';
+  const isHost = isRoomHost(together, String(playerStore.getState()?.host?.uid || ''), roomId);
   const storeKey = '__NEMusicOnSteamSyncPull';
   let own = globalThis[storeKey];
   if (!own || own.version !== 2 || own.store !== playerStore || own.roomId !== roomId) {
@@ -1497,11 +1485,17 @@ ${PROFILE_HELPER}
  */
 export const TOGETHER_ADOPT_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
+${ROOM_HOST_HELPER}
   if (!playerStore) return { ok: false, error: '播放器还没准备好' };
-  const status = String(playerStore.getState()?.['async:listenTogether']?.status || '');
+  const state = playerStore.getState() || {};
+  const together = state['async:listenTogether'] || {};
+  const status = String(together.status || '');
   if (status !== 'together' && status !== 'togetherOwner') return { ok: true, sent: false };
-  if (status !== 'togetherOwner') return { ok: true, sent: false, reason: '只有房主能定房间队列' };
-  const cur = playerStore.getState()?.playing?.curPlaying;
+  const roomId = String(together.roomInfo?.roomId || globalThis.__NEMusicOnSteamRoom?.roomId || '');
+  if (!isRoomHost(together, String(state.host?.uid || ''), roomId)) {
+    return { ok: true, sent: false, reason: '只有房主能定房间队列' };
+  }
+  const cur = state.playing?.curPlaying;
   const songId = String(cur?.trackId ?? cur?.resourceId ?? '');
   if (!songId) return { ok: true, sent: false, reason: '房主自己还没在播' };
   playerStore.dispatch({ type: 'async:listenTogetherPlayList/backupPlayList', payload: { type: 'init' } });

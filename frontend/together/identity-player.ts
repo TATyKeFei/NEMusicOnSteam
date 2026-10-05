@@ -174,27 +174,6 @@ ${COOKIE_HELPERS}  const variant = ${JSON.stringify(variant)};
   return { ok: true, variant, ...readback, cookie: readCookie() };
 })()`;
 
-/** 只读，用来在设置页显示当前身份。 */
-export const TOGETHER_IDENTITY_READ_SCRIPT = `(() => {
-  const conf = window.APP_CONF;
-  if (!conf || typeof conf !== 'object') return { ok: false, note: '页面里没有 APP_CONF' };
-${COOKIE_HELPERS}  const spoofed = globalThis.__NEMusicOnSteamIdentity;
-  try {
-    return {
-      ok: true,
-      variant: String(spoofed?.variant || 'off'),
-      os: String(conf.os),
-      osver: String(conf.osver),
-      appver: String(conf.appver),
-      deviceId: String(conf.deviceId),
-      channel: String(conf.channel ?? ''),
-      cookie: readCookie(),
-    };
-  } catch (error) {
-    return { ok: false, note: error instanceof Error ? error.message : String(error) };
-  }
-})()`;
-
 /** 回传给宿主的身份快照。 */
 export type IdentitySnapshot = {
   ok: boolean;

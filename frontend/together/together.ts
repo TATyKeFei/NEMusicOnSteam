@@ -6,7 +6,7 @@ import {
   type IdentitySnapshot,
   type IdentityVariant,
 } from "./identity-player.ts";
-import { togetherButtonScript, togetherButtonUpdateScript } from "./together-button.ts";
+import { togetherButtonFailureScript, togetherButtonScript, togetherButtonUpdateScript } from "./together-button.ts";
 import { parseTogetherCode, type TogetherCode } from "./together-code.ts";
 import {
   TOGETHER_JOIN_SCRIPT,
@@ -70,7 +70,6 @@ const IDLE: TogetherState = {
   localOnly: false,
   probe: [],
   action: "",
-  error: "",
   diagnostic: "",
 };
 
@@ -307,13 +306,19 @@ export class TogetherBridge {
   }
 
   start(): void {
-    if (!this.timer || this.pending || this.hasRoom() || !this.state.loggedIn || this.state.localOnly) return;
+    if (!this.timer || this.pending || this.hasRoom() || !this.state.loggedIn || this.state.localOnly) {
+      this.failButtonOperation(this.state.localOnly ? "本地歌曲不支持一起听" : "当前不能创建房间，请检查登录和房间状态");
+      return;
+    }
     this.pending = "start";
     void this.tick();
   }
 
   leave(): void {
-    if (!this.timer || this.pending || !this.hasRoom()) return;
+    if (!this.timer || this.pending || !this.hasRoom()) {
+      this.failButtonOperation("当前不在房间里，无法退出");
+      return;
+    }
     this.pending = "leave";
     this.clearRoomState();
     this.status = "正在退出房间";
@@ -325,15 +330,23 @@ export class TogetherBridge {
    * 守卫、把结果交给 tick。解析不出房间码就直接给一句人话，不白跑一次页面。
    */
   join(code: string): void {
-    if (!this.timer || this.pending || this.hasRoom() || !this.state.loggedIn || this.state.localOnly) return;
+    if (!this.timer || this.pending || this.hasRoom() || !this.state.loggedIn || this.state.localOnly) {
+      this.failButtonOperation("当前不能加入房间，请检查登录和房间状态");
+      return;
+    }
     const parsed = parseTogetherCode(code);
     if (!parsed.roomId) {
       this.status = "请输入房间码或邀请链接";
+      this.failButtonOperation(this.status);
       return;
     }
     this.pendingJoin = parsed;
     this.pending = "join";
     void this.tick();
+  }
+
+  private failButtonOperation(message: string): void {
+    void evaluateInPlayer(togetherButtonFailureScript(message)).catch(() => {});
   }
 
   /**
@@ -655,12 +668,14 @@ export class TogetherBridge {
         } else {
           this.joinRetries = 0;
           this.status = response?.error || "一起听操作失败";
+          this.failButtonOperation(this.status);
         }
       }
     } catch (error) {
       if (error instanceof Error && error.message === PLAYER_TARGET_MISSING) return;
       if (generation === this.generation) {
         this.status = error instanceof Error ? error.message.split("\n")[0].replace(/^Error: /, "") : String(error);
+        if (action != null) this.failButtonOperation(this.status);
       }
     } finally {
       // 加入房间重试时 pending 还挂在 "join" 上，别清掉，否则下个 tick 就不知道该重试了。

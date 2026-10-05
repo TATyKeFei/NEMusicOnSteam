@@ -119,6 +119,22 @@ describe("一起听房间状态", () => {
     assert.equal(state.chatRoomId, "chat-9");
   });
 
+  it("状态只有 together 时仍按房主 uid 认房主，并允许上报房间队列", () => {
+    const current = room({ status: "together", roomInfo: { roomId: "123456", creatorId: "10001" } }, { keep: true });
+    current.state["async:listenTogetherPlayStatus"] = { isCanReport: false };
+    assert.equal(current.run<TogetherState>(TOGETHER_STATE_SCRIPT).isHost, true);
+    assert.deepEqual(current.run<{ armed: boolean; canReport: boolean }>(TOGETHER_SYNC_ARM_SCRIPT), {
+      ok: true, armed: true, canReport: true,
+    });
+    assert.equal(current.run<{ sent: boolean }>(TOGETHER_ADOPT_SCRIPT).sent, true);
+    assert.deepEqual(current.dispatched.map(action => action.type), [
+      "async:listenTogetherPlayStatus/setCanReport",
+      "async:listenTogetherPlayList/backupPlayList",
+      "async:listenTogetherPlayList/reportPlayList",
+      "async:listenTogetherPlayStatus/reportRequest",
+    ]);
+  });
+
   it("没登录时不算自己人", () => {
     // uid 为 0 也要归一成空串，不然调用方会拿到一个看起来像 id 的 "0"。
     for (const host of [{ uid: 0 }, { uid: 10001, isAnonymous: true }, {}]) {
@@ -557,6 +573,35 @@ describe("退房与恢复", () => {
     fixture.run(TOGETHER_LEAVE_SCRIPT);
     assert.equal((await fixture.runAsync<{ ok: boolean }>(TOGETHER_JOIN_SCRIPT("123456", "20002"))).ok, true);
     assert.equal(fixture.run<TogetherState>(TOGETHER_STATE_SCRIPT).inRoom, true);
+  });
+
+  it("旧建房订阅不能把随后加入的别人房间标成自己的", async () => {
+    const other = { roomId: "654321", creatorId: "20002", chatRoomId: "chat-other" };
+    const current = room({}, {
+      keep: true, reduceTogether: true,
+      onDispatch: (action) => {
+        if (action.type === "async:listenTogether/resetRoomInfo") {
+          (current.state["async:listenTogether"] as Record<string, unknown>).roomInfo =
+            (action.payload as { roomInfo: unknown }).roomInfo;
+        }
+      },
+      fetch: async (url: string) => ({ json: async () => url.includes("/status/get")
+        ? { code: 200, data: { inRoom: true, roomInfo: other } }
+        : { code: 200, data: other } }),
+    });
+    assert.equal(current.run<{ ok: boolean }>(TOGETHER_START_SCRIPT).ok, true);
+    current.state["async:listenTogether"] = { status: "togetherOwner", roomInfo: { roomId: "123456", creatorId: "10001" } };
+    current.notify();
+    current.run(TOGETHER_CLEAR_SCRIPT);
+    assert.equal((await current.runAsync<{ ok: boolean }>(TOGETHER_JOIN_SCRIPT("654321", "20002"))).ok, true);
+    current.notify();
+    const remembered = current.run<{ roomId: string; createdByUs?: boolean }>("globalThis.__NEMusicOnSteamRoom");
+    assert.equal(remembered.roomId, "654321");
+    assert.notEqual(remembered.createdByUs, true);
+    assert.equal(current.run<TogetherState>(TOGETHER_STATE_SCRIPT).isHost, false);
+    current.state["async:listenTogetherPlayStatus"] = { isCanReport: true };
+    assert.equal(current.run<{ canReport: boolean }>(TOGETHER_SYNC_ARM_SCRIPT).canReport, false);
+    assert.equal(current.run<{ sent: boolean }>(TOGETHER_ADOPT_SCRIPT).sent, false);
   });
 
   it("退出后明确重新建房可以解除退出保护", () => {
@@ -2078,7 +2123,7 @@ describe("播放状态探子", () => {
 describe("有人进来时把房主的歌推过去", () => {
   function inRoom(status: string, trackId: unknown = 1900172235) {
     return room(
-      { status, roomInfo: { roomId: "123456", chatRoomId: "chat-9", creatorId: "10001" } },
+      { status, roomInfo: { roomId: "123456", chatRoomId: "chat-9", creatorId: status === "together" ? "20002" : "10001" } },
       {
         playing: {
           curPlaying: { resourceId: trackId, trackId, resourceType: "track", track: { id: trackId } },
