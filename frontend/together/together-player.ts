@@ -305,8 +305,10 @@ const ROOM_STATUS_HELPER = `  /**
     globalThis.__NEMusicOnSteamRoom = {
       roomId: String(roomInfo?.roomId ?? ''),
       creatorId: String(roomInfo?.creatorId ?? ''),
+      ownerUid: String(roomInfo?.creatorId ?? ''),
       chatRoomId: String(roomInfo?.chatRoomId ?? ''),
       roomInfo,
+      createdByUs: false,
     };
   };
   const rememberedRoom = () => globalThis.__NEMusicOnSteamRoom || null;
@@ -432,6 +434,9 @@ ${PROBE_READ}${READ_DIAGNOSTICS}  // 播放栏那个按钮只能记下「用户�
   const currentId = Number(playState.resourceTrackId) || 0;
   // 房主也在 roomMembers 里，昵称要从那儿找，slice 本身不带。
   const hostUid = String(host.uid || together.hostUid || '');
+  const rememberedOwnRoom = !exited && remembered?.createdByUs === true
+    && (!remembered?.roomId || !room.roomId || String(remembered.roomId) === String(room.roomId));
+  const creatorId = exited ? '' : String(room.creatorId || remembered?.creatorId || '');
   const hostMember = members.find(member => member.userId === hostUid);
   return {
     // 未登录时 host 里拿不到 uid，而建房和上报指令都要靠它。
@@ -440,11 +445,12 @@ ${PROBE_READ}${READ_DIAGNOSTICS}  // 播放栏那个按钮只能记下「用户�
     accountId: hostUid,
     status,
     inRoom: status === 'together' || status === 'togetherOwner',
-    isHost: status === 'togetherOwner',
+    isHost: status === 'togetherOwner' || rememberedOwnRoom
+      || (!!creatorId && !!hostUid && creatorId === hostUid),
     // 页面那份 roomInfo 会被冲掉，房间号退回我们自己存的那份，见 ROOM_STATUS_HELPER 的 rebindRoom。
     roomId: exited ? '' : String(room.roomId || remembered?.roomId || ''),
     chatRoomId: exited ? '' : String(room.chatRoomId || remembered?.chatRoomId || ''),
-    creatorId: exited ? '' : String(room.creatorId || remembered?.creatorId || ''),
+    creatorId,
     hostNickname: hostMember?.nickname || '',
     hostAvatarUrl: hostMember?.avatarUrl || String(host.avatarUrl || ''),
     members,
@@ -482,7 +488,42 @@ export const TOGETHER_START_SCRIPT = `(() => {
   globalThis.__NEMusicOnSteamRoomExit = null;
   globalThis.__NEMusicOnSteamRoom = null;
   globalThis.__NEMusicOnSteamSyncPull = null;
+  const captureCreatedRoom = () => {
+    if (globalThis.__NEMusicOnSteamRoomExit?.store === playerStore) return;
+    const fresh = playerStore.getState() || {};
+    const together = fresh['async:listenTogether'] || {};
+    const info = together.roomInfo && typeof together.roomInfo === 'object' ? together.roomInfo : {};
+    const status = String(together.status || '');
+    const roomId = String(info.roomId || together.roomId || '');
+    const previous = globalThis.__NEMusicOnSteamRoom;
+    if (!roomId || ['alone', 'closing', 'closed', 'timeout'].includes(status)) return;
+    globalThis.__NEMusicOnSteamRoom = {
+      roomId,
+      creatorId: String(info.creatorId || fresh.host?.uid || host.uid || ''),
+      ownerUid: String(host.uid),
+      chatRoomId: String(info.chatRoomId || ''),
+      roomInfo: info,
+      createdByUs: true,
+      pending: false,
+      expiresAt: 0,
+    };
+    if (previous?.roomId === roomId) return;
+  };
+  globalThis.__NEMusicOnSteamRoom = {
+    roomId: '',
+    creatorId: String(host.uid),
+    ownerUid: String(host.uid),
+    chatRoomId: '',
+    roomInfo: null,
+    createdByUs: true,
+    pending: true,
+    expiresAt: Date.now() + 30000,
+  };
+  if (typeof playerStore.subscribe === 'function' && !playerStore.__NEMusicOnSteamCreatedRoomObserver) {
+    playerStore.__NEMusicOnSteamCreatedRoomObserver = playerStore.subscribe(captureCreatedRoom) || true;
+  }
   playerStore.dispatch({ type: 'async:listenTogether/startListenTogether', payload: { target, refer: 'songplay_more' } });
+  captureCreatedRoom();
   return { ok: true };
 })()`;
 

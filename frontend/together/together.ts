@@ -307,13 +307,13 @@ export class TogetherBridge {
   }
 
   start(): void {
-    if (!this.timer || this.pending || this.state.inRoom || !this.state.loggedIn || this.state.localOnly) return;
+    if (!this.timer || this.pending || this.hasRoom() || !this.state.loggedIn || this.state.localOnly) return;
     this.pending = "start";
     void this.tick();
   }
 
   leave(): void {
-    if (!this.timer || this.pending || !this.state.inRoom) return;
+    if (!this.timer || this.pending || !this.hasRoom()) return;
     this.pending = "leave";
     this.clearRoomState();
     this.status = "正在退出房间";
@@ -325,7 +325,7 @@ export class TogetherBridge {
    * 守卫、把结果交给 tick。解析不出房间码就直接给一句人话，不白跑一次页面。
    */
   join(code: string): void {
-    if (!this.timer || this.pending || this.state.inRoom || !this.state.loggedIn || this.state.localOnly) return;
+    if (!this.timer || this.pending || this.hasRoom() || !this.state.loggedIn || this.state.localOnly) return;
     const parsed = parseTogetherCode(code);
     if (!parsed.roomId) {
       this.status = "请输入房间码或邀请链接";
@@ -344,6 +344,11 @@ export class TogetherBridge {
     if (this.started) return false;
     this.started = true;
     return this.state.supported && this.state.loggedIn;
+  }
+
+  private hasRoom(): boolean {
+    return this.state.inRoom || !!this.state.roomId
+      || this.state.status === "waiting" || this.state.status === "opening";
   }
 
   /**
@@ -403,7 +408,7 @@ export class TogetherBridge {
    * 留着只会让人以为还在房间里一直等同步，不如直接退出来，重新拿房间码加一次。
    */
   private leaveGhostRoom(): void {
-    if (!this.state.inRoom) return;
+    if (!this.hasRoom()) return;
     this.clearRoomState();
     this.status = "房间已结束或你已退出，已清理网页的一起听状态";
     void evaluateInPlayer(TOGETHER_CLEAR_SCRIPT, { awaitPromise: true }).catch(() => {});

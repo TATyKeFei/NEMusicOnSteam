@@ -14,7 +14,17 @@ function plain<T>(value: T): T {
 }
 
 /** 房间里 script 真正读的那几个字段。roomId 藏在 roomInfo 下面，别放错层。 */
-type Status = { status?: string; roomInfo?: { roomId?: string } };
+type Status = { status?: string; roomInfo?: { roomId?: string; creatorId?: string; chatRoomId?: string } };
+type NativeInviteRequest = {
+  roomInfo: Record<string, unknown>;
+  refer: string;
+  target: Record<string, unknown>;
+};
+type NativeInviteResult = { inviteFriendHandle: () => void } | undefined;
+type WebpackModule = { exports: unknown };
+type WebpackRequire = ((moduleId: string) => unknown) & { c: Record<string, WebpackModule> };
+type WebpackFactory = (module: WebpackModule, exports: unknown, require: WebpackRequire) => void;
+type WebpackChunk = [unknown[], Record<string, WebpackFactory>, [string][]];
 type Row = {
   tag: string;
   id?: string;
@@ -173,6 +183,10 @@ class FakeNode {
     for (const fn of this.listenersByType[type] ?? []) fn(event);
   }
 
+  click(): void {
+    this.dispatch("click");
+  }
+
   /** 支持脚本里那几种选择器：#id、标签名、[data-...]、逗号并列。 */
   querySelectorAll(selector: string): FakeNode[] {
     const out: FakeNode[] = [];
@@ -281,6 +295,12 @@ type FixtureOptions = {
   bar?: boolean;
   lateBar?: boolean;
   clipboard?: string;
+  nativeTogether?: boolean;
+  nativeInvite?: boolean;
+  nativeInviteError?: "throw" | "reject";
+  curPlaying?: boolean;
+  lateStore?: boolean;
+  playing?: Record<string, unknown>;
   /** 当前登录用户的 uid；null 表示未登录（store.host 为空）。 */
   hostUid?: string | null;
 };
@@ -295,16 +315,21 @@ type FakeMutation = { target: FakeNode; type: "childList" | "attributes" | "char
 function fixture(options: FixtureOptions = {}) {
   const status: Status = options.status ?? { status: "alone" };
   const body = new FakeNode("body");
+  const dispatched: unknown[] = [];
+  const curPlaying = { resourceType: "track", resourceId: "1900172235", trackId: 1900172235, track: { id: 1900172235 } };
+  const playing = options.playing ?? { resourceTrackId: 1900172235, resourceDuration: 200, curPlaying: options.curPlaying === false ? null : curPlaying };
+  let storeReady = !options.lateStore;
+  const revealStore = (): void => { storeReady = true; };
   // readRoom 从 store 读房间状态，所以得给页面一个真的 store。playing 那个 slice 不能少：
   // PLAYER_ACCESS_SCRIPT 认 store 的依据就是「state.playing 里有 resourceDuration」。
   const store = {
     // host.uid 是当前登录用户的 uid：复制房间链接时要当作 inviterId 编进去。
     getState: () => ({
-      playing: { resourceTrackId: 1900172235, resourceDuration: 200 },
+      playing,
       host: options.hostUid === null ? {} : { uid: options.hostUid ?? "10001" },
       "async:listenTogether": status,
     }),
-    dispatch: () => undefined,
+    dispatch: (action: unknown) => { dispatched.push(action); },
   };
   const bar = new FakeNode("div");
   // 真实页面里播放栏容器就叫这个；options.bar === false 时整个拿掉，用来测「什么都没找到」。
@@ -315,7 +340,7 @@ function fixture(options: FixtureOptions = {}) {
   play.className = "cmd-button cmd-button-with-icon";
   play.rectLeft = 601;
   (play as unknown as Record<string, unknown>).__reactFiber$test = {
-    memoizedProps: { store },
+    memoizedProps: { get store() { return storeReady ? store : null; } },
     return: null,
   };
   // 照真实页面造：整个播放栏只有播放按钮有 id，分享按钮只有可访问名和埋点 oid。横坐标也照着
@@ -329,13 +354,54 @@ function fixture(options: FixtureOptions = {}) {
   const filler = new FakeNode("button");
   filler.textContent = FILLER;
   filler.rectLeft = 10;
+  const nativeTogether = new FakeNode("button");
+  nativeTogether.id = "btn_pc_minibar_listentogether";
+  nativeTogether.title = "一起听";
+  let nativeTogetherClicks = 0;
+  nativeTogether.addEventListener("click", () => { nativeTogetherClicks += 1; });
   bar.append(filler, play);
   if (options.share !== false) bar.append(share);
+  if (options.nativeTogether) bar.append(nativeTogether);
   // lateBar：播放栏先不进页面，稍后再 appendBar 模拟「React 才渲染出来」。
   if (!options.lateBar) body.append(bar);
 
   const copied: string[] = [];
-  const toasts: string[] = [];
+  const nativeInvites: NativeInviteRequest[] = [];
+  let nativeInviteResolve: ((value: NativeInviteResult) => void) | null = null;
+  const nativeModal = {
+    listenTogetherInvite(request: NativeInviteRequest): Promise<NativeInviteResult> {
+      nativeInvites.push(plain(request));
+      if (options.nativeInviteError === "throw") throw new Error("modal unavailable");
+      if (options.nativeInviteError === "reject") return Promise.reject(new Error("modal failed"));
+      return new Promise((resolve) => { nativeInviteResolve = resolve; });
+    },
+  };
+  const moduleCache: Record<string, WebpackModule> = {
+    unrelated: { exports: { default: {} } },
+    unfinished: { get exports(): unknown { throw new Error("module not initialized"); } },
+  };
+  if (options.nativeInvite) moduleCache["native-modal-with-changing-id"] = { exports: { default: nativeModal } };
+  const moduleFactories: Record<string, WebpackFactory> = {};
+  const webpackRequire: WebpackRequire = Object.assign((moduleId: string): unknown => {
+    if (!moduleCache[moduleId]) {
+      const module = { exports: {} };
+      moduleCache[moduleId] = module;
+      moduleFactories[moduleId](module, module.exports, webpackRequire);
+    }
+    return moduleCache[moduleId].exports;
+  }, { c: moduleCache });
+  const webpackJsonp: WebpackChunk[] = [];
+  webpackJsonp.push = (...chunks: WebpackChunk[]): number => {
+    for (const chunk of chunks) {
+      Object.assign(moduleFactories, chunk[1]);
+      for (const [moduleId] of chunk[2]) webpackRequire(moduleId);
+    }
+    return Array.prototype.push.apply(webpackJsonp, chunks);
+  };
+  const finishNativeInvite = (inviteFriendHandle?: () => void): void => {
+    nativeInviteResolve?.(inviteFriendHandle ? { inviteFriendHandle } : undefined);
+    nativeInviteResolve = null;
+  };
   const document = {
     body,
     querySelector: (selector: string) => body.querySelector(selector),
@@ -384,6 +450,7 @@ function fixture(options: FixtureOptions = {}) {
       },
     },
     window: {
+      webpackJsonp,
       innerWidth: 1200,
       innerHeight: 800,
       setTimeout: setTimeoutFake,
@@ -418,7 +485,11 @@ function fixture(options: FixtureOptions = {}) {
   const appendBar = (): void => {
     if (bar.parent == null) body.append(bar);
   };
-  return { run, install, api, body, bar, share, copied, context, mutate, flushTimers, appendBar, pendingDelays };
+  return {
+    run, install, api, body, bar, share, copied, context, mutate, flushTimers, appendBar, pendingDelays,
+    nativeInvites, finishNativeInvite, webpackJsonp, dispatched, curPlaying, playing, store, revealStore,
+    nativeTogetherClicks: () => nativeTogetherClicks,
+  };
 }
 
 describe("播放栏一起听按钮", () => {
@@ -680,7 +751,7 @@ describe("播放栏一起听按钮", () => {
     assert.match(result.note, /还没装上/);
   });
 
-  it("菜单项固定是五个，顺序按需求", () => {
+  it("未加入房间时只显示创建和加入", () => {
     const f = fixture();
     f.install();
     const button = f.bar.querySelector("[data-nemusic-together-button]")!;
@@ -688,32 +759,154 @@ describe("播放栏一起听按钮", () => {
     const labels = f.body
       .querySelectorAll("[data-nemusic-together-item]")
       .map((row) => row.textContent);
-    assert.deepEqual(labels, ["创建房间", "加入房间", "解散房间", "复制房间码", "复制房间链接"]);
+    assert.deepEqual(labels, ["创建房间", "加入房间"]);
   });
 
-  it("不在房间里能创建和加入，不能解散和复制", () => {
+  it("未加入房间时隐藏退出、解散和复制", () => {
     const f = fixture({ status: { status: "alone" } });
     f.install();
     const button = f.bar.querySelector("[data-nemusic-together-button]")!;
     button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
     const row = (key: string) => f.body.querySelector(`[data-nemusic-together-item="${key}"]`);
-    assert.equal(row("start")!.disabled, false);
-    assert.equal(row("join")!.disabled, false);
-    assert.equal(row("leave")!.disabled, true);
-    assert.equal(row("code")!.disabled, true);
-    assert.equal(row("link")!.disabled, true);
+    assert.ok(row("start"));
+    assert.ok(row("join"));
+    assert.equal(row("leave"), null);
+    assert.equal(row("dissolve"), null);
+    assert.equal(row("code"), null);
+    assert.equal(row("link"), null);
   });
 
-  it("在房间里才能解散和复制，不能加入", () => {
+  it("创建动作刚发出、页面状态尚未回写时先显示房主操作", () => {
+    const f = fixture();
+    (f.context as Record<string, unknown>).__NEMusicOnSteamRoom = {
+      pending: true,
+      expiresAt: Date.now() + 30000,
+      roomId: "",
+      creatorId: "10001",
+    };
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    const row = (key: string) => f.body.querySelector(`[data-nemusic-together-item="${key}"]`);
+    assert.equal(row("start"), null);
+    assert.equal(row("join"), null);
+    assert.equal(row("dissolve")!.textContent, "解散房间");
+    assert.equal(row("invite")!.textContent, "邀请好友");
+    assert.equal(row("code"), null);
+    assert.equal(row("link"), null);
+  });
+
+  it("房主在房间里只显示解散和复制，隐藏创建/加入/退出", () => {
     const f = fixture({ status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
     f.install();
     const button = f.bar.querySelector("[data-nemusic-together-button]")!;
     button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
     const row = (key: string) => f.body.querySelector(`[data-nemusic-together-item="${key}"]`);
-    assert.equal(row("start")!.disabled, true);
-    assert.equal(row("join")!.disabled, true);
-    assert.equal(row("leave")!.disabled, false);
-    assert.equal(row("code")!.disabled, false);
+    assert.equal(row("start"), null);
+    assert.equal(row("join"), null);
+    assert.equal(row("leave"), null);
+    assert.equal(row("dissolve")!.textContent, "解散房间");
+    assert.equal(row("invite")!.textContent, "邀请好友");
+    assert.equal(row("code")!.textContent, "复制房间码");
+    assert.equal(row("link")!.textContent, "复制房间链接");
+  });
+
+  it("创建后等待成员时也显示房主菜单", () => {
+    const f = fixture({ status: { status: "waiting", roomInfo: { roomId: "123456" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    const row = (key: string) => f.body.querySelector(`[data-nemusic-together-item="${key}"]`);
+    assert.equal(row("start"), null);
+    assert.equal(row("join"), null);
+    assert.equal(row("leave"), null);
+    assert.equal(row("dissolve")!.textContent, "解散房间");
+    assert.equal(row("invite")!.textContent, "邀请好友");
+    assert.ok(row("code"));
+    assert.ok(row("link"));
+  });
+
+  it("status 只有 together 但创建标记还在时仍识别为房主", () => {
+    const f = fixture({ status: { status: "together", roomInfo: { roomId: "123456" } } });
+    (f.context as Record<string, unknown>).__NEMusicOnSteamRoom = {
+      roomId: "123456",
+      creatorId: "10001",
+      ownerUid: "10001",
+      createdByUs: true,
+      pending: false,
+      expiresAt: 0,
+    };
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    const row = (key: string) => f.body.querySelector(`[data-nemusic-together-item="${key}"]`);
+    assert.equal(row("leave"), null);
+    assert.equal(row("dissolve")!.textContent, "解散房间");
+    assert.equal(row("invite")!.textContent, "邀请好友");
+  });
+
+  it("创建流程还在 opening 但已有房间号时也不显示创建/加入", () => {
+    const f = fixture({ status: { status: "opening", roomInfo: { roomId: "123456", creatorId: "10001" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    const row = (key: string) => f.body.querySelector(`[data-nemusic-together-item="${key}"]`);
+    assert.equal(row("start"), null);
+    assert.equal(row("join"), null);
+    assert.equal(row("dissolve")!.textContent, "解散房间");
+    assert.equal(row("invite")!.textContent, "邀请好友");
+    assert.ok(row("code"));
+    assert.ok(row("link"));
+  });
+
+  it("房间号已经写入但 status 还没更新时也能显示房主菜单", () => {
+    const f = fixture({ status: { status: "alone", roomInfo: { roomId: "123456", creatorId: "10001" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    const row = (key: string) => f.body.querySelector(`[data-nemusic-together-item="${key}"]`);
+    assert.equal(row("start"), null);
+    assert.equal(row("join"), null);
+    assert.equal(row("dissolve")!.textContent, "解散房间");
+    assert.ok(row("code"));
+    assert.ok(row("link"));
+  });
+
+  it("房主已经建房但暂时还没有房间号时也显示邀请好友", () => {
+    const f = fixture({ status: { status: "togetherOwner" } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    assert.equal(f.body.querySelector('[data-nemusic-together-item="invite"]')!.textContent, "邀请好友");
+  });
+
+  it("成员在房间里显示退出而不是解散", () => {
+    const f = fixture({ status: { status: "together", roomInfo: { roomId: "123456" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    const row = (key: string) => f.body.querySelector(`[data-nemusic-together-item="${key}"]`);
+    assert.equal(row("start"), null);
+    assert.equal(row("join"), null);
+    assert.equal(row("dissolve"), null);
+    assert.equal(row("leave")!.textContent, "退出房间");
+    assert.ok(row("code"));
+    assert.ok(row("link"));
+  });
+
+  it("菜单打开时会跟随房间状态切换项目", () => {
+    const status: Status = { status: "alone" };
+    const f = fixture({ status });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    status.status = "togetherOwner";
+    status.roomInfo = { roomId: "123456" };
+    f.run(togetherButtonUpdateScript());
+    const labels = f.body
+      .querySelectorAll("[data-nemusic-together-item]")
+      .map((row) => row.textContent);
+    assert.deepEqual(labels, ["解散房间", "邀请好友", "复制房间码", "复制房间链接"]);
   });
 
   it("点加入展开输入框，确定后把 join:码 摞给插件", () => {
@@ -758,7 +951,7 @@ describe("播放栏一起听按钮", () => {
     const api = f.api();
     const button = f.bar.querySelector("[data-nemusic-together-button]")!;
     button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
-    f.body.querySelector('[data-nemusic-together-item="leave"]')!.dispatch("click", {
+    f.body.querySelector('[data-nemusic-together-item="dissolve"]')!.dispatch("click", {
       preventDefault() {},
       stopPropagation() {},
     });
@@ -766,6 +959,251 @@ describe("播放栏一起听按钮", () => {
     // 菜单点完就收起来
     assert.equal(f.body.querySelector("[data-nemusic-together-menu]"), null);
   });
+
+  it("成员点退出房间也交给插件侧执行", () => {
+    const f = fixture({ status: { status: "together", roomInfo: { roomId: "123456" } } });
+    f.install();
+    const api = f.api();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    f.body.querySelector('[data-nemusic-together-item="leave"]')!.dispatch("click", {
+      preventDefault() {},
+      stopPropagation() {},
+    });
+    assert.equal(api.pending, "leave");
+  });
+
+  it("邀请直接调用原生弹窗接口，不能点击会退出房间的播放栏按钮", () => {
+    const f = fixture({ nativeInvite: true, nativeTogether: true, status: { status: "togetherOwner", roomInfo: { roomId: "123456", creatorId: "10001", chatRoomId: "chat-123" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.equal(f.nativeTogetherClicks(), 0);
+    assert.deepEqual(f.nativeInvites, [{
+      roomInfo: { roomId: "123456", creatorId: "10001", chatRoomId: "chat-123" },
+      refer: "songplay_more",
+      target: f.curPlaying,
+    }]);
+    assert.deepEqual(f.dispatched, []);
+    assert.deepEqual(f.copied, []);
+  });
+
+  it("原生邀请接口未加载时提示原因，不假装已打开或退回复制链接", () => {
+    const f = fixture({ nativeTogether: true, status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.deepEqual(f.copied, []);
+    assert.equal(f.nativeTogetherClicks(), 0);
+    assert.match(f.body.querySelector("[data-nemusic-together-toast]")!.textContent, /原生邀请入口尚未加载/);
+  });
+
+  it("原生邀请使用缓存里的完整房间信息，补上当前页面缺失的字段", () => {
+    const f = fixture({ nativeInvite: true, status: { status: "togetherOwner" } });
+    (f.context as Record<string, unknown>).__NEMusicOnSteamRoom = {
+      roomId: "123456",
+      creatorId: "10001",
+      chatRoomId: "chat-123",
+      roomInfo: { roomId: "123456", token: "native-room-token" },
+    };
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.deepEqual(f.nativeInvites[0].roomInfo, {
+      roomId: "123456", creatorId: "10001", chatRoomId: "chat-123", token: "native-room-token",
+    });
+  });
+
+  it("创建尚未拿到房间号时不触发原生弹窗或再次创建房间", () => {
+    const f = fixture({ nativeInvite: true, status: { status: "togetherOwner" } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.deepEqual(f.nativeInvites, []);
+    assert.equal(f.api().pending, "");
+    assert.match(f.body.querySelector("[data-nemusic-together-toast]")!.textContent, /房间还在创建/);
+  });
+
+  it("curPlaying 暂时缺失时构造当前歌曲 target，避免原生接口静默返回", () => {
+    const f = fixture({ nativeInvite: true, curPlaying: false, status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.deepEqual(f.nativeInvites[0].target, f.curPlaying);
+  });
+
+  it("按钮先于播放器状态安装，之后播放或切歌时邀请读取最新状态而不是初始空值", () => {
+    const f = fixture({ nativeInvite: true, lateStore: true, status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
+    (f.context as Record<string, unknown>).__NEMusicOnSteamRoom = {
+      roomId: "123456", creatorId: "10001", createdByUs: true,
+    };
+    f.install();
+    f.revealStore();
+    f.playing.resourceTrackId = 456;
+    f.playing.curPlaying = { resourceType: "track", resourceId: "456", trackId: 456, track: { id: 456 } };
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.equal(f.nativeInvites.length, 1);
+    assert.deepEqual(f.nativeInvites[0].target, f.playing.curPlaying);
+    assert.equal(f.body.querySelector("[data-nemusic-together-toast]"), null);
+  });
+
+  it("播放器尚未就绪时邀请明确提示状态未就绪，不误报用户未播放歌曲", () => {
+    const f = fixture({ nativeInvite: true, lateStore: true });
+    (f.context as Record<string, unknown>).__NEMusicOnSteamRoom = {
+      roomId: "123456", creatorId: "10001", createdByUs: true,
+    };
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.deepEqual(f.nativeInvites, []);
+    assert.match(f.body.querySelector("[data-nemusic-together-toast]")!.textContent, /播放器状态尚未就绪/);
+  });
+
+  it("按钮先于播放器安装时也能读到随后设置的退房标记", () => {
+    const f = fixture({ lateStore: true, status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
+    (f.context as Record<string, unknown>).__NEMusicOnSteamRoom = {
+      roomId: "123456", creatorId: "10001", createdByUs: true,
+    };
+    f.install();
+    f.revealStore();
+    (f.context as Record<string, unknown>).__NEMusicOnSteamRoomExit = { store: f.store };
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    button.dispatch("click", { preventDefault() {}, stopPropagation() {} });
+    const labels = f.body.querySelectorAll("[data-nemusic-together-item]").map((row) => row.textContent);
+    assert.deepEqual(labels, ["创建房间", "加入房间"]);
+  });
+
+  it("歌曲信息仅在 curTrack 时也能打开原生邀请，不误报未播放", () => {
+    const track = { id: 456, name: "当前歌曲" };
+    const f = fixture({ nativeInvite: true, playing: { resourceDuration: 200, curTrack: track }, status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.equal(f.nativeInvites.length, 1);
+    assert.deepEqual(f.nativeInvites[0].target, {
+      resourceType: "track", resourceId: "456", trackId: 456, track,
+    });
+  });
+
+  it("播放器 store 更新后，邀请不再读取安装时留下的旧 store", () => {
+    const status: Status = { status: "togetherOwner", roomInfo: { roomId: "123456" } };
+    const f = fixture({ nativeInvite: true, playing: { resourceDuration: 0 }, status });
+    f.install();
+    const target = { resourceType: "track", resourceId: "456", trackId: 456, track: { id: 456 } };
+    (f.context as Record<string, unknown>).__NEMusicOnSteamPlayerStore = {
+      getState: () => ({
+        playing: { resourceDuration: 200, resourceTrackId: 456, curPlaying: target },
+        host: { uid: "10001" },
+        "async:listenTogether": status,
+      }),
+      dispatch: () => undefined,
+    };
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.equal(f.nativeInvites.length, 1);
+    assert.deepEqual(f.nativeInvites[0].target, target);
+  });
+
+  it("播放器状态有效但确实没有歌曲时仍提示播放，不凭空构造歌曲", () => {
+    const f = fixture({ nativeInvite: true, playing: { resourceDuration: 0 }, status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.deepEqual(f.nativeInvites, []);
+    assert.match(f.body.querySelector("[data-nemusic-together-toast]")!.textContent, /请先播放一首网易云歌曲/);
+  });
+
+  it("选择好友后执行原生发送回调，窗口还开着时重复点击不会再弹一个", async () => {
+    const f = fixture({ nativeInvite: true, status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    const invite = (): void => {
+      button.dispatch("click", click);
+      f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    };
+    invite();
+    invite();
+    assert.equal(f.nativeInvites.length, 1);
+    let sent = 0;
+    f.finishNativeInvite(() => { sent += 1; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(sent, 1);
+    invite();
+    assert.equal(f.nativeInvites.length, 2);
+    assert.equal(f.webpackJsonp.length, 1);
+  });
+
+  it("取消原生邀请不会退出已创建的房间，之后可以再次邀请", async () => {
+    const f = fixture({ nativeInvite: true, status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    f.finishNativeInvite();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(f.dispatched, []);
+    assert.equal(f.api().pending, "");
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    assert.equal(f.nativeInvites.length, 2);
+  });
+
+  it("邀请窗口打开后退出房间，迟到的选择结果不能向旧房间发送邀请", async () => {
+    const status: Status = { status: "togetherOwner", roomInfo: { roomId: "123456" } };
+    const f = fixture({ nativeInvite: true, status });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const click = { preventDefault() {}, stopPropagation() {} };
+    button.dispatch("click", click);
+    f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+    status.status = "alone";
+    status.roomInfo = undefined;
+    let sent = 0;
+    f.finishNativeInvite(() => { sent += 1; });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(sent, 0);
+  });
+
+  for (const errorMode of ["throw", "reject"] as const) {
+    it(`原生邀请失败（${errorMode}）给出真实提示，并允许重试`, async () => {
+      const f = fixture({ nativeInvite: true, nativeInviteError: errorMode, status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });
+      f.install();
+      const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+      const click = { preventDefault() {}, stopPropagation() {} };
+      button.dispatch("click", click);
+      f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.match(f.body.querySelector("[data-nemusic-together-toast]")!.textContent, /原生邀请/);
+      assert.deepEqual(f.copied, []);
+      button.dispatch("click", click);
+      f.body.querySelector('[data-nemusic-together-item="invite"]')!.dispatch("click", click);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      assert.equal(f.nativeInvites.length, 2);
+    });
+  }
 
   it("复制房间码和房间链接，链接把房主 uid 编进去", async () => {
     const f = fixture({ status: { status: "togetherOwner", roomInfo: { roomId: "123456" } } });

@@ -88,6 +88,22 @@ describe("一起听退房生命周期", () => {
     assert.equal(evaluations.includes("restore"), false);
   });
 
+  it("创建后等待成员时也可以解散房间", async () => {
+    const { bridge, evaluations } = setup();
+    bridge.state = {
+      ...bridge.state,
+      status: "waiting",
+      inRoom: false,
+      isHost: false,
+      roomId: "123456",
+    };
+    bridge.leave();
+    await flush();
+    await bridge.tick();
+    assert.equal(evaluations.includes("leave"), true);
+    assert.equal(bridge.snapshot().inRoom, false);
+  });
+
   it("读取状态尚未结束时点击退出，退房请求不会被 tick 收尾吞掉", async () => {
     let release!: (value: TogetherState) => void;
     const firstState = new Promise<TogetherState>(resolve => { release = resolve; });

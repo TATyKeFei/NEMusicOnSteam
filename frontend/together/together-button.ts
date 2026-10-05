@@ -16,7 +16,7 @@ import { PLAYER_ACCESS_SCRIPT } from "../player/player-access.ts";
  */
 
 /** 注入页面的 api 一有变化就递增，升级时才能替换掉旧脚本留下的闭包。 */
-const BUTTON_API_VERSION = 7;
+const BUTTON_API_VERSION = 14;
 
 /**
  * 素材取自 assets/icon/together.svg（测试会拿素材原文比一遍，改这里就得改素材）。
@@ -26,16 +26,18 @@ const BUTTON_API_VERSION = 7;
 const ICON = "<svg width=\"22\" height=\"22\" viewBox=\"0 0 1024 1024\" aria-hidden=\"true\" fill=\"currentColor\"><path d=\"M585.209884 578.669422c11.915377-1.765203 23.856337-3.501754 36.259832-3.501754 76.262918 0 136.351458 30.125111 189.545984 75.55786 10.17678-11.399631 24.588001-18.889209 41.035602-18.889209 5.347798 0 10.205433 1.62808 15.117302 3.066849-41.578977-46.843888-95.859231-82.044598-157.928892-99.197256 70.103638-33.138748 119.037117-104.001679 119.037117-186.534394 0-114.042359-92.764753-206.808136-206.808136-206.808136-41.008996 0-79.08622 12.267395-111.274316 32.920784-32.133861-20.599154-70.102614-32.920784-111.057375-32.920784-114.042359 0-206.807113 92.764753-206.807113 206.808136 0 81.528851 47.820122 151.495366 116.511597 185.176466-139.418306 39.461757-241.981217 167.588903-241.981217 319.492568 0 15.361873 12.4301 27.791973 27.791973 27.791973 15.360849 0 27.79095-12.4301 27.79095-27.791973 0-152.581094 124.111692-276.719392 276.69381-276.719392 152.581094 0 276.719392 124.138298 276.719392 276.719392 0 15.361873 12.4301 27.791973 27.791973 27.791973 15.360849 0 27.79095-12.4301 27.79095-27.791973C731.440339 739.501434 673.388179 638.486786 585.209884 578.669422zM514.672364 542.682813c-8.277524-3.094478-16.663518-5.916756-25.239847-8.360412 7.571443-3.690042 15.116279-7.436366 22.118763-11.995195 6.78452 4.315282 15.551184 10.258645 22.146393 13.380752C527.130094 537.524327 520.942161 540.211529 514.672364 542.682813zM399.137001 500.397754c-83.374896 0-151.22419-67.850317-151.22419-151.22419 0-83.374896 67.850317-151.225213 151.22419-151.225213s151.225213 67.850317 151.225213 151.225213C550.362214 432.547437 482.511897 500.397754 399.137001 500.397754zM554.758338 214.476793c20.246113-10.123568 42.61047-16.528442 66.710354-16.528442 83.374896 0 151.22419 67.850317 151.22419 151.225213 0 83.373873-67.850317 151.22419-151.22419 151.22419-24.127514 0-46.599318-6.242168-66.846454-16.338107 31.537274-36.313044 51.321876-83.130326 51.321876-134.886083C605.945137 297.497625 586.213747 250.763231 554.758338 214.476793z\"/><path d=\"M929.346735 742.134401l-54.715159 0 0-54.714136c0-15.361873-12.429077-27.791973-27.79095-27.791973s-27.79095 12.4301-27.79095 27.791973l0 54.714136-54.715159 0c-15.361873 0-27.79095 12.4301-27.79095 27.79095 0 15.361873 12.429077 27.791973 27.79095 27.791973l54.715159 0 0 54.714136c0 15.361873 12.429077 27.79095 27.79095 27.79095s27.79095-12.429077 27.79095-27.79095l0-54.714136 54.715159 0c15.360849 0 27.79095-12.4301 27.79095-27.791973C957.137685 754.564501 944.706561 742.134401 929.346735 742.134401z\"/></svg>";
 
 /**
- * 菜单项。enabled 每次开菜单时按房间状态重算——房间状态只有插件侧知道，页面这边读 store
+ * 菜单项。visible 每次开菜单时按房间状态重算——房间状态只有插件侧知道，页面这边读 store
  * 拿到的和 TogetherBridge 读的是同一份，不会有第二个真相。
  */
 const MENU_ITEMS = `
   const ITEMS = [
-    { key: 'start', label: '创建房间', enabled: room => !room.inRoom },
-    { key: 'join', label: '加入房间', enabled: room => !room.inRoom },
-    { key: 'leave', label: '解散房间', enabled: room => room.inRoom },
-    { key: 'code', label: '复制房间码', enabled: room => !!room.roomId },
-    { key: 'link', label: '复制房间链接', enabled: room => !!room.roomId },
+    { key: 'start', label: '创建房间', visible: room => !room.inRoom },
+    { key: 'join', label: '加入房间', visible: room => !room.inRoom },
+    { key: 'leave', label: '退出房间', visible: room => room.inRoom && !room.isHost },
+    { key: 'dissolve', label: '解散房间', visible: room => room.inRoom && room.isHost },
+    { key: 'invite', label: '邀请好友', visible: room => room.inRoom && room.isHost },
+    { key: 'code', label: '复制房间码', visible: room => room.inRoom && !!room.roomId },
+    { key: 'link', label: '复制房间链接', visible: room => room.inRoom && !!room.roomId },
   ];
   // 网易云没有网页版的邀请链接：官方邀请是原生 App 的 ListenTogetherInviteModal，网页播放器
   // 只读 main / route 两个参数，不认房间号。所以这个链接是给插件自己的「加入房间」用的——
@@ -46,6 +48,7 @@ const MENU_ITEMS = `
     if (inviterId) url += '&inviterId=' + encodeURIComponent(inviterId);
     return url;
   };
+  const visibleItems = room => ITEMS.filter(item => item.visible(room));
 `;
 
 /**
@@ -78,16 +81,37 @@ const SHARE_OID = 'btn_pc_minibar_share';
     if ((node.getAttribute?.('title') || '') === '分享') return true;
     return String(node.getAttribute?.('data-log') || '').includes(SHARE_OID);
   };
-${MENU_ITEMS}  const readRoom = () => {
-    const state = playerStore?.getState() || {};
+  ${MENU_ITEMS}  const readRoom = () => {
+    const store = findPlayerStore();
+    if (globalThis.__NEMusicOnSteamRoomExit?.store === store) {
+      return { status: 'alone', roomId: '', inviterId: '', inRoom: false, isHost: false };
+    }
+    const state = store?.getState() || {};
     const together = state['async:listenTogether'] || {};
     const status = String(together.status || '');
+    const remembered = globalThis.__NEMusicOnSteamRoom || null;
+    const room = together.roomInfo && typeof together.roomInfo === 'object' ? together.roomInfo : {};
+    const roomId = String(room.roomId || together.roomId || remembered?.roomId || '');
+    const creatorId = String(room.creatorId || together.creatorId || remembered?.creatorId || '');
+    const pendingCreation = Boolean(remembered?.pending && Number(remembered.expiresAt || 0) > Date.now());
+    const rememberedOwnRoom = remembered?.createdByUs === true
+      && (!remembered?.roomId || !roomId || String(remembered.roomId) === roomId);
+    const activeStatus = status === 'together' || status === 'togetherOwner'
+      || status === 'waiting' || status === 'opening';
+    // 建房流程可能先写 roomInfo、再写 status；只要页面已经拿到房间号，且不是明确的结束状态，
+    // 就不要再显示创建/加入，避免用户重复建房。
+    const inRoom = !['closing', 'closed', 'timeout'].includes(status)
+      && (activeStatus || !!roomId || pendingCreation);
+    const ownUid = String(state.host?.uid || together.hostUid || '');
     return {
       status,
-      roomId: String(together.roomInfo?.roomId || ''),
+      roomId: inRoom ? roomId : '',
       // 房主 uid：复制链接时要编进去，加入端靠它过 accept 的 inviterId 校验。
-      inviterId: String(state.host?.uid || together.hostUid || ''),
-      inRoom: status === 'together' || status === 'togetherOwner',
+      inviterId: String(together.hostUid || creatorId || remembered?.ownerUid || ownUid),
+      inRoom,
+      isHost: status === 'togetherOwner' || status === 'waiting' || status === 'opening' || pendingCreation
+        || rememberedOwnRoom
+        || (inRoom && !!creatorId && creatorId === ownUid),
     };
   };
   const toast = message => {
@@ -116,9 +140,74 @@ ${MENU_ITEMS}  const readRoom = () => {
     }
     toast(label + '已复制');
   };
+  const openInvite = room => {
+    if (!room.inRoom || !room.isHost || api.inviting) return;
+    if (!room.roomId) { toast('房间还在创建，请稍后再试'); return; }
+    try {
+      const store = findPlayerStore();
+      if (!store) { toast('播放器状态尚未就绪，请稍后再试'); return; }
+      const state = store.getState() || {};
+      let webpackRequire = window.__NEMusicOnSteamWebpackRequire;
+      if (!webpackRequire?.c && Array.isArray(window.webpackJsonp)) {
+        const moduleId = '__NEMusicOnSteamNativeInvite';
+        window.webpackJsonp.push([[], {
+          [moduleId]: (module, exports, require) => {
+            window.__NEMusicOnSteamWebpackRequire = require;
+          },
+        }, [[moduleId]]]);
+        webpackRequire = window.__NEMusicOnSteamWebpackRequire;
+      }
+      let modal = api.nativeModal;
+      if (!modal) {
+        for (const module of Object.values(webpackRequire?.c || {})) {
+          try {
+            const exports = module.exports;
+            modal = [exports, ...Object.values(exports || {})]
+              .find(candidate => typeof candidate?.listenTogetherInvite === 'function');
+            if (modal) break;
+          } catch (error) {}
+        }
+        if (modal) api.nativeModal = modal;
+      }
+      if (!modal) { toast('网易云原生邀请入口尚未加载，请稍后再试'); return; }
+      const remembered = globalThis.__NEMusicOnSteamRoom;
+      const saved = String(remembered?.roomId || '') === room.roomId ? remembered : null;
+      const roomInfo = {
+        ...(saved?.roomInfo || {}),
+        ...(state['async:listenTogether']?.roomInfo || {}),
+        roomId: room.roomId,
+      };
+      roomInfo.creatorId = String(roomInfo.creatorId || saved?.creatorId || room.inviterId);
+      roomInfo.chatRoomId = String(roomInfo.chatRoomId || saved?.chatRoomId || '');
+      const currentPlaying = state.playing || {};
+      const trackId = [currentPlaying.resourceTrackId, currentPlaying.curTrack?.id]
+        .map(Number).find(value => Number.isFinite(value) && value > 0) || 0;
+      const target = currentPlaying.curPlaying || (trackId > 0
+        ? {
+          resourceType: 'track', resourceId: String(trackId), trackId,
+          track: Number(currentPlaying.curTrack?.id) === trackId ? currentPlaying.curTrack : { id: trackId },
+        }
+        : null);
+      if (!target) { toast('请先播放一首网易云歌曲'); return; }
+      api.inviting = true;
+      Promise.resolve(modal.listenTogetherInvite({ roomInfo, refer: 'songplay_more', target }))
+        .then(result => {
+          const current = readRoom();
+          if (current.inRoom && current.isHost && current.roomId === room.roomId
+            && typeof result?.inviteFriendHandle === 'function') return result.inviteFriendHandle();
+        })
+        .catch(() => toast('网易云原生邀请失败，请稍后再试'))
+        .finally(() => { api.inviting = false; });
+    } catch (error) {
+      api.inviting = false;
+      toast('无法打开网易云原生邀请窗口，请稍后再试');
+    }
+  };
   const run = (key, room) => {
     if (key === 'start') { api.pending = 'start'; toast('正在创建房间…'); return; }
-    if (key === 'leave') { api.pending = 'leave'; toast('正在解散房间…'); return; }
+    if (key === 'leave') { api.pending = 'leave'; toast('正在退出房间…'); return; }
+    if (key === 'dissolve') { api.pending = 'leave'; toast('正在解散房间…'); return; }
+    if (key === 'invite') return void openInvite(room);
     if (key === 'code') return void copy(room.roomId, '房间码');
     if (key === 'link') return void copy(roomLink(room.roomId, room.inviterId), '房间链接');
   };
@@ -136,31 +225,35 @@ ${MENU_ITEMS}  const readRoom = () => {
     api.menu = null;
     api.button?.setAttribute('aria-expanded', 'false');
   };
+  const addMenuItem = (menu, item) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.setAttribute('role', 'menuitem');
+    row.setAttribute('data-nemusic-together-item', item.key);
+    row.textContent = item.label;
+    row.style.cssText = 'display:block;width:100%;padding:9px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer';
+    row.addEventListener('mouseenter', () => { row.style.background = '#3a3a44'; });
+    row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
+    row.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      // 加入要先收房间码，把菜单原地换成输入框，别关掉。
+      if (item.key === 'join') { openJoinInput(); return; }
+      closeMenu();
+      run(item.key, readRoom());
+    });
+    menu.append(row);
+  };
+  const renderMenu = (menu, room) => {
+    menu.textContent = '';
+    for (const item of visibleItems(room)) addMenuItem(menu, item);
+  };
   const buildMenu = () => {
     const menu = document.createElement('div');
     menu.setAttribute('data-nemusic-together-menu', '');
     menu.setAttribute('role', 'menu');
     menu.style.cssText = 'position:fixed;z-index:2147483647;width:176px;padding:4px 0;box-sizing:border-box;border:1px solid #4a4a52;border-radius:4px;background:#2a2a30;box-shadow:0 10px 34px #0009;font:13px/1.5 system-ui,sans-serif;color:#e8e8ea;user-select:none';
-    for (const item of ITEMS) {
-      const row = document.createElement('button');
-      row.type = 'button';
-      row.setAttribute('role', 'menuitem');
-      row.setAttribute('data-nemusic-together-item', item.key);
-      row.textContent = item.label;
-      row.style.cssText = 'display:block;width:100%;padding:9px 16px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer';
-      row.addEventListener('mouseenter', () => { if (!row.disabled) row.style.background = '#3a3a44'; });
-      row.addEventListener('mouseleave', () => { row.style.background = 'transparent'; });
-      row.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (row.disabled) return;
-        // 加入要先收房间码，把菜单原地换成输入框，别关掉。
-        if (item.key === 'join') { openJoinInput(); return; }
-        closeMenu();
-        run(item.key, readRoom());
-      });
-      menu.append(row);
-    }
+    renderMenu(menu, readRoom());
     return menu;
   };
   /**
@@ -202,14 +295,12 @@ ${MENU_ITEMS}  const readRoom = () => {
   };
   const refreshMenu = () => {
     if (!api.menu) return;
+    if (api.menu.querySelector('[data-nemusic-together-join-input]')) return;
     const room = readRoom();
-    for (const item of ITEMS) {
-      const row = api.menu.querySelector('[data-nemusic-together-item="' + item.key + '"]');
-      if (!row) continue;
-      row.disabled = !item.enabled(room);
-      row.style.color = row.disabled ? '#7a7a84' : '';
-      row.style.cursor = row.disabled ? 'default' : 'pointer';
-    }
+    const expected = visibleItems(room).map(item => item.key).join('|');
+    const actual = Array.from(api.menu.querySelectorAll('[data-nemusic-together-item]'))
+      .map(row => row.getAttribute('data-nemusic-together-item') || '').join('|');
+    if (expected !== actual) renderMenu(api.menu, room);
   };
   const openMenu = () => {
     if (api.menu) return closeMenu();
