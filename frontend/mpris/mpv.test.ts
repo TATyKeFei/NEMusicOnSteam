@@ -54,6 +54,8 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
   const webCommands: string[] = [];
   const posts: string[] = [];
   const volumeCommands: number[] = [];
+  const positionCommands: number[] = [];
+  const order: string[] = [];
   let interval: () => void = () => {};
   let web: TrackState | null = options.web === undefined ? { ...webPlaying } : options.web;
   let mpv: Payload = { active: false, playbackStatus: "Stopped", ...(options.mpv ?? {}) };
@@ -74,7 +76,9 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
     if (url.endsWith("/command")) {
       const body = JSON.parse(init!.body!);
       posts.push(body.action);
+      order.push(`mpv:${body.action}`);
       if (body.action === "volume") volumeCommands.push(body.value);
+      if (body.action === "setposition" || body.action === "seek") positionCommands.push(body.value);
       return { ok: true, json: async () => ({ handled: true }) };
     }
     if (url.endsWith("/shutdown")) {
@@ -108,6 +112,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
     quality: () => 1,
     commandWeb: async (command: { action: string }) => {
       webCommands.push(command.action);
+      order.push(`web:${command.action}`);
       return true;
     },
   });
@@ -120,6 +125,8 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
     webCommands,
     posts,
     volumeCommands,
+    positionCommands,
+    order,
     tick: () => interval(),
     setWeb: (next: TrackState | null) => { web = next; },
     setMpv: (next: Payload) => { mpv = next; },
@@ -350,6 +357,56 @@ describe("MPV bridge tick", () => {
     player.tick();
     await flush();
     assert.deepEqual(player.volumeCommands, [0.6]);
+  });
+
+  it("drags mpv along when the page's progress bar is dragged", async () => {
+    const player = setup({
+      web: { ...webPlaying, position: 40 },
+      mpv: { active: true, playbackStatus: "Playing", trackId: "t1", position: 5 },
+    });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.deepEqual(player.positionCommands, [40_000_000]);
+    assert.equal(player.loads[0].position, 40);
+  });
+
+  it("leaves mpv alone over a normal drift, a paused mpv, or another song", async () => {
+    const player = setup({
+      web: { ...webPlaying, position: 40 },
+      mpv: { active: true, playbackStatus: "Playing", trackId: "t1", position: 39.4 },
+    });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.deepEqual(player.positionCommands, []);
+    // 暂停中谁也不许拽谁：mpv 是音频出口，它停着就得停在原地。
+    player.setMpv({ active: true, playbackStatus: "Paused", trackId: "t1", position: 5 });
+    player.setWeb({ ...webPlaying, position: 40 });
+    player.tick();
+    await flush();
+    assert.deepEqual(player.positionCommands, []);
+    // 网页已经切到下一首而 mpv 还在上一首，进度对账不掺和切歌的事。
+    player.setMpv({ active: true, playbackStatus: "Playing", trackId: "t1", position: 5 });
+    player.setWeb({ ...webPlaying, trackId: "t2", position: 40 });
+    player.tick();
+    await flush();
+    assert.deepEqual(player.positionCommands, []);
+  });
+
+  it("writes progress to the page before touching mpv so the reconcile cannot roll it back", async () => {
+    const player = setup({
+      web: { ...webPlaying, position: 5 },
+      mpv: { active: true, playbackStatus: "Playing", trackId: "t1", position: 5 },
+    });
+    player.bridge.setEnabled(true);
+    await flush();
+    await player.bridge.command({ action: "setposition", value: 40_000_000 });
+    assert.deepEqual(player.order, ["web:setposition", "mpv:setposition"]);
+    player.positionCommands.length = 0;
+    player.setWeb({ ...webPlaying, position: 40 });
+    player.setMpv({ active: true, playbackStatus: "Playing", trackId: "t1", position: 40 });
+    player.tick();
+    await flush();
+    assert.deepEqual(player.positionCommands, []);
   });
 
   it("asks the page for the next song when mpv runs out", async () => {

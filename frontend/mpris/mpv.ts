@@ -228,6 +228,13 @@ const PENDING_AUTOPLAY_TICKS = 12;
 // mpv 的 volume 是 0..100、网页 store 是 0..1，来回取整会有抖动，差一个百分点才算数。
 const VOLUME_EPSILON = 0.01;
 
+// 进度门槛要远大于 tick 间隔：两边都在走表，读数天然差着几十毫秒，太敏感会拿 seek 打架。
+// 用户拖进度条一次跳的都是好几秒，1.5 秒的门槛足够把拖动和正常漂移分开。
+const SEEK_EPSILON = 1.5;
+
+// 网页 store 记着这些状态，mpv 只是跟着走的输出端，命令必须先落到网页再发给 mpv。
+const WEB_AUTHORED_COMMANDS = ["volume", "seek", "setposition", "rate", "shuffle", "loop"];
+
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -306,11 +313,9 @@ export class MpvBridge implements ExternalPlayback {
       return handled;
     }
     if (!this.endpoint || !this.token) return false;
-    if (command.action === "volume") {
-      // 网页 store 是音量的唯一来源：媒体键调的是 mpv，得同时写回网页，
-      // 否则下个 tick 的对账会把 mpv 又改回网页里的旧音量。
-      await this.options.commandWeb(command);
-    }
+    // 网页 store 是音量/进度/倍速/循环/随机的唯一来源：这些命令先写网页再动 mpv。
+    // 顺序反了会在"mpv 已新、网页还旧"的窗口里被 tick 的对账把 mpv 拽回旧值。
+    if (WEB_AUTHORED_COMMANDS.includes(command.action)) await this.options.commandWeb(command);
     // mpv 的播放状态是权威，这些标志要在 /command 之前落好：请求失败时下个 tick 还会照着
     // 它们重试，而播放类命令失败的唯一常见原因就是 mpv 手里已经没歌了。
     if (command.action === "stop") {
@@ -331,11 +336,7 @@ export class MpvBridge implements ExternalPlayback {
     }
     const response = await this.request("/command", command);
     const payload = (await response.json()) as { handled?: boolean };
-    const handled = response.ok && payload.handled === true;
-    if (handled && ["rate", "shuffle", "loop", "seek", "setposition"].includes(command.action)) {
-      await this.options.commandWeb(command);
-    }
-    return handled;
+    return response.ok && payload.handled === true;
   }
 
   private async connect(): Promise<boolean> {
@@ -390,6 +391,15 @@ export class MpvBridge implements ExternalPlayback {
       if (next.active && web?.volume != null && Math.abs(web.volume - next.volume) > VOLUME_EPSILON) {
         await this.request("/command", { action: "volume", value: web.volume });
         next.volume = web.volume;
+      }
+      // 进度同理：网页的进度条也是 div[role=slider]，拖完没有事件可听，只能靠快照发现。
+      // 只在两边同一首且都在播时对账——暂停中 seek 会把刚按住的 mpv 拽走；
+      // position 为 0 视作读不到进度（页面还没量出来），否则会把 mpv 甩回开头。
+      if (next.active && web?.canSeek && web.trackId && web.trackId === next.trackId
+        && next.playbackStatus === "Playing" && web.playbackStatus === "Playing"
+        && web.position > 0 && Math.abs(web.position - next.position) > SEEK_EPSILON) {
+        await this.request("/command", { action: "setposition", value: Math.round(web.position * 1_000_000) });
+        next.position = web.position;
       }
       // 播完和掉轨是两回事：播完时 path 还在，掉轨时辅助进程连 path 都没有了。
       // 前者往下一首走，后者把原来那首原样接回来，不然 mpv 辅助进程重启一次就跳歌。

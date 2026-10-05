@@ -8,20 +8,9 @@
 
 这个项目还在胚胎阶段，先把框架搭起来再完善UI和使用体验这类，需要点时间
 
-如果你愿意贡献代码可以提个 Issues 让我知道再提 PR
-
-# 声明
-
-- 不确保能一直使用，可能因为Steam更新、网易云音乐Web版下架、某个功能停用等不可预因素停止更新某个功能
-- 非任何官方插件! 本项目与网易、Valve 都没关系。我要有关系我还在这写这个sb项目早躺平了
-- 登录态在 Steam 自带的浏览器里，和系统其他浏览器不共享
-- 不会窃取任何数据，程序就开源在这了，不放心就自己构建插件
-- 不承担封号风险: 如果被封号建议去测丁磊老冯
-- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的（声明的声明：我虽然用Arch + rust但我不是那种xnnLGBT，我只是爱好者别给我扣帽子）
-
 # 支持
 
-> 由于Millennium仅支持x86_64版本的Steam，所以不支持arm。我也无能为力
+> 由于Millennium仅支持x86_64版本的Steam，所以不支持arm架构的Steam软件
 
 | 系统    | 可用性                 | 备注及注意事项       |
 | :---    | :---                   | :---                 |
@@ -34,7 +23,7 @@
 
 在Web版网易云的基础下添加更多的功能
 
-详细介绍可看 [Wiki](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D) 中查看
+详细介绍可看 [Wiki](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D) 中查看，这里写了使用方法啥的
 
 | 支持功能   | 支持状况                                              | 备注   |
 | :---       | :---                                                  | :---   |
@@ -76,7 +65,7 @@
 <p align="center">
   <img src=".docs/p3.png" width="800">
   <br>
-  <sub>MPRIS支持; 此图片的部件为<a herf=https://github.com/ccatterina/plasmusic-toolbar>PlsaMusic Toolbar</a></sub>
+  <sub>MPRIS支持; 此图片中展示用的KDE部件为<a herf=https://github.com/ccatterina/plasmusic-toolbar>PlsaMusic Toolbar</a></sub>
 </p>
 
 <p align="center">
@@ -121,25 +110,6 @@ cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 
 由于使用了[脚本](scripts/build.mjs)自动添加版本号后缀，为 auto 时 Millennium 会重启 Steam 热重载棍母插件浪费时间
 
-# 项目结构
-
-```
-├── NEMusicOnSteam/
-│   ├── .docs/                     # 项目文档与预览素材
-│   ├── backend/                   # 后端 (Lua + Python)
-│   │   └── ...   # 等确定下来再写
-│   ├── frontend/                  # 前端 (TypeScript/React)
-│   │   └── ...   # 等确定下来再写
-│   ├── .gitignore                 # Git 忽略配置
-│   ├── .luarc.json                # Lua 语言服务器配置
-│   ├── LICENSE                    # 开源许可证 (GPLv3)
-│   ├── README.md                  # 项目说明与使用指南
-│   ├── millennium.toml            # Millennium 插件配置文件
-│   ├── package-lock.json          # 依赖版本锁定文件
-│   ├── package.json               # 项目依赖与脚本配置
-│   └── tsconfig.json              # TypeScript 编译配置
-```
-
 # 已知限制
 
 - 插件创建 BrowserView 时关了 `bOnlyAllowTrustedPopups`，否则 Steam 打开网易云等第三方网站会弹允许非信任弹窗
@@ -149,6 +119,15 @@ cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 - mpv 后端依赖本机安装 `mpv`，启动时会避开 Steam Runtime 的动态库环境；目前由网易云网页提供歌曲地址和播放列表，网页登录失效或网易云改版时，mpv 也无法继续解析新歌曲
 - 后台播放依赖 Steam 的通话功能，会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`函数。如果你正在通话时暂停播放音乐可能导致通话出问题
 - 检测「Steam 有没有打开自己的网页」靠的是网页容器的类名，Steam 大更新后类名会变，判断可能失效。失效时 Steam 的网页会盖住播放器，手动点「收起」一样能看
+
+# 项目声明
+
+- 不确保能一直使用，可能因为Steam更新、网易云音乐Web版下架、某个功能停用等不可预因素停止更新某个功能
+- 非任何官方插件! 本项目与网易、Valve 都没关系。我要有关系我还在这写这个sb项目早躺平了
+- 登录态在 Steam 自带的浏览器里，和系统其他浏览器不共享
+- 不会窃取任何数据，程序就开源在这了，不放心就自己构建插件
+- 不承担封号风险: 如果被封号建议去测丁磊老冯
+- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的（声明的声明：我虽然用Arch + rust但我不是那种xnnLGBT，我只是爱好者别给我扣帽子）
 
 # 使用/参考的项目
 
