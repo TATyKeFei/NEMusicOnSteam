@@ -9,6 +9,7 @@ import { commandScript } from "../mpris/mpris-player.ts";
 import { releasePlayerSession } from "./player-target.ts";
 import { tryEvaluateInPlayer } from "./player-target.ts";
 import { RecognitionBridge } from "../recognition/recognition.ts";
+import { FullscreenButtonBridge } from "../fullscreen/fullscreen.ts";
 import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
 import { TogetherBridge, type TogetherSnapshot } from "../together/together.ts";
 import type { IdentityVariant } from "../together/identity-player.ts";
@@ -70,6 +71,7 @@ export class PlayerController {
     commandWeb: async command => Boolean(await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true })),
   });
   private readonly recognition = new RecognitionBridge();
+  private readonly fullscreenButton = new FullscreenButtonBridge();
   private readonly quality = new QualityBridge();
   private readonly together = new TogetherBridge();
   private readonly download = new DownloadBridge(() => ({
@@ -92,6 +94,7 @@ export class PlayerController {
   private booted = false;
   private pendingOpen = false;
   private loaded = false;
+  private desktopFullscreen = false;
   private throttleForced = false;
   private throttlingSupported: boolean | null = null;
   private lastBounds: Bounds | null = null;
@@ -233,6 +236,7 @@ export class PlayerController {
   }
 
   close(): string {
+    if (this.desktopFullscreen) this.setDesktopFullscreen(false);
     this.pendingOpen = false;
     this.mode = "closed";
     this.status = "已关闭";
@@ -286,6 +290,7 @@ export class PlayerController {
       if (this.mode !== "closed" && popup != null && (this.view == null || this.owner !== popup.window)) {
         this.ensureView(popup.window, popup);
       }
+      this.fullscreenButton.refresh(this.setDesktopFullscreen);
       this.syncView(false, this.render());
       if (popup != null) this.syncSteamPage(steamPageVisible(popup.window.document, this.steamPageSelectors));
     } catch (error) {
@@ -397,6 +402,7 @@ export class PlayerController {
     this.mpris.setEnabled(true);
     this.applyPlaybackBackend();
     this.recognition.setEnabled(true);
+    this.fullscreenButton.setEnabled(true);
     this.quality.setEnabled(true);
     this.together.setEnabled(true);
     this.download.setEnabled(true);
@@ -456,6 +462,7 @@ export class PlayerController {
     this.mpris.setEnabled(false);
     this.stopExternalPlayback();
     this.recognition.setEnabled(false);
+    this.fullscreenButton.setEnabled(false);
     this.quality.setEnabled(false);
     this.together.setEnabled(false);
     this.download.setEnabled(false);
@@ -479,6 +486,7 @@ export class PlayerController {
       mode: this.mode,
       status: this.status,
       keepAlive: this.settings.keepAliveWhenCollapsed,
+      fullscreen: this.mode === "expanded" && this.desktopFullscreen,
     });
     if (bounds != null) this.applyBounds(bounds, false);
     return bounds;
@@ -560,6 +568,26 @@ export class PlayerController {
     }
   }
 
+  /** 按钮在网易云子页面中，真正切桌面全屏只能由 Steam 主窗口执行。 */
+  private setDesktopFullscreen = (active: boolean): void => {
+    const client = this.owner?.SteamClient ?? sharedSteamClient();
+    const toggle = client?.Window?.ToggleFullScreen;
+    if (typeof toggle !== "function") {
+      this.status = "这版 Steam 不支持桌面全屏";
+      this.desktopFullscreen = active;
+      this.syncView(true, this.render());
+      return;
+    }
+    try {
+      this.desktopFullscreen = active;
+      toggle.call(client.Window, this.desktopFullscreen);
+      this.syncView(true, this.render());
+    } catch (error) {
+      this.desktopFullscreen = false;
+      this.status = `切换桌面全屏失败：${errorText(error)}`;
+    }
+  }
+
   private refreshThrottle(): void {
     if (!this.settings.disableBackgroundThrottling) {
       this.forceThrottle(false);
@@ -591,6 +619,7 @@ export class PlayerController {
     this.view = null;
     this.mpris.setEnabled(false);
     this.recognition.setEnabled(false);
+    this.fullscreenButton.setEnabled(false);
     this.quality.setEnabled(false);
     this.together.setEnabled(false);
     this.download.setEnabled(false);

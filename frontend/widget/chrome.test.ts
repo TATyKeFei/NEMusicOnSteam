@@ -141,8 +141,9 @@ function chromeFixture() {
     chrome,
     counts,
     toolbarChanges: () => toolbarChanges,
-    close: () => chrome.render({ mode: "closed", status: "", keepAlive: true }),
-    open: () => chrome.render({ mode: "expanded", status: "", keepAlive: true }),
+    close: () => chrome.render({ mode: "closed", status: "", keepAlive: true, fullscreen: false }),
+    open: () => chrome.render({ mode: "expanded", status: "", keepAlive: true, fullscreen: false }),
+    fullscreen: () => chrome.render({ mode: "expanded", status: "", keepAlive: true, fullscreen: true }),
     slot: () => (body.children[0] as FakeElement).children[1],
     bar: () => (body.children[0] as FakeElement).children[2],
   };
@@ -185,6 +186,12 @@ describe("Player chrome layout cost", () => {
     assert.equal(player.toolbarChanges(), 1);
     player.open();
     assert.equal(player.bar().style.display, "flex");
+  });
+
+  it("uses the whole Steam client area in web fullscreen", () => {
+    const player = chromeFixture();
+    const bounds = player.fullscreen();
+    assert.deepEqual(bounds, { x: 0, y: 0, width: 1000, height: 600 });
   });
 
   it("closes the command bar when the window goes away instead of leaving it stuck open", () => {

@@ -21,6 +21,7 @@ export type ChromeModel = {
   mode: PlayerMode;
   status: string;
   keepAlive: boolean;
+  fullscreen: boolean;
 };
 
 function buttonStyle(button: HTMLButtonElement): void {
@@ -202,7 +203,7 @@ export class PlayerChrome {
       this.headerNav = nav;
       this.headerHeight = null;
     }
-    const header = headerHeightFromNav(nav?.getBoundingClientRect().bottom ?? null, this.headerFallback(doc));
+    const header = model.fullscreen ? 0 : headerHeightFromNav(nav?.getBoundingClientRect().bottom ?? null, this.headerFallback(doc));
     const pageBox: Bounds = { x: 0, y: header, width, height: Math.max(1, height - header) };
     if (expanded) {
       place(page, pageBox, "block");

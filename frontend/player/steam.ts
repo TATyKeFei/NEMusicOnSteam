@@ -22,6 +22,9 @@ export type BrowserViewCreateOptions = {
 };
 
 export type SteamClient = {
+  Window?: {
+    ToggleFullScreen?: (fullscreen: boolean) => void;
+  };
   Browser?: {
     GetBrowserID?: () => number;
     NotifyUserActivation?: () => void;
