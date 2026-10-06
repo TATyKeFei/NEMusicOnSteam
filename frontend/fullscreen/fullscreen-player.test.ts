@@ -14,7 +14,7 @@ class Element {
   parentElement: Element | null = null;
   nextSibling: Element | null = null;
   isConnected = false;
-  style = { cssText: "" };
+  style: { cssText: string; display?: string } = { cssText: "" };
   readonly children: Element[] = [];
   private readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, ((event: { preventDefault(): void; stopPropagation(): void }) => void)[]>();
@@ -42,6 +42,10 @@ class Element {
     this.children.push(child);
   }
   remove() { this.isConnected = false; }
+  contains(node: Element) {
+    if (node === this) return true;
+    return this.children.some(child => child.contains(node));
+  }
 }
 
 function setup() {
@@ -55,12 +59,14 @@ function setup() {
   parent.children.push(search);
   const documentListeners = new Map<string, ((event: { key?: string; preventDefault(): void; stopPropagation(): void }) => void)[]>();
   const body = new Element({ top: 0, left: 0, right: 1000, bottom: 600, width: 1000, height: 600 });
+  let topAtSearch: Element | null = search;
   const context = {
     window: { innerWidth: 1000, addEventListener() {} } as Record<string, unknown>,
     document: {
       documentElement: {},
       body,
       querySelectorAll: () => [unrelated, search],
+      elementFromPoint: () => topAtSearch,
       createElement: () => new Element({ top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),
       addEventListener: (type: string, listener: (event: { key?: string; preventDefault(): void; stopPropagation(): void }) => void) => {
         documentListeners.set(type, [...(documentListeners.get(type) ?? []), listener]);
@@ -71,7 +77,17 @@ function setup() {
     clearTimeout() {},
   };
   const installed = runInNewContext(fullscreenButtonScript(), context);
-  return { context, body, toolbar, parent, search, unrelated, documentListeners, installed };
+  return {
+    context,
+    body,
+    toolbar,
+    parent,
+    search,
+    unrelated,
+    documentListeners,
+    installed,
+    coverSearch: (element: Element | null) => { topAtSearch = element; },
+  };
 }
 
 describe("全屏按钮", () => {
@@ -83,10 +99,22 @@ describe("全屏按钮", () => {
     assert.equal(body.children.length, 1);
     assert.equal(body.children[0].getAttribute("data-nemusic-fullscreen-button"), "1");
     assert.match(body.children[0].style.cssText, /position:fixed/);
+    assert.match(body.children[0].style.cssText, /z-index:2147483645/);
     assert.match(body.children[0].style.cssText, /pointer-events:auto/);
     assert.equal(unrelated.parentElement, null);
     assert.equal(runInNewContext(fullscreenButtonUpdateScript(), context), true);
     assert.equal(body.children.length, 1);
+  });
+
+  it("被网页自己的弹窗覆盖时隐藏，回到播放器页面后恢复", () => {
+    const { context, body, search, coverSearch } = setup();
+    const overlay = new Element({ top: 0, left: 0, right: 1000, bottom: 600, width: 1000, height: 600 });
+    coverSearch(overlay);
+    assert.equal(runInNewContext(fullscreenButtonUpdateScript(), context), true);
+    assert.equal(body.children[0].style.display, "none");
+    coverSearch(search);
+    assert.equal(runInNewContext(fullscreenButtonUpdateScript(), context), true);
+    assert.equal(body.children[0].style.display, "flex");
   });
 
   it("点击和 Escape 各生成一次桌面全屏请求", () => {

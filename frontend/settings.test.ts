@@ -1,16 +1,24 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { clampLauncher, readSettings, sanitizeSettings, SETTINGS_KEY, writeSettings } from "./settings.ts";
+import { clampLauncher, readSettings, sanitizeSettings, SETTINGS_KEY, uiScaleOr, writeSettings } from "./settings.ts";
 
 describe("settings", () => {
   it("drops garbage and keeps defaults", () => {
     const settings = sanitizeSettings({ openOnStart: "yes", launcher: { left: "12" } });
     assert.equal(settings.openOnStart, false);
     assert.equal(settings.playbackBackend, "web");
+    assert.equal(settings.uiScale, 1);
     assert.equal(settings.keepAliveWhenCollapsed, true);
     assert.deepEqual(settings.launcher, { left: 16, bottom: 16 });
     assert.equal(settings.downloadDirectory, "");
     assert.equal(settings.downloadQuality, 320);
+  });
+
+  it("keeps UI scale within the supported range", () => {
+    assert.equal(uiScaleOr(1.25, 1), 1.25);
+    assert.equal(uiScaleOr(9, 1), 1.5);
+    assert.equal(uiScaleOr(0.1, 1), 0.8);
+    assert.equal(uiScaleOr("125%", 1), 1);
   });
 
   it("keeps a download directory and quality but rejects unsupported levels", () => {

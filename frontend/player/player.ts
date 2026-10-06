@@ -8,6 +8,7 @@ import { MpvBridge } from "../mpris/mpv.ts";
 import { commandScript } from "../mpris/mpris-player.ts";
 import { releasePlayerSession } from "./player-target.ts";
 import { tryEvaluateInPlayer } from "./player-target.ts";
+import { uiScaleScript } from "./ui-scale.ts";
 import { RecognitionBridge } from "../recognition/recognition.ts";
 import { FullscreenButtonBridge } from "../fullscreen/fullscreen.ts";
 import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
@@ -161,6 +162,7 @@ export class PlayerController {
     this.settings = { ...this.settings, ...patch, launcher: patch.launcher ?? this.settings.launcher };
     writeSettings(browserStorage(), this.settings);
     if (patch.playbackBackend != null) this.applyPlaybackBackend();
+    if (patch.uiScale != null) this.applyUiScale();
     this.syncView(true, this.render());
     return this.snapshot();
   }
@@ -406,6 +408,7 @@ export class PlayerController {
     this.quality.setEnabled(true);
     this.together.setEnabled(true);
     this.download.setEnabled(true);
+    this.applyUiScale();
     this.client = client;
     this.parentId = id;
     this.owner = win;
@@ -443,6 +446,7 @@ export class PlayerController {
     if (this.loaded) return;
     if (typeof url === "string" && url !== "" && !isPlayerDocument(url)) return;
     this.loaded = true;
+    this.applyUiScale();
     this.status = "网页播放器已加载。登录只保存在 Steam 里";
     this.render();
   };
@@ -499,6 +503,12 @@ export class PlayerController {
       return;
     }
     this.stopExternalPlayback();
+  }
+
+  private applyUiScale(): void {
+    void tryEvaluateInPlayer(uiScaleScript(this.settings.uiScale), { awaitPromise: true }).catch(error => {
+      console.warn("[NEMusic] UI scale", error);
+    });
   }
 
   /** 播放器没了就得把音频还给页面，并让 MPRIS 回到直接读页面状态。 */

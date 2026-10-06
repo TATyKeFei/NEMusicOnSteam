@@ -9,11 +9,14 @@ export class FullscreenButtonBridge {
   private installed = false;
   private request = 0;
   private onRequest: ((active: boolean) => void) | null = null;
+  private stateTimer = 0;
 
   setEnabled(enabled: boolean): void {
     if (!enabled) {
       window.clearInterval(this.timer);
+      window.clearInterval(this.stateTimer);
       this.timer = 0;
+      this.stateTimer = 0;
       this.busy = false;
       this.stateBusy = false;
       this.installed = false;
@@ -23,6 +26,9 @@ export class FullscreenButtonBridge {
     }
     if (this.timer) return;
     this.timer = window.setInterval((): void => { void this.install(); }, 2000);
+    this.stateTimer = window.setInterval((): void => {
+      if (this.onRequest) this.refresh(this.onRequest);
+    }, 120);
     void this.install();
   }
 

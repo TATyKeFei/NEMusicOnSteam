@@ -19,6 +19,15 @@ const PLAYBACK_BACKEND_OPTIONS: { data: PlaybackBackend; label: string }[] = [
   { data: "mpv", label: "mpv（外部音频）" },
 ];
 
+const UI_SCALE_OPTIONS = [
+  { data: 0.8, label: "80%" },
+  { data: 0.9, label: "90%" },
+  { data: 1, label: "100%（默认）" },
+  { data: 1.1, label: "110%" },
+  { data: 1.25, label: "125%" },
+  { data: 1.5, label: "150%" },
+];
+
 function NoteIcon() {
   return (
     <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
@@ -158,6 +167,17 @@ function SettingsContent() {
           rgOptions={PLAYBACK_BACKEND_OPTIONS}
           selectedOption={settings.playbackBackend}
           onChange={option => setSnapshot(player.updateSettings({ playbackBackend: option.data }))}
+        />
+      </Field>
+      <Field
+        label="网易云界面缩放"
+        description="只缩放内嵌的网易云页面，修改后立即生效"
+        bottomSeparator="standard"
+      >
+        <Dropdown
+          rgOptions={UI_SCALE_OPTIONS}
+          selectedOption={settings.uiScale}
+          onChange={option => setSnapshot(player.updateSettings({ uiScale: Number(option.data) }))}
         />
       </Field>
       <Field

@@ -1,5 +1,5 @@
 /** 注入网易云网页搜索框右侧的桌面全屏按钮。 */
-const FULLSCREEN_BUTTON_API_VERSION = 3;
+const FULLSCREEN_BUTTON_API_VERSION = 6;
 // 图标来源：assets/icon/full_sceen.svg；内联后不依赖页面能否读取插件资源。
 const FULLSCREEN_ICON = '<svg width="18" height="18" viewBox="0 0 1024 1024" aria-hidden="true" fill="currentColor"><path d="M460.8 940.8h-320l262.4-262.4c12.8-12.8 12.8-38.4 0-51.2-12.8-19.2-38.4-19.2-57.6 0l-262.4 262.4v-345.6c0-19.2-19.2-38.4-38.4-38.4s-38.4 19.2-38.4 38.4v364.8c0 51.2 38.4 115.2 96 115.2h358.4c19.2 0 38.4-19.2 38.4-38.4 0-25.6-19.2-44.8-38.4-44.8zM940.8 6.4h-377.6c-19.2 0-38.4 19.2-38.4 38.4s19.2 38.4 38.4 38.4h320l-268.8 262.4c-12.8 12.8-12.8 38.4 0 57.6 19.2 12.8 44.8 12.8 57.6 0l262.4-262.4v320c0 19.2 19.2 38.4 38.4 38.4s38.4-19.2 38.4-38.4v-352c6.4-64-25.6-102.4-70.4-102.4z"/></svg>';
 
@@ -19,6 +19,32 @@ export function fullscreenButtonScript(): string {
     try { window[key]?.destroy?.(); } catch (error) {}
     const api = { version, active: false, request: 0, button: null, anchor: null, observer: null, timer: 0 };
     const visible = rect => rect && rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < 180;
+    // 按钮本身在 body 里，不能仅靠较低的 z-index 猜测遮罩层会盖住它。
+    // 直接检查搜索框在屏幕上是否仍是最上面的可交互区域：搜索页、歌词页可以继续用，
+    // 但登录框、菜单、抽屉等覆盖界面一出现就把按钮收起来。
+    const exposed = anchor => {
+      if (typeof document.elementFromPoint !== 'function') return true;
+      const rect = anchor?.getBoundingClientRect?.();
+      if (!visible(rect)) return false;
+      const owns = node => {
+        let current = node;
+        for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+          if (current === anchor) return true;
+        }
+        current = anchor;
+        for (let depth = 0; current && depth < 4; depth += 1, current = current.parentElement) {
+          if (current === node) return true;
+        }
+        return false;
+      };
+      const y = Math.round(rect.top + rect.height / 2);
+      const xs = [
+        Math.round(rect.left + Math.min(16, rect.width / 3)),
+        Math.round(rect.left + rect.width / 2),
+        Math.round(rect.right - Math.min(16, rect.width / 3)),
+      ];
+      return xs.some(x => owns(document.elementFromPoint(x, y)));
+    };
     const sync = () => {
       if (!api.button) return;
       api.button.title = api.active ? '退出桌面全屏' : '桌面全屏显示网易云';
@@ -58,13 +84,29 @@ export function fullscreenButtonScript(): string {
       const size = Math.max(28, Math.min(42, Math.round(rect.height || 34)));
       button.type = 'button';
       button.setAttribute('data-nemusic-fullscreen-button', '1');
-      button.style.cssText = 'position:fixed;z-index:2147483645;display:flex;align-items:center;justify-content:center;width:' + size + 'px;height:' + size + 'px;margin:0;padding:0;border:0;border-radius:8px;background:transparent;color:inherit;cursor:pointer;pointer-events:auto;';
-      button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); toggle(); });
+      // 网易云的顶栏有自己的堆叠上下文；层级太低时图标看得到，却被那层透明容器吃掉点击。
+      // 覆盖界面是否展示由 exposed() 判断，因此这里可以确保按钮本身始终接得到指针事件。
+      button.style.cssText = 'position:fixed;z-index:2147483645;display:flex;align-items:center;justify-content:center;width:' + size + 'px;height:' + size + 'px;margin:0;padding:0;border:0;border-radius:8px;background:transparent;color:inherit;cursor:pointer;pointer-events:auto;user-select:none;touch-action:manipulation;-webkit-app-region:no-drag;';
+      let pointerHandled = false;
+      const activate = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation?.();
+        toggle();
+      };
+      button.addEventListener('pointerdown', event => {
+        pointerHandled = true;
+        activate(event);
+        setTimeout(() => { pointerHandled = false; }, 500);
+      });
+      button.addEventListener('mousedown', event => { if (!pointerHandled) activate(event); });
+      button.addEventListener('click', event => { if (!pointerHandled) activate(event); });
       return button;
     };
     const position = () => {
       const button = api.button, anchor = api.anchor;
       if (!button || !anchor) return;
+      if (document.hidden || !exposed(anchor)) { button.style.display = 'none'; return; }
       const rect = anchor.getBoundingClientRect?.();
       if (!visible(rect)) { button.style.display = 'none'; return; }
       const size = Math.max(28, Math.min(42, Math.round(rect.height || 34)));
@@ -94,6 +136,7 @@ export function fullscreenButtonScript(): string {
     const schedule = () => { clearTimeout(api.timer); api.timer = setTimeout(() => api.ensure(), 50); };
     api.destroy = () => { clearTimeout(api.timer); api.observer?.disconnect?.(); api.button?.remove?.(); api.button = null; api.anchor = null; };
     document.addEventListener('keydown', event => { if (event.key === 'Escape' && api.active) { event.preventDefault(); event.stopPropagation(); api.active = false; api.request += 1; sync(); } }, true);
+    document.addEventListener('visibilitychange', schedule);
     api.observer = new MutationObserver(schedule);
     api.observer.observe(document.documentElement, { childList: true, subtree: true });
     window.addEventListener('resize', schedule);

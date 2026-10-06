@@ -4,9 +4,12 @@ export type LauncherPosition = { left: number; bottom: number } | { left: number
 
 export type NotificationMode = "system" | "steam" | "none";
 export type PlaybackBackend = "web" | "mpv";
+export const UI_SCALE_MIN = 0.8;
+export const UI_SCALE_MAX = 1.5;
 
 export type PlayerSettings = {
   playbackBackend: PlaybackBackend;
+  uiScale: number;
   openOnStart: boolean;
   keepAliveWhenCollapsed: boolean;
   disableBackgroundThrottling: boolean;
@@ -22,6 +25,7 @@ export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
 
 export const defaultSettings: PlayerSettings = {
   playbackBackend: "web",
+  uiScale: 1,
   openOnStart: false,
   keepAliveWhenCollapsed: true,
   disableBackgroundThrottling: true,
@@ -54,6 +58,12 @@ function playbackBackendOr(value: unknown, fallback: PlaybackBackend): PlaybackB
   return value === "web" || value === "mpv" ? value : fallback;
 }
 
+export function uiScaleOr(value: unknown, fallback: number): number {
+  if (!finiteNumber(value)) return fallback;
+  const clamped = Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, value));
+  return Math.round(clamped * 100) / 100;
+}
+
 function templateOr(value: unknown, fallback: string): string {
   if (typeof value !== "string") return fallback;
   const cleaned = value.replace(/[\x00-\x1f\x7f]+/g, " ").trim().slice(0, 200);
@@ -74,6 +84,7 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
   const notificationMode = notificationModeOr(record.notificationMode, defaultSettings.notificationMode);
   return {
     playbackBackend: playbackBackendOr(record.playbackBackend, defaultSettings.playbackBackend),
+    uiScale: uiScaleOr(record.uiScale, defaultSettings.uiScale),
     openOnStart: booleanOr(record.openOnStart, defaultSettings.openOnStart),
     keepAliveWhenCollapsed: booleanOr(record.keepAliveWhenCollapsed, defaultSettings.keepAliveWhenCollapsed),
     disableBackgroundThrottling: booleanOr(record.disableBackgroundThrottling, defaultSettings.disableBackgroundThrottling),
