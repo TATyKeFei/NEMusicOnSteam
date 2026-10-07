@@ -127,11 +127,13 @@ describe("全屏按钮", () => {
     assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: false, request: 2 });
   });
 
-  it("使用 assets/icon/full_sceen.svg 的路径", () => {
+  it("按全屏状态切换两套图标", () => {
     const { body } = setup();
-    const asset = readFileSync(new URL("../../assets/icon/full_sceen.svg", import.meta.url), "utf8");
-    const expected = [...asset.matchAll(/ d="([^"]+)"/g)].map(match => match[1]);
-    const actual = [...body.children[0].innerHTML.matchAll(/ d="([^"]+)"/g)].map(match => match[1]);
-    assert.deepEqual(actual, expected);
+    const paths = (name: string) => [...readFileSync(new URL(`../../assets/icon/${name}`, import.meta.url), "utf8").matchAll(/ d="([^"]+)"/g)]
+      .map(match => match[1]);
+    const actual = () => [...body.children[0].innerHTML.matchAll(/ d="([^"]+)"/g)].map(match => match[1]);
+    assert.deepEqual(actual(), paths("full_sceen.svg"));
+    body.children[0].dispatch("click");
+    assert.deepEqual(actual(), paths("exit_full_sceen.svg"));
   });
 });
