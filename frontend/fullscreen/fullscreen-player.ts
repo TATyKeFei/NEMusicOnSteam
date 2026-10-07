@@ -1,5 +1,5 @@
 /** 注入网易云网页搜索框右侧的桌面全屏按钮。 */
-const FULLSCREEN_BUTTON_API_VERSION = 7;
+const FULLSCREEN_BUTTON_API_VERSION = 8;
 // 图标来源：assets/icon/full_sceen.svg；内联后不依赖页面能否读取插件资源。
 const FULLSCREEN_ICON = '<svg width="18" height="18" viewBox="0 0 1024 1024" aria-hidden="true" fill="currentColor"><path d="M460.8 940.8h-320l262.4-262.4c12.8-12.8 12.8-38.4 0-51.2-12.8-19.2-38.4-19.2-57.6 0l-262.4 262.4v-345.6c0-19.2-19.2-38.4-38.4-38.4s-38.4 19.2-38.4 38.4v364.8c0 51.2 38.4 115.2 96 115.2h358.4c19.2 0 38.4-19.2 38.4-38.4 0-25.6-19.2-44.8-38.4-44.8zM940.8 6.4h-377.6c-19.2 0-38.4 19.2-38.4 38.4s19.2 38.4 38.4 38.4h320l-268.8 262.4c-12.8 12.8-12.8 38.4 0 57.6 19.2 12.8 44.8 12.8 57.6 0l262.4-262.4v320c0 19.2 19.2 38.4 38.4 38.4s38.4-19.2 38.4-38.4v-352c6.4-64-25.6-102.4-70.4-102.4z"/></svg>';
 // 图标来源：assets/icon/exit_full_sceen.svg；进入桌面全屏后用于退出。
@@ -10,7 +10,7 @@ export function fullscreenButtonUpdateScript(): string {
 }
 
 export function fullscreenButtonStateScript(): string {
-  return `(() => { const api = window.__nemusicFullscreenButton; return api ? { active: Boolean(api.active), request: Number(api.request || 0) } : null; })()`;
+  return `(() => { const api = window.__nemusicFullscreenButton; return api ? { active: Boolean(api.active), fillWindow: Boolean(api.fillWindow), request: Number(api.request || 0) } : null; })()`;
 }
 
 export function fullscreenButtonScript(): string {
@@ -19,7 +19,7 @@ export function fullscreenButtonScript(): string {
     const version = ${FULLSCREEN_BUTTON_API_VERSION};
     if (window[key]?.version === version) { window[key].ensure(); return true; }
     try { window[key]?.destroy?.(); } catch (error) {}
-    const api = { version, active: false, request: 0, button: null, anchor: null, observer: null, timer: 0 };
+    const api = { version, active: false, fillWindow: false, request: 0, button: null, anchor: null, observer: null, timer: 0 };
     const visible = rect => rect && rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < 180;
     // 按钮本身在 body 里，不能仅靠较低的 z-index 猜测遮罩层会盖住它。
     // 直接检查搜索框在屏幕上是否仍是最上面的可交互区域：搜索页、歌词页可以继续用，
@@ -49,12 +49,14 @@ export function fullscreenButtonScript(): string {
     };
     const sync = () => {
       if (!api.button) return;
-      api.button.title = api.active ? '退出桌面全屏' : '桌面全屏显示网易云';
+      api.button.title = api.active
+        ? (api.fillWindow ? '退出窗口铺满' : '退出桌面全屏')
+        : '桌面全屏显示网易云（Shift+点击：铺满当前窗口）';
       api.button.setAttribute('aria-label', api.button.title);
       api.button.setAttribute('aria-pressed', api.active ? 'true' : 'false');
       api.button.innerHTML = api.active ? ${JSON.stringify(EXIT_FULLSCREEN_ICON)} : ${JSON.stringify(FULLSCREEN_ICON)};
     };
-    const toggle = () => { api.active = !api.active; api.request += 1; sync(); };
+    const toggle = fillWindow => { api.active = !api.active; api.fillWindow = api.active && fillWindow; api.request += 1; sync(); };
     const anchorFor = () => {
       const width = window.innerWidth || document.documentElement.clientWidth || 0;
       const candidates = [];
@@ -94,14 +96,19 @@ export function fullscreenButtonScript(): string {
         event.preventDefault();
         event.stopPropagation();
         event.stopImmediatePropagation?.();
-        toggle();
+        toggle(event.shiftKey === true);
       };
       button.addEventListener('pointerdown', event => {
         pointerHandled = true;
         activate(event);
         setTimeout(() => { pointerHandled = false; }, 500);
       });
-      button.addEventListener('mousedown', event => { if (!pointerHandled) activate(event); });
+      button.addEventListener('mousedown', event => {
+        if (pointerHandled) return;
+        pointerHandled = true;
+        activate(event);
+        setTimeout(() => { pointerHandled = false; }, 500);
+      });
       button.addEventListener('click', event => { if (!pointerHandled) activate(event); });
       return button;
     };
@@ -137,7 +144,7 @@ export function fullscreenButtonScript(): string {
     };
     const schedule = () => { clearTimeout(api.timer); api.timer = setTimeout(() => api.ensure(), 50); };
     api.destroy = () => { clearTimeout(api.timer); api.observer?.disconnect?.(); api.button?.remove?.(); api.button = null; api.anchor = null; };
-    document.addEventListener('keydown', event => { if (event.key === 'Escape' && api.active) { event.preventDefault(); event.stopPropagation(); api.active = false; api.request += 1; sync(); } }, true);
+    document.addEventListener('keydown', event => { if (event.key === 'Escape' && api.active) { event.preventDefault(); event.stopPropagation(); api.active = false; api.fillWindow = false; api.request += 1; sync(); } }, true);
     document.addEventListener('visibilitychange', schedule);
     api.observer = new MutationObserver(schedule);
     api.observer.observe(document.documentElement, { childList: true, subtree: true });

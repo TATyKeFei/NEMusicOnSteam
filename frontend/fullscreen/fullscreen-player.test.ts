@@ -30,8 +30,8 @@ class Element {
   addEventListener(type: string, listener: (event: { preventDefault(): void; stopPropagation(): void }) => void) {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
   }
-  dispatch(type: string) {
-    for (const listener of this.listeners.get(type) ?? []) listener({ preventDefault() {}, stopPropagation() {} });
+  dispatch(type: string, event: { shiftKey?: boolean } = {}) {
+    for (const listener of this.listeners.get(type) ?? []) listener({ ...event, preventDefault() {}, stopPropagation() {} });
   }
   getBoundingClientRect() { return this.rect; }
   append(child: Element) { this.insertBefore(child, null); }
@@ -120,11 +120,45 @@ describe("全屏按钮", () => {
   it("点击和 Escape 各生成一次桌面全屏请求", () => {
     const { context, body, documentListeners } = setup();
     const button = body.children[0];
-    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: false, request: 0 });
+    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: false, fillWindow: false, request: 0 });
     button.dispatch("click");
-    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: true, request: 1 });
+    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: true, fillWindow: false, request: 1 });
     for (const listener of documentListeners.get("keydown") ?? []) listener({ key: "Escape", preventDefault() {}, stopPropagation() {} });
-    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: false, request: 2 });
+    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: false, fillWindow: false, request: 2 });
+  });
+
+  it("按住 Shift 点击时只请求铺满当前窗口", () => {
+    const { context, body } = setup();
+    const button = body.children[0];
+    button.dispatch("click", { shiftKey: true });
+    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: true, fillWindow: true, request: 1 });
+    assert.match(button.title, /退出窗口铺满/);
+    assert.equal(button.getAttribute("aria-pressed"), "true");
+    button.dispatch("click");
+    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: false, fillWindow: false, request: 2 });
+  });
+
+  it("Escape 退出窗口铺满并清理模式标记", () => {
+    const { context, body, documentListeners } = setup();
+    body.children[0].dispatch("click", { shiftKey: true });
+    for (const listener of documentListeners.get("keydown") ?? []) listener({ key: "Escape", preventDefault() {}, stopPropagation() {} });
+    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: false, fillWindow: false, request: 2 });
+  });
+
+  it("Shift 鼠标事件序列只生成一个窗口铺满请求", () => {
+    const { context, body } = setup();
+    const button = body.children[0];
+    button.dispatch("pointerdown", { shiftKey: true });
+    button.dispatch("mousedown", { shiftKey: true });
+    button.dispatch("click", { shiftKey: true });
+    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: true, fillWindow: true, request: 1 });
+  });
+
+  it("没有 pointerdown 时 mousedown 和 click 也只切换一次", () => {
+    const { context, body } = setup();
+    body.children[0].dispatch("mousedown", { shiftKey: true });
+    body.children[0].dispatch("click", { shiftKey: true });
+    assert.deepEqual(JSON.parse(JSON.stringify(runInNewContext(fullscreenButtonStateScript(), context))), { active: true, fillWindow: true, request: 1 });
   });
 
   it("按全屏状态切换两套图标", () => {

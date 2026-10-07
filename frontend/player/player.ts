@@ -96,6 +96,7 @@ export class PlayerController {
   private pendingOpen = false;
   private loaded = false;
   private desktopFullscreen = false;
+  private windowFullscreen = false;
   private throttleForced = false;
   private throttlingSupported: boolean | null = null;
   private lastBounds: Bounds | null = null;
@@ -125,6 +126,7 @@ export class PlayerController {
   }
 
   shutdown(): void {
+    if (this.desktopFullscreen || this.windowFullscreen) this.setFullscreen(false);
     window.clearInterval(this.timer);
     this.timer = 0;
     this.unbindWindow();
@@ -238,7 +240,7 @@ export class PlayerController {
   }
 
   close(): string {
-    if (this.desktopFullscreen) this.setDesktopFullscreen(false);
+    if (this.desktopFullscreen || this.windowFullscreen) this.setFullscreen(false);
     this.pendingOpen = false;
     this.mode = "closed";
     this.status = "已关闭";
@@ -292,7 +294,7 @@ export class PlayerController {
       if (this.mode !== "closed" && popup != null && (this.view == null || this.owner !== popup.window)) {
         this.ensureView(popup.window, popup);
       }
-      this.fullscreenButton.refresh(this.setDesktopFullscreen);
+      this.fullscreenButton.refresh(this.setFullscreen);
       this.syncView(false, this.render());
       if (popup != null) this.syncSteamPage(steamPageVisible(popup.window.document, this.steamPageSelectors));
     } catch (error) {
@@ -463,6 +465,7 @@ export class PlayerController {
     if (this.destroying) return;
     this.unbindPopup();
     this.view = null;
+    if (this.desktopFullscreen || this.windowFullscreen) this.setFullscreen(false);
     this.mpris.setEnabled(false);
     this.stopExternalPlayback();
     this.recognition.setEnabled(false);
@@ -490,7 +493,7 @@ export class PlayerController {
       mode: this.mode,
       status: this.status,
       keepAlive: this.settings.keepAliveWhenCollapsed,
-      fullscreen: this.mode === "expanded" && this.desktopFullscreen,
+      fullscreen: this.mode === "expanded" && (this.desktopFullscreen || this.windowFullscreen),
     });
     if (bounds != null) this.applyBounds(bounds, false);
     return bounds;
@@ -578,22 +581,46 @@ export class PlayerController {
     }
   }
 
-  /** 按钮在网易云子页面中，真正切桌面全屏只能由 Steam 主窗口执行。 */
-  private setDesktopFullscreen = (active: boolean): void => {
+  /** 普通点击切桌面全屏；Shift+点击只让网易云铺满当前 Steam 窗口。 */
+  private setFullscreen = (active: boolean, fillWindow = false): void => {
     const client = this.owner?.SteamClient ?? sharedSteamClient();
     const toggle = client?.Window?.ToggleFullScreen;
+    if (!active) {
+      const wasDesktopFullscreen = this.desktopFullscreen;
+      this.desktopFullscreen = false;
+      this.windowFullscreen = false;
+      if (wasDesktopFullscreen && typeof toggle === "function") {
+        try {
+          toggle.call(client?.Window, false);
+        } catch (error) {
+          console.warn("[NEMusic] exit desktop fullscreen failed", error);
+        }
+      }
+      this.syncView(true, this.render());
+      return;
+    }
+    if (fillWindow) {
+      if (this.desktopFullscreen) this.setFullscreen(false);
+      this.desktopFullscreen = false;
+      this.windowFullscreen = true;
+      this.syncView(true, this.render());
+      return;
+    }
     if (typeof toggle !== "function") {
       this.status = "这版 Steam 不支持桌面全屏";
-      this.desktopFullscreen = active;
+      this.desktopFullscreen = false;
+      this.windowFullscreen = false;
       this.syncView(true, this.render());
       return;
     }
     try {
-      this.desktopFullscreen = active;
-      toggle.call(client.Window, this.desktopFullscreen);
+      this.windowFullscreen = false;
+      this.desktopFullscreen = true;
+      toggle.call(client.Window, true);
       this.syncView(true, this.render());
     } catch (error) {
       this.desktopFullscreen = false;
+      this.windowFullscreen = false;
       this.status = `切换桌面全屏失败：${errorText(error)}`;
     }
   }

@@ -271,8 +271,8 @@ export class DownloadBridge {
       this.menus = Math.max(this.menus, Number(result.menus) || 0);
       this.songs = Math.max(this.songs, Number(result.songs) || 0);
       const pending = Array.isArray(result.pending) ? result.pending : [];
-      if (pending.length === 0) return;
-      await this.download(pending[0]);
+      if (pending.length > 0) this.queue.push(...pending);
+      this.pump();
     } catch {
       /* the player page is not there yet, or is mid-navigation */
     }

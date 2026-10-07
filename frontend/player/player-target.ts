@@ -47,9 +47,10 @@ async function resolveSession(): Promise<PlayerSession | null> {
     return session;
   })();
   resolving = pending;
-  void pending.finally(() => {
+  const clearResolving = () => {
     if (resolving === pending) resolving = null;
-  });
+  };
+  void pending.then(clearResolving, clearResolving);
   return pending;
 }
 

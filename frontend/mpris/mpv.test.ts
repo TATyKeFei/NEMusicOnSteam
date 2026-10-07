@@ -13,10 +13,21 @@ const source = stripTypeScriptTypes(
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 type PageScripts = {
   mute: string;
   sync: (playing: boolean, allowPause: boolean) => string;
   unmute: (resume: boolean) => string;
+  controls: string;
 };
 
 type Payload = Record<string, unknown>;
@@ -56,18 +67,26 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
   const volumeCommands: number[] = [];
   const positionCommands: number[] = [];
   const order: string[] = [];
+  const requests: { url: string; signal?: AbortSignal }[] = [];
   let interval: () => void = () => {};
+  let endpointGate: Promise<void> | null = null;
+  let evaluationGate: { expression: string; promise: Promise<void> } | null = null;
+  let requestGate: { path: string; promise: Promise<void> } | null = null;
+  let commandGate: Promise<void> | null = null;
   let web: TrackState | null = options.web === undefined ? { ...webPlaying } : options.web;
   let mpv: Payload = { active: false, playbackStatus: "Stopped", ...(options.mpv ?? {}) };
 
   const evaluate = async (expression: string) => {
     evaluations.push(expression);
+    if (evaluationGate?.expression === expression) await evaluationGate.promise;
     if (isSnapshot(expression)) return web;
     if (expression === "download") return downloadTrack;
     if (expression.includes("splice")) return { actions: [] };
     return true;
   };
-  const fetch = async (url: string, init?: { body?: string }) => {
+  const fetch = async (url: string, init?: { body?: string; signal?: AbortSignal }) => {
+    requests.push({ url, signal: init?.signal });
+    if (requestGate && url.endsWith(requestGate.path)) await requestGate.promise;
     if (url.endsWith("/state")) return { ok: true, json: async () => mpv };
     if (url.endsWith("/load")) {
       loads.push(JSON.parse(init!.body!));
@@ -89,7 +108,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
   };
 
   const api = runInNewContext(
-    `${source}; ({ Bridge: MpvBridge, scripts: { mute: MPV_MUTE_SCRIPT, sync: mpvSyncScript, unmute: mpvUnmuteScript } })`,
+    `${source}; ({ Bridge: MpvBridge, scripts: { mute: MPV_MUTE_SCRIPT, sync: mpvSyncScript, unmute: mpvUnmuteScript, controls: MPV_CONTROL_INSTALL_SCRIPT } })`,
     {
       navigator: { platform: "Linux" },
       window: {
@@ -100,7 +119,11 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
         clearInterval() {},
       },
       console: { warn() {} },
-      ffi: () => async () => "http://localhost|test-token",
+      AbortController,
+      ffi: () => async () => {
+        await endpointGate;
+        return "http://localhost|test-token";
+      },
       SNAPSHOT_SCRIPT: "snapshot",
       downloadScript: () => "download",
       tryEvaluateInPlayer: evaluate,
@@ -113,6 +136,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
     commandWeb: async (command: { action: string }) => {
       webCommands.push(command.action);
       order.push(`web:${command.action}`);
+      await commandGate;
       return true;
     },
   });
@@ -127,7 +151,16 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
     volumeCommands,
     positionCommands,
     order,
+    requests,
     tick: () => interval(),
+    holdEndpoint: (promise: Promise<void> | null) => { endpointGate = promise; },
+    holdEvaluation: (expression: string, promise: Promise<void> | null) => {
+      evaluationGate = promise ? { expression, promise } : null;
+    },
+    holdRequest: (path: string, promise: Promise<void> | null) => {
+      requestGate = promise ? { path, promise } : null;
+    },
+    holdWebCommand: (promise: Promise<void> | null) => { commandGate = promise; },
     setWeb: (next: TrackState | null) => { web = next; },
     setMpv: (next: Payload) => { mpv = next; },
     lastSync: () => evaluations.filter(isSync).at(-1) ?? "",
@@ -139,6 +172,7 @@ type TestBridge = {
   setEnabled(enabled: boolean): void;
   command(command: { action: string; value?: number }): Promise<boolean>;
   snapshot(): TrackState;
+  getStatus(): string;
 };
 
 /** 网页里 Howler 的 html5 audio 是游离节点，DOM 里根本扫不到，所以桩要同时备着两条路。 */
@@ -153,12 +187,19 @@ function pageScripts(): PageScripts {
     tryEvaluateInPlayer: async () => true,
     fetch: async () => ({ ok: true, json: async () => ({}) }),
   };
-  return runInNewContext(`${source}; ({ mute: MPV_MUTE_SCRIPT, sync: mpvSyncScript, unmute: mpvUnmuteScript })`, stub) as PageScripts;
+  return runInNewContext(`${source}; ({ mute: MPV_MUTE_SCRIPT, sync: mpvSyncScript, unmute: mpvUnmuteScript, controls: MPV_CONTROL_INSTALL_SCRIPT })`, stub) as PageScripts;
 }
 
 const scripts = pageScripts();
 
 function page() {
+  class FakeControl {
+    id: string;
+    constructor(id: string) { this.id = id; }
+    closest() { return this; }
+  }
+  type ClickEvent = { target: FakeControl; preventDefault(): void; stopPropagation(): void };
+  const clickListeners = new Set<(event: ClickEvent) => void>();
   class FakeMedia {
     volume = 1;
     muted = false;
@@ -182,14 +223,34 @@ function page() {
   const context = createContext({
     console,
     HTMLMediaElement: FakeMedia,
+    Element: FakeControl,
     document: {
       querySelectorAll: (selector: string) => (selector === "audio, video" ? attached.slice() : []),
+      addEventListener(type: string, listener: (event: ClickEvent) => void) {
+        if (type === "click") clickListeners.add(listener);
+      },
+      removeEventListener(type: string, listener: (event: ClickEvent) => void) {
+        if (type === "click") clickListeners.delete(listener);
+      },
     },
   });
   return {
     context,
     attached,
     FakeMedia,
+    clickListenerCount: () => clickListeners.size,
+    click(id: string, nativeAction: () => void = () => {}) {
+      let prevented = false;
+      let stopped = false;
+      const event = {
+        target: new FakeControl(id),
+        preventDefault() { prevented = true; },
+        stopPropagation() { stopped = true; },
+      };
+      for (const listener of clickListeners) listener(event);
+      if (!prevented && !stopped) nativeAction();
+      return { prevented, stopped };
+    },
     run: (expression: string) => runInContext(expression, context),
     withHowler(howls: unknown[]) {
       Object.assign(context, { Howler: { _howls: howls, _html5AudioPool: [] } });
@@ -220,6 +281,41 @@ function fakeHowl(node: { paused: boolean }, ended = false) {
 }
 
 describe("MPV backend page scripts", () => {
+  it("restores native pause and track controls when switching back to web playback", () => {
+    const web = page();
+    const node = new web.FakeMedia();
+    node.paused = false;
+    web.run(scripts.controls);
+    assert.equal(web.click("btn_pc_minibar_play", () => node.pause()).prevented, true);
+    assert.equal(node.paused, false);
+    web.run(`globalThis.__NEMusicOnSteamMpvControls.allowAction = 'next';`);
+    web.run(scripts.unmute(true));
+    assert.equal(web.clickListenerCount(), 0);
+    assert.equal(web.run("globalThis.__NEMusicOnSteamMpvControls.actions.length"), 0);
+    assert.equal(web.run("globalThis.__NEMusicOnSteamMpvControls.allowAction"), "");
+    assert.deepEqual(web.click("btn_pc_minibar_play", () => node.pause()), { prevented: false, stopped: false });
+    assert.equal(node.paused, true);
+    for (const id of ["btn_pc_next", "btn_pc_previous"]) {
+      let nativeClicks = 0;
+      web.click(id, () => { nativeClicks++; });
+      assert.equal(nativeClicks, 1);
+    }
+  });
+
+  it("reinstalls just one mpv click listener when the backend is re-enabled", () => {
+    const web = page();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      web.run(scripts.controls);
+      web.run(scripts.controls);
+      assert.equal(web.clickListenerCount(), 1);
+      web.click("btn_pc_minibar_play");
+      assert.equal(web.run("globalThis.__NEMusicOnSteamMpvControls.actions.length"), 1);
+      web.run(scripts.unmute(false));
+      assert.equal(web.clickListenerCount(), 0);
+      assert.equal(web.run("globalThis.__NEMusicOnSteamMpvControls.actions.length"), 0);
+    }
+  });
+
   it("silences howler's detached audio without ever pausing it", () => {
     const web = page();
     const node = new web.FakeMedia();
@@ -301,6 +397,141 @@ describe("MPV backend page scripts", () => {
 });
 
 describe("MPV bridge tick", () => {
+  it("does not mute or load a resolved track after the backend is disabled", async () => {
+    const player = setup();
+    const pending = deferred();
+    player.holdEvaluation("download", pending.promise);
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.ok(player.evaluations.includes("download"));
+    player.bridge.setEnabled(false);
+    await flush();
+    const evaluationsAfterStop = player.evaluations.length;
+    pending.resolve();
+    await flush();
+    assert.equal(player.evaluations.length, evaluationsAfterStop);
+    assert.equal(player.loads.length, 0);
+    assert.deepEqual(player.requests.map(request => request.url), ["http://localhost/shutdown"]);
+    assert.equal(player.bridge.snapshot().active, false);
+  });
+
+  it("ignores a failed old tick after the backend is disabled", async () => {
+    const player = setup();
+    const pending = deferred();
+    player.holdEvaluation("download", pending.promise);
+    player.bridge.setEnabled(true);
+    await flush();
+    player.bridge.setEnabled(false);
+    await flush();
+    const status = player.bridge.getStatus();
+    pending.reject(new Error("old download failed"));
+    await flush();
+    assert.equal(player.bridge.getStatus(), status);
+    assert.equal(player.loads.length, 0);
+  });
+
+  it("does not reconnect when a pending endpoint resolves after disable", async () => {
+    const player = setup();
+    const pending = deferred();
+    player.holdEndpoint(pending.promise);
+    player.bridge.setEnabled(true);
+    await flush();
+    player.bridge.setEnabled(false);
+    await flush();
+    const evaluationsAfterStop = player.evaluations.length;
+    pending.resolve();
+    await flush();
+    assert.equal(player.evaluations.length, evaluationsAfterStop);
+    assert.equal(player.requests.length, 0);
+  });
+
+  it("aborts HTTP requests and ignores stale state responses on disable", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1" } });
+    const pending = deferred();
+    player.holdRequest("/state", pending.promise);
+    player.bridge.setEnabled(true);
+    await flush();
+    const request = player.requests.find(request => request.url.endsWith("/state"));
+    assert.ok(request);
+    player.bridge.setEnabled(false);
+    await flush();
+    const evaluationsAfterStop = player.evaluations.length;
+    pending.resolve();
+    await flush();
+    assert.equal(request.signal?.aborted, true);
+    assert.equal(player.bridge.snapshot().active, false);
+    assert.equal(player.evaluations.length, evaluationsAfterStop);
+  });
+
+  it("waits for old cleanup before muting a re-enabled backend", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1" } });
+    player.bridge.setEnabled(true);
+    await flush();
+    const pending = deferred();
+    const unmute = player.scripts.unmute(true);
+    player.holdEvaluation(unmute, pending.promise);
+    player.bridge.setEnabled(false);
+    await flush();
+    const evaluationsDuringCleanup = player.evaluations.length;
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.equal(player.evaluations.length, evaluationsDuringCleanup);
+    pending.resolve();
+    await flush();
+    assert.equal(player.loads.length, 2);
+    assert.equal(player.bridge.snapshot().active, true);
+  });
+
+  it("discards an old track resolution when disabled and immediately re-enabled", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t2" } });
+    const pending = deferred();
+    player.holdEvaluation("download", pending.promise);
+    player.bridge.setEnabled(true);
+    await flush();
+    player.bridge.setEnabled(false);
+    player.setWeb({ ...webPlaying, trackId: "t2" });
+    player.bridge.setEnabled(true);
+    await flush();
+    pending.resolve();
+    await flush();
+    assert.deepEqual(player.loads.map(load => load.trackId), ["t2"]);
+    assert.equal(player.bridge.snapshot().trackId, "t2");
+    assert.ok(player.requests.every(request => !request.url.startsWith("null")));
+  });
+
+  it("cancels a queued re-enable if disabled again during cleanup", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1" } });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.posts.length = 0;
+    const pending = deferred();
+    player.holdEvaluation(player.scripts.unmute(true), pending.promise);
+    player.bridge.setEnabled(false);
+    player.bridge.setEnabled(true);
+    player.bridge.setEnabled(false);
+    pending.resolve();
+    await flush();
+    assert.equal(player.loads.length, 1);
+    assert.deepEqual(player.posts, ["shutdown"]);
+    assert.equal(player.bridge.snapshot().active, false);
+  });
+
+  it("does not issue media commands after a pending web command is disabled", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1" } });
+    player.bridge.setEnabled(true);
+    await flush();
+    const pending = deferred();
+    player.holdWebCommand(pending.promise);
+    const command = player.bridge.command({ action: "volume", value: 0.6 });
+    await flush();
+    player.bridge.setEnabled(false);
+    await flush();
+    pending.resolve();
+    assert.equal(await command, false);
+    assert.deepEqual(player.volumeCommands, []);
+    assert.ok(player.requests.every(request => !request.url.startsWith("null")));
+  });
+
   it("silences the page before reading it and hands the track to mpv", async () => {
     const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1" } });
     player.bridge.setEnabled(true);

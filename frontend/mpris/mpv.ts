@@ -105,6 +105,15 @@ function mpvUnmuteScript(resume: boolean): string {
     const key = '__NEMusicOnSteamMpvMedia';
     const bridge = globalThis[key];
     if (bridge) bridge.active = false;
+    const controls = globalThis.__NEMusicOnSteamMpvControls;
+    if (controls) {
+      controls.active = false;
+      controls.allowAction = '';
+      controls.actions?.splice?.(0, controls.actions.length);
+      if (typeof controls.onClick === 'function') document.removeEventListener('click', controls.onClick, true);
+      controls.onClick = null;
+      controls.installed = false;
+    }
     let restored = 0;
     if (bridge && bridge.saved) {
       for (const entry of bridge.saved) {
@@ -169,9 +178,11 @@ const MPV_CONTROL_INSTALL_SCRIPT = `(() => {
   const key = '__NEMusicOnSteamMpvControls';
   const existing = globalThis[key];
   const bridge = existing || { actions: [] };
+  bridge.active = true;
   if (!bridge.installed) {
     bridge.installed = true;
-    document.addEventListener('click', event => {
+    bridge.onClick = event => {
+      if (!bridge.active) return;
       const target = event.target instanceof Element ? event.target.closest('#btn_pc_minibar_play, #btn_pc_next, #btn_pc_previous') : null;
       if (!target) return;
       const action = target.id === 'btn_pc_next' ? 'next' : target.id === 'btn_pc_previous' ? 'previous' : 'playpause';
@@ -182,7 +193,8 @@ const MPV_CONTROL_INSTALL_SCRIPT = `(() => {
       event.preventDefault();
       event.stopPropagation();
       bridge.actions.push(action);
-    }, true);
+    };
+    document.addEventListener('click', bridge.onClick, true);
   }
   // 音量不走 DOM 监听：滑块是 div[role=slider]，拖动时不派发 input/change；
   // tick 拿快照里的网页音量跟 mpv 对账（网页 store 才是音量的唯一来源）。
@@ -243,6 +255,9 @@ export class MpvBridge implements ExternalPlayback {
   private timer = 0;
   private busy = false;
   private enabled = false;
+  private generation = 0;
+  private requests: AbortController | null = null;
+  private stopping: Promise<void> | null = null;
   private endpoint: string | null = null;
   private token: string | null = null;
   private state: TrackState = { ...EMPTY_STATE };
@@ -268,6 +283,7 @@ export class MpvBridge implements ExternalPlayback {
 
   setEnabled(enabled: boolean): void {
     if (enabled === this.enabled) return;
+    const generation = ++this.generation;
     this.enabled = enabled;
     if (!enabled) {
       // 用户按停的意图要活到关后端这一刻：resume 得赶在清标志之前算出来，
@@ -278,7 +294,15 @@ export class MpvBridge implements ExternalPlayback {
       this.pendingAutoplay = 0;
       window.clearInterval(this.timer);
       this.timer = 0;
-      void this.stop(resume);
+      this.requests?.abort();
+      if (!this.stopping) {
+        const stopping = this.stop(resume);
+        this.stopping = stopping;
+        const clearStopping = () => {
+          if (this.stopping === stopping) this.stopping = null;
+        };
+        void stopping.then(clearStopping, clearStopping);
+      }
       return;
     }
     this.stopRequested = false;
@@ -288,8 +312,14 @@ export class MpvBridge implements ExternalPlayback {
       this.status = "仅 Linux 支持 mpv 后端";
       return;
     }
-    this.timer = window.setInterval((): void => void this.tick(), 500);
-    void this.tick();
+    const start = (): void => {
+      if (!this.enabled || generation !== this.generation) return;
+      this.requests = new AbortController();
+      this.timer = window.setInterval((): void => void this.tick(), 500);
+      void this.tick();
+    };
+    if (this.stopping) void this.stopping.then(start, start);
+    else start();
   }
 
   getStatus(): string {
@@ -301,11 +331,25 @@ export class MpvBridge implements ExternalPlayback {
   }
 
   async command(command: Command): Promise<boolean> {
+    const generation = this.generation;
+    if (!this.isCurrent(generation)) return false;
+    try {
+      return await this.executeCommand(command, generation);
+    } catch (error) {
+      if (!this.isCurrent(generation)) return false;
+      throw error;
+    }
+  }
+
+  private async executeCommand(command: Command, generation: number): Promise<boolean> {
     if (command.action === "next" || command.action === "previous") {
       const autoplay = this.state.playbackStatus === "Playing" || this.pendingAutoplay > 0;
       await tryEvaluateInPlayer(allowWebActionScript(command.action));
+      if (!this.isCurrent(generation)) return false;
       const handled = await this.options.commandWeb(command);
+      if (!this.isCurrent(generation)) return false;
       await tryEvaluateInPlayer(CLEAR_WEB_ACTION_SCRIPT);
+      if (!this.isCurrent(generation)) return false;
       if (handled) {
         if (autoplay) this.pendingAutoplay = PENDING_AUTOPLAY_TICKS;
         this.stopRequested = false;
@@ -315,7 +359,10 @@ export class MpvBridge implements ExternalPlayback {
     if (!this.endpoint || !this.token) return false;
     // 网页 store 是音量/进度/倍速/循环/随机的唯一来源：这些命令先写网页再动 mpv。
     // 顺序反了会在"mpv 已新、网页还旧"的窗口里被 tick 的对账把 mpv 拽回旧值。
-    if (WEB_AUTHORED_COMMANDS.includes(command.action)) await this.options.commandWeb(command);
+    if (WEB_AUTHORED_COMMANDS.includes(command.action)) {
+      await this.options.commandWeb(command);
+      if (!this.isCurrent(generation)) return false;
+    }
     // mpv 的播放状态是权威，这些标志要在 /command 之前落好：请求失败时下个 tick 还会照着
     // 它们重试，而播放类命令失败的唯一常见原因就是 mpv 手里已经没歌了。
     if (command.action === "stop") {
@@ -334,15 +381,20 @@ export class MpvBridge implements ExternalPlayback {
         this.playRequested = true;
       }
     }
-    const response = await this.request("/command", command);
+    const response = await this.request("/command", generation, command);
+    if (!this.isCurrent(generation)) return false;
     const payload = (await response.json()) as { handled?: boolean };
-    return response.ok && payload.handled === true;
+    return this.isCurrent(generation) && response.ok && payload.handled === true;
   }
 
-  private async connect(): Promise<boolean> {
+  private isCurrent(generation: number): boolean {
+    return this.enabled && this.timer !== 0 && generation === this.generation;
+  }
+
+  private async connect(generation: number): Promise<boolean> {
     if (this.endpoint && this.token) return true;
     const result = await getEndpoint();
-    if (!this.timer) return false;
+    if (!this.isCurrent(generation)) return false;
     const separator = result.lastIndexOf("|");
     if (separator < 0) {
       this.status = describeFailure(result);
@@ -354,42 +406,56 @@ export class MpvBridge implements ExternalPlayback {
     return true;
   }
 
-  private async request(path: string, body?: unknown): Promise<Response> {
+  private async request(path: string, generation: number, body?: unknown): Promise<Response> {
+    if (!this.isCurrent(generation) || !this.endpoint || !this.token) throw new Error("mpv 后端已关闭");
     return fetch(`${this.endpoint}${path}`, {
       method: body == null ? "GET" : "POST",
       headers: { "X-NEMusic-Token": this.token!, ...(body == null ? {} : { "Content-Type": "application/json" }) },
       body: body == null ? undefined : JSON.stringify(body),
+      signal: this.requests?.signal,
     });
   }
 
   private async tick(): Promise<void> {
     if (this.busy || !this.timer) return;
+    const generation = this.generation;
     this.busy = true;
     try {
       if (this.pendingAutoplay > 0) this.pendingAutoplay--;
-      if (!(await this.connect())) return;
+      if (!(await this.connect(generation)) || !this.isCurrent(generation)) return;
       await tryEvaluateInPlayer(MPV_CONTROL_INSTALL_SCRIPT);
+      if (!this.isCurrent(generation)) return;
       const actions = (await tryEvaluateInPlayer(MPV_CONTROL_POLL_SCRIPT)) as unknown;
+      if (!this.isCurrent(generation)) return;
       const queued = Array.isArray(actions) ? actions : (actions as { actions?: unknown } | null)?.actions;
       if (Array.isArray(queued)) {
         for (const action of queued) {
-          if (action === "next" || action === "previous" || action === "playpause") await this.command({ action });
+          if (action === "next" || action === "previous" || action === "playpause") {
+            await this.command({ action });
+            if (!this.isCurrent(generation)) return;
+          }
         }
       }
       // 先静音再读快照：新一首歌的游离 audio 可能这一 tick 才被 Howler 拿出来。
       await tryEvaluateInPlayer(MPV_MUTE_SCRIPT);
+      if (!this.isCurrent(generation)) return;
       const web = (await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null;
+      if (!this.isCurrent(generation)) return;
       if (web?.trackId && web.trackId !== this.lastWebTrackId) {
-        await this.loadFromWeb(web, this.shouldAutoplay(web));
+        await this.loadFromWeb(web, this.shouldAutoplay(web), generation);
+        if (!this.isCurrent(generation)) return;
       }
-      const response = await this.request("/state");
+      const response = await this.request("/state", generation);
+      if (!this.isCurrent(generation)) return;
       if (!response.ok) throw new Error(`mpv state failed: ${response.status}`);
       const payload = (await response.json()) as MpvPayload;
+      if (!this.isCurrent(generation)) return;
       const next = this.normalize(payload, web);
       // 网页 store 是音量的唯一来源（网页滑块和媒体键最后都落到它），mpv 只跟着走：
       // 拖滑块时网页那边的 div[role=slider] 不派发事件，只能靠这里的对账把音量送过去。
       if (next.active && web?.volume != null && Math.abs(web.volume - next.volume) > VOLUME_EPSILON) {
-        await this.request("/command", { action: "volume", value: web.volume });
+        await this.request("/command", generation, { action: "volume", value: web.volume });
+        if (!this.isCurrent(generation)) return;
         next.volume = web.volume;
       }
       // 进度同理：网页的进度条也是 div[role=slider]，拖完没有事件可听，只能靠快照发现。
@@ -398,7 +464,8 @@ export class MpvBridge implements ExternalPlayback {
       if (next.active && web?.canSeek && web.trackId && web.trackId === next.trackId
         && next.playbackStatus === "Playing" && web.playbackStatus === "Playing"
         && web.position > 0 && Math.abs(web.position - next.position) > SEEK_EPSILON) {
-        await this.request("/command", { action: "setposition", value: Math.round(web.position * 1_000_000) });
+        await this.request("/command", generation, { action: "setposition", value: Math.round(web.position * 1_000_000) });
+        if (!this.isCurrent(generation)) return;
         next.position = web.position;
       }
       // 播完和掉轨是两回事：播完时 path 还在，掉轨时辅助进程连 path 都没有了。
@@ -409,9 +476,12 @@ export class MpvBridge implements ExternalPlayback {
       this.state = next;
       this.previousStatus = next.playbackStatus;
       if (ended && next.trackId) {
-        if (await this.command({ action: "next" })) this.pendingAutoplay = PENDING_AUTOPLAY_TICKS;
+        const handled = await this.command({ action: "next" });
+        if (!this.isCurrent(generation)) return;
+        if (handled) this.pendingAutoplay = PENDING_AUTOPLAY_TICKS;
       } else if (lost && web) {
-        await this.loadFromWeb(web, this.shouldAutoplay(web));
+        await this.loadFromWeb(web, this.shouldAutoplay(web), generation);
+        if (!this.isCurrent(generation)) return;
       }
       if (next.playbackStatus === "Playing") this.playRequested = false;
       this.status = "mpv 已连接";
@@ -419,12 +489,14 @@ export class MpvBridge implements ExternalPlayback {
       // 切歌，新歌又会把暂停中的 mpv 拉起来。切歌过渡期（pendingAutoplay）不许按停。
       await tryEvaluateInPlayer(mpvSyncScript(next.playbackStatus === "Playing", this.pendingAutoplay === 0), { userGesture: true });
     } catch (error) {
+      if (!this.isCurrent(generation)) return;
       console.warn("[NEMusic] mpv bridge", error);
       this.status = error instanceof Error ? `mpv 连接失败：${error.message}` : "mpv 连接失败";
       this.endpoint = null;
       this.token = null;
     } finally {
       this.busy = false;
+      if (generation !== this.generation && this.timer) void this.tick();
     }
   }
 
@@ -435,14 +507,16 @@ export class MpvBridge implements ExternalPlayback {
       || (web.playbackStatus === "Playing" && this.state.playbackStatus !== "Paused");
   }
 
-  private async loadFromWeb(web: TrackState, autoplay: boolean): Promise<void> {
+  private async loadFromWeb(web: TrackState, autoplay: boolean, generation: number): Promise<void> {
     const result = await tryEvaluateInPlayer(downloadScript(this.options.quality()), { awaitPromise: true });
+    if (!this.isCurrent(generation)) return;
     const track = result as DownloadTrack | null;
     if (!track?.url || !/^https?:/.test(track.url)) {
       throw new Error("网易云没有返回可供 mpv 播放的音频地址");
     }
     await tryEvaluateInPlayer(MPV_MUTE_SCRIPT);
-    const response = await this.request("/load", {
+    if (!this.isCurrent(generation)) return;
+    const response = await this.request("/load", generation, {
       url: track.url,
       title: track.name || web.title,
       artist: track.artist || web.artist,
@@ -454,6 +528,7 @@ export class MpvBridge implements ExternalPlayback {
       // mpv 的初始音量是 100%：不把网页音量带上，从网页切过来就是一声爆音。
       volume: web.volume,
     });
+    if (!this.isCurrent(generation)) return;
     if (!response.ok) {
       let message = `mpv load failed: ${response.status}`;
       try {

@@ -361,8 +361,9 @@ class MpvService:
         position = self.mpv.property("time-pos", 0) or 0
         paused = bool(self.mpv.property("pause", False))
         ended = bool(self.mpv.property("eof-reached", False))
-        volume = self.mpv.property("volume", 100) or 100
+        volume = self.mpv.property("volume", 100)
         speed = self.mpv.property("speed", 1) or 1
+        volume = 100 if volume is None else volume
         loop_file = self.mpv.property("loop-file", "no")
         return {
             "active": True,
