@@ -37,7 +37,10 @@
 | 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#歌词](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E6%AD%8C%E8%AF%8D)            |
 | 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#全局快捷键](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E5%85%A8%E5%B1%80%E5%BF%AB%E6%8D%B7%E9%94%AE)       |
 | 多播放引擎支持 | 仅 Linux 支持 | 可选 mpv、mpd 作为音频播放器引擎              |
+| 界面Ui缩放 | 支持           | 网易云很多样式都是根据固定像素而不是分辨率百分比导致ui在高分辨率大尺寸的显示器显得很小。这个功能可以解决   |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为sbSteam还不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
+| Steam大屏幕适配 | 正在制作   | 兼容Steam大屏幕模式 |
+| 手柄控制支持 | 正在制作      | 为一些掌机如SteamDeck服务，就不用搞得屏幕一堆指纹了 |
 | UnblockNeteaseMusic | 后续支持 | 解锁灰色无版权音乐                     |
 | last.fm    | 后续支持       |  |
 | API 接口   | 后续支持       | 其他插件可以使用api控制播放暂停歌曲       |
