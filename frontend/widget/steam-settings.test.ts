@@ -8,6 +8,14 @@ const patch = luaSource.match(/find = \[\[(return Ga.*?)\]\],[\s\S]*?replace = \
 const settingsList = `function settingsPages(){return a.useMemo(()=>{const Ga=[];for(let oo=0;oo<Kr.length;oo++){const qa=Kr[oo];if(qa===l.I0)oo!==0&&oo!==Kr.length-1&&Kr[oo+1]!==l.I0&&Ga.push(l.I0);else{const Or=Ua[qa];Or&&Or&&Or.visible&&Ga.push(Or)}}return Ga},[Kr,Ua])}`;
 
 describe("Steam settings page integration", () => {
+  it("在后端卸载时终止脱离 Steam 的辅助进程", () => {
+    assert.ok(luaSource.includes("setsid python3"));
+    assert.ok(luaSource.includes("kill -TERM -- -"));
+    assert.ok(luaSource.includes("stop_helper(mpris_dir)"));
+    assert.ok(luaSource.includes("stop_helper(mpv_dir)"));
+    assert.doesNotMatch(luaSource.match(/local function on_unload\(\)[\s\S]*?\nend\n\nreturn/)?.[0] ?? "", /call_frontend_method/);
+  });
+
   it("adds a native settings route and renders the plugin component without replacing Steam's pages", () => {
     assert.ok(patch);
     const expression = settingsList.replace(new RegExp(patch[1]), () => patch[2].replaceAll("#{{self}}", "testPlugin"));

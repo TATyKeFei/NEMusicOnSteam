@@ -7,6 +7,7 @@ import type { NotificationMode, PlaybackBackend } from "./settings.ts";
 import { SteamSettingsEntry } from "./widget/steam-settings.ts";
 
 const steamSettings = new SteamSettingsEntry(() => <SettingsContent />);
+let runtimeStopped = false;
 
 const NOTIFICATION_OPTIONS = [
   { data: "system", label: "系统通知" },
@@ -414,18 +415,30 @@ export function closePlayer(): string {
 
 /** @ffi */
 export function shutdown(): string {
+  if (runtimeStopped) return "ok";
+  runtimeStopped = true;
   steamSettings.stop();
   shutdownPlayer();
   return "ok";
 }
 
 export default definePlugin(() => {
+  runtimeStopped = false;
+  // 正常退出 Steam 时，插件管理器不一定有机会执行 onDismount；pagehide/beforeunload
+  // 是 WebKit 销毁前最后能可靠收到的信号。先把 BrowserView 销毁，避免它继续持有主窗口。
+  const onPageExit = () => { shutdown(); };
+  window.addEventListener("pagehide", onPageExit);
+  window.addEventListener("beforeunload", onPageExit);
   getPlayer(steamSettings).boot();
   steamSettings.start();
   return {
     title: "网易云音乐",
     icon: <NoteIcon />,
     content: <SettingsContent />,
-    onDismount: () => shutdown(),
+    onDismount: () => {
+      window.removeEventListener("pagehide", onPageExit);
+      window.removeEventListener("beforeunload", onPageExit);
+      shutdown();
+    },
   };
 });

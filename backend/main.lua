@@ -27,6 +27,36 @@ local function shell_quote(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
 end
 
+-- 辅助进程是从 Steam 后端脱离出来的，前端的异步 fetch 在 Steam 退出时不一定来得及
+-- 发出 /shutdown。启动时把它们放进自己的进程组并记录组长 PID，这样 on_unload 可以同步
+-- 收掉 Python、识曲录音子进程以及 mpv，避免 Steam 关掉窗口后还留在后台。
+local function launch_helper(path, dir, log_path)
+    local pid_path = dir .. "/pid"
+    -- exec 让 $! 就是 setsid/python 的 PID，而不是临时 shell 的 PID；只有它是
+    -- 新进程组组长时，退出时的 kill -- -PID 才能连同 mpv、parec 一起回收。
+    local command = "setsid python3 " .. shell_quote(path) .. " " .. shell_quote(dir)
+        .. " </dev/null >" .. shell_quote(log_path) .. " 2>&1 & helper_pid=$!; echo $helper_pid >"
+        .. shell_quote(pid_path)
+    utils.exec(command)
+    return pid_path
+end
+
+local function stop_helper(dir)
+    if dir == nil then return end
+    local pid = utils.read_file(dir .. "/pid")
+    if pid ~= nil then
+        pid = pid:match("^%s*(%d+)%s*$")
+        if pid ~= nil and tonumber(pid) ~= nil and tonumber(pid) > 1 then
+            -- 先杀进程组，确保 mpv/parec 等子进程不会脱离；再补一次单 PID，兼容
+            -- 某些系统没有 setsid 或旧实例没有建立进程组的情况。
+            utils.exec("kill -TERM -- -" .. pid .. " 2>/dev/null; kill -TERM " .. pid .. " 2>/dev/null")
+            utils.sleep(100)
+            utils.exec("kill -KILL -- -" .. pid .. " 2>/dev/null; kill -KILL " .. pid .. " 2>/dev/null")
+        end
+    end
+    fs.remove_all(dir)
+end
+
 -- 过去任何失败都只返回 ""，前端把它一律变成「请检查 Python/PyGObject/D-Bus」，导致用户
 -- 去安装他们本来就已经装好的包。改为返回 "!<code>:<detail>" 形式的失败原因，让设置页能
 -- 指出到底是哪一步失败了。
@@ -79,7 +109,7 @@ function mpris_endpoint()
     -- 日志要放在运行目录之外：辅助进程退出时会清空该目录，一个在报出端口前就死掉的
     -- 辅助进程会把自己的回溯一起带走。
     local log_path = base .. "/nemusic-mpris.log"
-    utils.exec("python3 " .. shell_quote(path) .. " " .. shell_quote(dir) .. " </dev/null >" .. shell_quote(log_path) .. " 2>&1 &")
+    launch_helper(path, dir, log_path)
     for _ = 1, 20 do
         local port = utils.read_file(dir .. "/port")
         if port ~= nil and port:match("^%d+$") then
@@ -142,7 +172,7 @@ function mpv_endpoint()
         return mpv_last_failure
     end
     local log_path = base .. "/nemusic-mpv.log"
-    utils.exec("python3 " .. shell_quote(path) .. " " .. shell_quote(dir) .. " </dev/null >" .. shell_quote(log_path) .. " 2>&1 &")
+    launch_helper(path, dir, log_path)
     for _ = 1, 200 do
         local port = utils.read_file(dir .. "/port")
         if port ~= nil and port:match("^%d+$") then
@@ -176,12 +206,16 @@ end
 
 local function on_unload()
     logger:info("NEMusicOnSteam unloading")
-    local ok, err = pcall(function()
-        millennium.call_frontend_method("shutdown", {})
-    end)
-    if not ok then
-        logger:info("Frontend was already gone: " .. tostring(err))
-    end
+    -- 先收掉脱离 Steam 生命周期的辅助进程；前端的清理随后即使来不及完成也不会
+    -- 把 Steam 留在后台。
+    stop_helper(mpris_dir)
+    stop_helper(mpv_dir)
+    mpris_dir = nil
+    mpris_token = nil
+    mpv_dir = nil
+    mpv_token = nil
+    -- Steam 退出期间同步等 WebKit 返回会造成后端和前端相互等候。辅助进程已在上面
+    -- 回收；视图和前端计时器由 Steam 自己的销毁流程处理，因此这里绝不跨进程等待。
 end
 
 return {
