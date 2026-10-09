@@ -13,6 +13,13 @@ describe("player url", () => {
     assert.equal(isPlayerDocument(""), false);
     assert.equal(isPlayerDocument(undefined), false);
   });
+
+  it("rejects other sites and paths containing the player URL", () => {
+    assert.equal(isPlayerDocument("https://example.com/st/webplayer"), false);
+    assert.equal(isPlayerDocument("https://example.com/?target=" + PLAYER_URL), false);
+    assert.equal(isPlayerDocument(PLAYER_URL + "/public/icon.svg"), false);
+    assert.equal(isPlayerDocument("http://music.163.com/st/webplayer"), false);
+  });
 });
 
 describe("desktop shortcut command", () => {

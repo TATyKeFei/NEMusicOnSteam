@@ -44,7 +44,7 @@ const FAILURE_REASONS: Record<string, string> = {
  * 并给每个节点挂 volumechange 监听防止 Howler 又把音量调回来。
  * 只静音、绝不 pause：页面一旦被 pause，它的 ended 事件就不会来，歌就不会自己往下走。
  */
-const MPV_MUTE_SCRIPT = `(() => {
+export const MPV_MUTE_SCRIPT = `(() => {
   const key = '__NEMusicOnSteamMpvMedia';
   const bridge = globalThis[key] || {};
   if (!bridge.saved || typeof bridge.saved.clear !== 'function') bridge.saved = new Map();

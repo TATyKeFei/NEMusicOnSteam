@@ -3,7 +3,13 @@ export const PLAYER_USER_AGENT =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36";
 
 export function isPlayerDocument(url: unknown): boolean {
-  return typeof url === "string" && (url.startsWith(PLAYER_URL) || url.includes("/st/webplayer"));
+  if (typeof url !== "string") return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.origin === "https://music.163.com" && parsed.pathname === "/st/webplayer";
+  } catch {
+    return false;
+  }
 }
 
 export const MPRIS_PLAYER_NAME = "NEMusicOnSteam";

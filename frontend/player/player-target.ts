@@ -17,6 +17,17 @@ type Outcome = { kind: "value"; value: unknown } | { kind: "missing" };
 let session: PlayerSession | null = null;
 let resolving: Promise<PlayerSession | null> | null = null;
 let epoch = 0;
+let selection: { marker: string; existingTargetIds: Set<string>; targetId: string | null; ready: boolean } | null = null;
+
+export async function preparePlayerTarget(marker: string): Promise<void> {
+  releasePlayerSession();
+  const current = { marker, existingTargetIds: new Set<string>(), targetId: null as string | null, ready: false };
+  selection = current;
+  const targets = await ChromeDevToolsProtocol.send("Target.getTargets");
+  if (selection !== current) return;
+  current.existingTargetIds = new Set(targets.targetInfos.map((item: { targetId: string }) => item.targetId));
+  current.ready = true;
+}
 
 function detach(sessionId: string): void {
   void ChromeDevToolsProtocol.send("Target.detachFromTarget", { sessionId }).catch(() => {});
@@ -31,17 +42,41 @@ export function releasePlayerSession(): void {
 }
 
 async function resolveSession(): Promise<PlayerSession | null> {
+  if (selection != null && !selection.ready) return null;
   if (session) return session;
   if (resolving) return resolving;
   const started = epoch;
+  const expected = selection;
   const pending = (async (): Promise<PlayerSession | null> => {
     const targets = await ChromeDevToolsProtocol.send("Target.getTargets");
-    const target = targets.targetInfos.find((item: { url: string; targetId: string }) => isPlayerDocument(item.url));
+    if (epoch !== started) return null;
+    const candidates = targets.targetInfos.filter((item: { url: string; targetId: string }) => {
+      if (!isPlayerDocument(item.url)) return false;
+      if (expected == null) return true;
+      if (expected.targetId != null) return item.targetId === expected.targetId;
+      return !expected.existingTargetIds.has(item.targetId);
+    });
+    const target = expected != null && candidates.length !== 1 ? null : candidates[0];
     if (!target) return null;
     const attached = await ChromeDevToolsProtocol.send("Target.attachToTarget", { targetId: target.targetId, flatten: true });
     if (epoch !== started) {
       detach(attached.sessionId);
       return null;
+    }
+    if (expected != null && expected.targetId == null) {
+      const source = `globalThis.__NEMusicOnSteamViewToken = ${JSON.stringify(expected.marker)};`;
+      try {
+        await ChromeDevToolsProtocol.send("Page.addScriptToEvaluateOnNewDocument", { source }, attached.sessionId);
+        await ChromeDevToolsProtocol.send("Runtime.evaluate", { expression: source }, attached.sessionId);
+      } catch (error) {
+        detach(attached.sessionId);
+        throw error;
+      }
+      if (epoch !== started) {
+        detach(attached.sessionId);
+        return null;
+      }
+      expected.targetId = target.targetId;
     }
     session = { targetId: target.targetId, sessionId: attached.sessionId };
     return session;
