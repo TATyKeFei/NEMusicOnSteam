@@ -4,6 +4,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
 import type { ChromeModel } from "../widget/chrome.ts";
+import { LIBRARY_ENTRY_FALLBACK_CLASSES } from "../widget/library.ts";
 import type { Bounds } from "../widget/layout.ts";
 import { sameBounds } from "../widget/layout.ts";
 import { isPlayerDocument, PLAYER_URL } from "../constants.ts";
@@ -91,7 +92,6 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
         return null;
       }
       invalidateHeader() {}
-      dismissToolbar() {}
       destroy() {}
     },
     MprisBridge: FakeBridge,
@@ -105,6 +105,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
       refresh(callback: (active: boolean, fillWindow: boolean) => void) { onFullscreenRequest = callback; }
     },
     STEAM_PAGE_FALLBACK_CLASSES: {},
+    LIBRARY_ENTRY_FALLBACK_CLASSES,
     readSettings: () => ({ keepAliveWhenCollapsed: options.keepAliveWhenCollapsed ?? true, disableBackgroundThrottling: false, playbackBackend: options.playbackBackend ?? "web" }),
     browserStorage: () => null,
     findModule: () => null,

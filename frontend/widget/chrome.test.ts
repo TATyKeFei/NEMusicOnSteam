@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { PlayerChrome } from "./chrome.ts";
 
@@ -10,6 +11,8 @@ type Rect = { top: number; left: number; right: number; bottom: number; width: n
 
 type FakeElement = {
   namespaceURI: string;
+  ownerDocument: Document;
+  isConnected: boolean;
   tagName: string;
   style: Record<string, string>;
   dataset: Record<string, string>;
@@ -33,7 +36,7 @@ type FakeElement = {
   querySelector: () => null;
   querySelectorAll: (selector: string) => FakeElement[];
   getBoundingClientRect: () => Rect;
-  dispatch: (type: string) => void;
+  dispatch: (type: string, event?: unknown) => void;
   clientWidth: number;
   clientHeight: number;
 };
@@ -66,6 +69,8 @@ function fakeElement(counts: Counts, tagName: string, rect: Rect): FakeElement {
   const children: FakeElement[] = [];
   const element: FakeElement = {
     namespaceURI: XHTML,
+    ownerDocument: null as unknown as Document,
+    isConnected: true,
     tagName,
     style,
     dataset: {},
@@ -97,7 +102,7 @@ function fakeElement(counts: Counts, tagName: string, rect: Rect): FakeElement {
       const height = read("height", rect.height);
       return { left, top, width, height, right: left + width, bottom: top + height };
     },
-    dispatch: (type) => { for (const handler of listeners.get(type) ?? []) handler({}); },
+    dispatch: (type, event = {}) => { for (const handler of listeners.get(type) ?? []) handler(event); },
     clientWidth: rect.width,
     clientHeight: rect.height,
   };
@@ -110,42 +115,46 @@ function chromeFixture() {
   const html = fakeElement(counts, "HTML", clientRect());
   const body = fakeElement(counts, "BODY", clientRect());
   const host = fakeElement(counts, "DIV", { top: 0, left: 0, right: 1000, bottom: 40, width: 1000, height: 40 });
-  const link = fakeElement(counts, "DIV", { top: 0, left: 900, right: 1000, bottom: 40, width: 100, height: 40 });
-  link.dataset = {};
-  host.append(link);
-  let toolbarChanges = 0;
+  const library = fakeElement(counts, "DIV", { top: 0, left: 100, right: 200, bottom: 40, width: 100, height: 40 });
+  const community = fakeElement(counts, "DIV", { top: 0, left: 200, right: 300, bottom: 40, width: 100, height: 40 });
+  library.textContent = "库";
+  community.textContent = "社区";
+  host.append(library, community);
+  let navigations = 0;
   const doc = {
     documentElement: html,
     body,
-    defaultView: { clearTimeout: () => {}, setTimeout: () => 0 },
+    defaultView: {
+      getComputedStyle: () => ({ display: "flex", flexDirection: "row", fontSize: "18px", textTransform: "uppercase", cursor: "pointer" }),
+    },
     createElement: (tag: string) => fakeElement(counts, tag.toUpperCase(), clientRect()),
-    querySelector: (selector: string) => (selector === "#nemusic-nav-link" ? link : null),
+    querySelector: () => null,
+    elementsFromPoint: () => [host],
     querySelectorAll: (selector: string) => {
       if (selector === "button") {
         counts.buttonScans += 1;
         return subtree(body, (child) => child.tagName === "BUTTON");
       }
-      return selector === "#nemusic-nav-link" ? [link] : [];
+      return [];
     },
   } as unknown as Document;
+  host.ownerDocument = doc;
   const chrome = new PlayerChrome();
   chrome.mount(doc, {
     onOpen: () => {},
-    onNavigateAway: () => {},
-    onToolbarChange: () => { toolbarChanges += 1; },
-    onCollapse: () => {},
-    onReload: () => {},
+    onNavigateAway: () => { navigations += 1; },
     onClose: () => {},
   });
   return {
     chrome,
     counts,
-    toolbarChanges: () => toolbarChanges,
+    host,
+    library,
+    navigations: () => navigations,
     close: () => chrome.render({ mode: "closed", status: "", keepAlive: true, fullscreen: false }),
     open: () => chrome.render({ mode: "expanded", status: "", keepAlive: true, fullscreen: false }),
     fullscreen: () => chrome.render({ mode: "expanded", status: "", keepAlive: true, fullscreen: true }),
     slot: () => (body.children[0] as FakeElement).children[1],
-    bar: () => (body.children[0] as FakeElement).children[2],
   };
 }
 
@@ -173,7 +182,7 @@ describe("Player chrome layout cost", () => {
     assert.equal(player.counts.buttonScans, 2);
   });
 
-  it("parks the player under the header and unhides the command bar on hover", () => {
+  it("places the player under Steam's header without adding a navigation entry", () => {
     const player = chromeFixture();
     const slot = player.slot();
     const bounds = player.open();
@@ -181,11 +190,8 @@ describe("Player chrome layout cost", () => {
     assert.equal(slot.style.top, "40px");
     assert.equal(slot.style.width, "1000px");
     assert.deepEqual(bounds, { x: 0, y: 40, width: 1000, height: 560 });
-    assert.equal(player.bar().style.display, "none");
-    player.bar().dispatch("mouseenter");
-    assert.equal(player.toolbarChanges(), 1);
-    player.open();
-    assert.equal(player.bar().style.display, "flex");
+    assert.equal(player.host.children.length, 2);
+    assert.deepEqual(player.host.children.map(child => child.textContent), ["库", "社区"]);
   });
 
   it("uses the whole Steam client area in web fullscreen", () => {
@@ -194,14 +200,15 @@ describe("Player chrome layout cost", () => {
     assert.deepEqual(bounds, { x: 0, y: 0, width: 1000, height: 600 });
   });
 
-  it("closes the command bar when the window goes away instead of leaving it stuck open", () => {
+  it("still yields the player when navigating to Steam's library", () => {
     const player = chromeFixture();
     player.open();
-    player.bar().dispatch("mouseenter");
-    player.open();
-    assert.equal(player.bar().style.display, "flex");
-    player.chrome.dismissToolbar();
-    player.open();
-    assert.equal(player.bar().style.display, "none");
+    player.host.dispatch("click", { target: player.library });
+    assert.equal(player.navigations(), 1);
+  });
+
+  it("does not register a backend patch that inserts the old top navigation entry", () => {
+    const backend = readFileSync(new URL("../../backend/main.lua", import.meta.url), "utf8");
+    assert.doesNotMatch(backend, /NEMusicOnSteamNav|nemusic-nav-link|SuperNav/);
   });
 });

@@ -50,19 +50,12 @@ function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
     && a.mprisStatus === b.mprisStatus
     && a.mpvStatus === b.mpvStatus
     && a.recognitionStatus === b.recognitionStatus
-    && a.navEntry === b.navEntry
     && a.settingsEntry === b.settingsEntry
     && JSON.stringify(a.quality) === JSON.stringify(b.quality)
     && JSON.stringify(a.together) === JSON.stringify(b.together)
     && JSON.stringify(a.download) === JSON.stringify(b.download)
     && JSON.stringify(a.settings) === JSON.stringify(b.settings);
 }
-
-const NAV_ENTRY_TEXT: Record<PlayerSnapshot["navEntry"], string> = {
-  native: "顶栏入口：原生补丁生效",
-  fallback: "顶栏入口：兼容模式（补丁没匹配上）",
-  none: "顶栏入口：还没找到（展开一次播放器再来看）",
-};
 
 const SETTINGS_ENTRY_TEXT: Record<PlayerSnapshot["settingsEntry"], string> = {
   native: "设置入口：原生补丁生效",
@@ -315,7 +308,7 @@ function SettingsContent() {
       </Field>
       <Field
         label="诊断"
-        description={`${NAV_ENTRY_TEXT[snapshot.navEntry]}。${SETTINGS_ENTRY_TEXT[snapshot.settingsEntry]}。Steam 更新后如果显示兼容模式，说明官方补丁没匹配上，功能仍可用但样式可能错位，可以去 Github 反馈`}
+        description={`${SETTINGS_ENTRY_TEXT[snapshot.settingsEntry]}。Steam 更新后如果显示兼容注入，说明官方补丁没匹配上，可以去 Github 反馈`}
         bottomSeparator="standard"
       />
       <Field label="系统媒体控制" description={snapshot.mprisStatus} />

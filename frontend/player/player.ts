@@ -1,5 +1,6 @@
 import { findModule } from "millennium";
-import { PlayerChrome, type NavEntryStatus, type PlayerMode } from "../widget/chrome.ts";
+import { PlayerChrome, type PlayerMode } from "../widget/chrome.ts";
+import { LIBRARY_ENTRY_FALLBACK_CLASSES, type LibraryEntryClasses } from "../widget/library.ts";
 import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "../constants.ts";
 import { DownloadBridge, type DownloadSnapshot } from "../download/download.ts";
 import { sameBounds, type Bounds } from "../widget/layout.ts";
@@ -48,6 +49,21 @@ function steamPageClasses(): SteamPageSelectors {
   }
 }
 
+function libraryEntryClasses(): LibraryEntryClasses {
+  const classes = { ...LIBRARY_ENTRY_FALLBACK_CLASSES };
+  try {
+    const list = findModule(module => typeof module?.GameListHomeAndSearch === "string");
+    const home = findModule(module => typeof module?.CollectionIconBox === "string" && typeof module?.Bar === "string");
+    if (typeof list?.Container === "string") classes.container = list.Container;
+    if (typeof home?.Bar === "string") classes.bar = home.Bar;
+    if (typeof home?.Label === "string") classes.label = home.Label;
+    if (typeof home?.Icon === "string") classes.icon = home.Icon;
+  } catch (error) {
+    console.warn("[NEMusic] library entry classes", error);
+  }
+  return classes;
+}
+
 export type SteamSettingsStatus = { entryStatus: () => "native" | "injected" | "waiting" };
 
 export type PlayerSnapshot = {
@@ -58,7 +74,6 @@ export type PlayerSnapshot = {
   mprisStatus: string;
   mpvStatus: string;
   recognitionStatus: string;
-  navEntry: NavEntryStatus;
   settingsEntry: "native" | "injected" | "waiting";
   quality: QualitySnapshot;
   together: TogetherSnapshot;
@@ -85,6 +100,7 @@ export class PlayerController {
     downloadNotificationMode: this.settings.downloadNotificationMode,
   }));
   private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
+  private libraryClasses: LibraryEntryClasses = LIBRARY_ENTRY_FALLBACK_CLASSES;
   private steamPageShown: boolean | null = null;
   private yieldedForSteamPage = false;
   private settings: PlayerSettings = readSettings(browserStorage());
@@ -131,6 +147,7 @@ export class PlayerController {
     this.booted = true;
     this.settings = readSettings(browserStorage());
     this.steamPageSelectors = steamPageClasses();
+    this.libraryClasses = libraryEntryClasses();
     this.pendingOpen = this.settings.openOnStart;
     this.timer = window.setInterval(this.tick, TICK_MS);
     this.mpris.start();
@@ -163,7 +180,6 @@ export class PlayerController {
       mprisStatus: this.mpris.getStatus(),
       mpvStatus: this.mpv.getStatus(),
       recognitionStatus: this.recognition.getStatus(),
-      navEntry: this.chrome.navEntryStatus(),
       settingsEntry: this.steamSettings?.entryStatus() ?? "waiting",
       quality: this.quality.snapshot(),
       together: this.together.snapshot(),
@@ -338,12 +354,8 @@ export class PlayerController {
       onNavigateAway: () => {
         if (this.mode === "expanded") this.collapse();
       },
-      onToolbarChange: () => this.syncView(false, this.render()),
-      onCollapse: () => this.collapse(),
-      onReload: () => this.reload(),
-      onDownloadList: () => this.downloadPlayingList(),
       onClose: () => this.close(),
-    });
+    }, this.libraryClasses);
     this.bindWindowEvents(win);
   }
 
@@ -352,7 +364,6 @@ export class PlayerController {
       this.unbindWindow();
       this.resizeTarget = win;
       win.addEventListener("resize", this.onResize);
-      win.addEventListener("blur", this.onWindowBlur);
     }
     const doc = win.document;
     if (this.visibilityTarget !== doc) {
@@ -364,7 +375,6 @@ export class PlayerController {
 
   private unbindWindow(): void {
     this.resizeTarget?.removeEventListener("resize", this.onResize);
-    this.resizeTarget?.removeEventListener("blur", this.onWindowBlur);
     this.resizeTarget = null;
     this.visibilityTarget?.removeEventListener("visibilitychange", this.onVisibilityChange);
     this.visibilityTarget = null;
@@ -375,17 +385,7 @@ export class PlayerController {
     this.syncView(false, this.render());
   };
 
-  private onWindowBlur = (): void => {
-    this.chrome.dismissToolbar();
-  };
-
-  /**
-   * 最小化窗口会把子 BrowserView 的画面一起带走，而 Steam 恢复时并不会把它放回去，于是
-   * 我们的界面就显示在一片空白页面之上；工具条也会一直挂着，因为它永远收不到本该关闭
-   * 它的那个 mouseleave。
-   */
   private onVisibilityChange = (): void => {
-    this.chrome.dismissToolbar();
     if (this.visibilityTarget?.hidden === true) {
       this.viewNeedsReattach = true;
       return;

@@ -1,6 +1,3 @@
-export const NAV_LINK_ID = "nemusic-nav-link";
-export const NAV_MODE_ATTR = "data-nemusic-mode";
-
 export function isHtmlElement(element: Element): element is HTMLElement {
   return element.namespaceURI === "http://www.w3.org/1999/xhtml";
 }
@@ -53,7 +50,7 @@ export function readNavRow(row: HTMLElement): NavRowSnapshot {
   const labels: string[] = [];
   let styledItems = 0;
   for (const child of Array.from(row.children)) {
-    if (!isHtmlElement(child) || child.id === NAV_LINK_ID) continue;
+    if (!isHtmlElement(child)) continue;
     const childStyle = view?.getComputedStyle(child);
     if (
       childStyle != null &&
@@ -120,7 +117,7 @@ export function sharedClasses(classNames: string[]): string {
 export function navTextItems(host: HTMLElement): HTMLElement[] {
   const items: HTMLElement[] = [];
   for (const child of Array.from(host.children)) {
-    if (!isHtmlElement(child) || child.id === NAV_LINK_ID) continue;
+    if (!isHtmlElement(child)) continue;
     if (navLabel(child.textContent ?? "") == null) continue;
     items.push(child);
   }
