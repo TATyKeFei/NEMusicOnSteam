@@ -26,6 +26,7 @@ export type TrackState = {
 };
 
 const getEndpoint = ffi<[], string>("mpris_endpoint");
+const reconnectEndpoint = ffi<[], string>("mpris_reconnect");
 
 const FAILURE_REASONS: Record<string, string> = {
   retry: "MPRIS 辅助进程启动失败，正在重试",
@@ -89,6 +90,8 @@ export class MprisBridge {
   private lastSentState: string | null = null;
   private lastToastedTrack = "";
   private status = "尚未连接";
+  private connectionFailed = false;
+  private reconnectRequested = false;
   private commandError = "";
   private commandRequest: AbortController | null = null;
   private pendingCommands: Command[] = [];
@@ -117,6 +120,8 @@ export class MprisBridge {
   async stop(): Promise<void> {
     window.clearInterval(this.timer);
     this.timer = 0;
+    this.connectionFailed = false;
+    this.reconnectRequested = false;
     this.commandRequest?.abort();
     this.pendingCommands = [];
     const endpoint = this.endpoint;
@@ -152,13 +157,38 @@ export class MprisBridge {
     return this.status;
   }
 
+  canReconnect(): boolean {
+    return Boolean(this.timer && this.connectionFailed && !this.reconnectRequested);
+  }
+
+  reconnect(): void {
+    if (!this.canReconnect()) return;
+    this.connectionFailed = false;
+    this.reconnectRequested = true;
+    this.status = "正在重新连接 MPRIS";
+    void this.tick();
+  }
+
   private async connect(): Promise<boolean> {
+    const reconnect = this.reconnectRequested;
+    if (reconnect) {
+      this.reconnectRequested = false;
+      this.connectionFailed = false;
+      this.status = "正在重新连接 MPRIS";
+      this.commandRequest?.abort();
+      this.commandRequest = null;
+      this.pendingCommands = [];
+      this.endpoint = null;
+      this.token = null;
+      this.commandError = "";
+    }
     if (this.endpoint && this.token) return true;
-    const result = await getEndpoint();
+    const result = await (reconnect ? reconnectEndpoint() : getEndpoint());
     if (!this.timer) return false;
     const separator = result.lastIndexOf("|");
     if (separator < 0) {
       this.status = describeFailure(result);
+      this.connectionFailed = true;
       return false;
     }
     this.endpoint = result.slice(0, separator);
@@ -291,15 +321,17 @@ export class MprisBridge {
       }
       this.lastSentLyrics = this.state.lyrics;
       this.status = this.commandError || "MPRIS 已连接";
+      this.connectionFailed = false;
     } catch (error) {
       console.warn("[NEMusic] MPRIS bridge", error);
       this.status = "MPRIS 连接失败；请检查 Steam 控制台和辅助进程日志或去Github反馈";
+      this.connectionFailed = true;
       this.commandRequest?.abort();
       this.endpoint = null;
       this.token = null;
     } finally {
       this.busy = false;
-      if (this.pendingCommands.length && this.timer && this.endpoint) void this.tick();
+      if (this.timer && (this.reconnectRequested || (this.pendingCommands.length && this.endpoint))) void this.tick();
     }
   }
 

@@ -1,5 +1,6 @@
 import { evaluateInPlayer } from "../player/player-target.ts";
 import { QUALITY_OPTIONS, QUALITY_SNAPSHOT_SCRIPT, qualityCommandScript, type QualityState } from "./quality-player.ts";
+import { qualityButtonScript, qualityButtonUpdateScript, qualityButtonResultScript } from "./quality-button.ts";
 
 export type QualitySnapshot = QualityState & { updating: boolean; status: string };
 
@@ -13,6 +14,7 @@ export class QualityBridge {
   private state: QualityState = EMPTY_QUALITY;
   private status = "打开播放器后可以设置音质";
   private updating = false;
+  private buttonInstalled = false;
 
   setEnabled(enabled: boolean): void {
     if (enabled === Boolean(this.timer)) return;
@@ -20,6 +22,7 @@ export class QualityBridge {
     this.state = EMPTY_QUALITY;
     this.pending = null;
     this.updating = false;
+    this.buttonInstalled = false;
     if (enabled) {
       this.status = "正在读取网易云音质设置";
       this.timer = window.setInterval((): void => void this.tick(), 1500);
@@ -51,23 +54,38 @@ export class QualityBridge {
     try {
       value = this.pending;
       this.pending = null;
-      const result = await evaluateInPlayer(value == null ? QUALITY_SNAPSHOT_SCRIPT : qualityCommandScript(value), {
+      let result = await evaluateInPlayer(value == null ? (this.buttonInstalled ? qualityButtonUpdateScript() : qualityButtonScript()) : qualityCommandScript(value), {
         awaitPromise: true,
         userGesture: value != null,
       });
       if (generation !== this.generation) return;
       if (value == null) {
-        this.state = result as QualityState;
+        if (!(result as { installed?: boolean })?.installed) result = await evaluateInPlayer(qualityButtonScript());
+        if (generation !== this.generation) return;
+        const page = result as { installed: boolean; state: QualityState; action: number | null };
+        this.buttonInstalled = page?.installed === true;
+        this.state = page?.state ?? await evaluateInPlayer(QUALITY_SNAPSHOT_SCRIPT) as QualityState;
+        if (generation !== this.generation) return;
         if (!this.state?.available) {
           this.state = EMPTY_QUALITY;
           this.status = "网易云音质设置尚未就绪";
         } else if (this.status.startsWith("正在读取") || this.status.startsWith("等待") || this.status === "网易云音质设置尚未就绪") {
           this.status = "音质设置保存在网易云播放器中";
         }
+        if (page?.action != null && QUALITY_OPTIONS.some(option => option.data === page.action)) {
+          if (this.state.available) {
+            this.pending = page.action;
+            this.updating = true;
+            this.status = "正在设置音质";
+          } else {
+            await evaluateInPlayer(qualityButtonResultScript("网易云音质设置尚未就绪，请稍后重试"));
+          }
+        }
       } else {
         const response = result as { state: QualityState; message: string };
         this.state = response.state;
         this.status = response.message;
+        await evaluateInPlayer(qualityButtonResultScript(response.message));
       }
     } catch (error) {
       if (generation === this.generation) {
@@ -75,10 +93,13 @@ export class QualityBridge {
         if (value == null) this.state = EMPTY_QUALITY;
         this.pending = null;
         this.updating = false;
+        if (value == null) this.buttonInstalled = false;
+        if (value != null) await evaluateInPlayer(qualityButtonResultScript(this.status)).catch(() => {});
       }
     } finally {
       if (generation === this.generation && value != null) this.updating = false;
       this.busy = false;
+      if (generation === this.generation && this.pending != null) void this.tick();
     }
   }
 }

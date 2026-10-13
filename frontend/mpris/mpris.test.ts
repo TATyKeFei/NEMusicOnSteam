@@ -18,9 +18,11 @@ const targetSource = stripTypeScriptTypes(
 );
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function setup(options: { trackId?: string; lyric?: unknown } = {}) {
+function setup(options: { trackId?: string; lyric?: unknown; platform?: string; endpoint?: string; reconnectEndpoint?: string; failState?: boolean } = {}) {
   const evaluations: string[] = [];
   const polls: { signal: AbortSignal; deliver: (commands: unknown[]) => void; fail: () => void }[] = [];
+  const endpointCalls: string[] = [];
+  const requests: { url: string; token: string }[] = [];
   let interval: () => void = () => {};
   let holdSnapshot: Promise<void> | null = null;
   let stateUpdates = 0;
@@ -28,7 +30,7 @@ function setup(options: { trackId?: string; lyric?: unknown } = {}) {
   let lyricCalls = 0;
   const clock = { now: 0 };
   const Bridge = runInNewContext(`${targetSource}\n${source}; MprisBridge`, {
-    navigator: { platform: "Linux" },
+    navigator: { platform: options.platform ?? "Linux" },
     window: {
       setInterval(callback: () => void) { interval = callback; return 1; },
       clearInterval() {},
@@ -36,7 +38,12 @@ function setup(options: { trackId?: string; lyric?: unknown } = {}) {
     AbortController,
     Date: class { static now() { return clock.now; } },
     console: { warn() {} },
-    ffi: () => async () => "http://localhost|test-token",
+    ffi: (name: string) => async () => {
+      endpointCalls.push(name);
+      return name === "mpris_reconnect"
+        ? options.reconnectEndpoint ?? "http://localhost|test-token"
+        : options.endpoint ?? "http://localhost|test-token";
+    },
     isPlayerDocument: () => true,
     commandScript: (command: { action: string }) => command.action,
     SNAPSHOT_SCRIPT: "snapshot",
@@ -66,18 +73,22 @@ function setup(options: { trackId?: string; lyric?: unknown } = {}) {
         return {};
       },
     },
-    fetch: async (url: string, options: { signal: AbortSignal }) => {
+    fetch: async (url: string, requestOptions: { signal: AbortSignal; headers: Record<string, string> }) => {
+      requests.push({ url, token: requestOptions.headers["X-NEMusic-Token"] });
       if (url.endsWith("/commands?wait=1")) {
         return new Promise((resolve, reject) => {
           polls.push({
-            signal: options.signal,
+            signal: requestOptions.signal,
             deliver: (commands) => resolve({ ok: true, json: async () => commands }),
             fail: () => reject(new Error("connection lost")),
           });
-          options.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+          requestOptions.signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
         });
       }
-      if (url.endsWith("/state")) stateUpdates++;
+      if (url.endsWith("/state")) {
+        stateUpdates++;
+        if (options.failState) throw new Error("connection lost");
+      }
       // The bridge drains the body of every state push; a real Response always offers the body.
       return { ok: true, arrayBuffer: async () => new ArrayBuffer(0) };
     },
@@ -86,7 +97,7 @@ function setup(options: { trackId?: string; lyric?: unknown } = {}) {
   bridge.setEnabled(true);
   bridge.start();
   return {
-    bridge, evaluations, polls,
+    bridge, evaluations, polls, endpointCalls, requests,
     tick: () => interval(),
     holdSnapshot: (promise: Promise<void>) => { holdSnapshot = promise; },
     stateUpdates: () => stateUpdates,
@@ -168,6 +179,99 @@ describe("MPRIS command delivery", () => {
     release();
     await flush();
     assert.equal(player.stateUpdates(), 1);
+  });
+});
+
+describe("MPRIS manual reconnect", () => {
+  it("reconnects immediately after helper startup fails and ignores repeated clicks", async () => {
+    const player = setup({ endpoint: "!retry", reconnectEndpoint: "http://localhost:1234|new-token" });
+    await flush();
+    assert.equal(player.bridge.canReconnect(), true);
+    player.bridge.reconnect();
+    player.bridge.reconnect();
+    assert.equal(player.bridge.canReconnect(), false);
+    assert.equal(player.bridge.getStatus(), "正在重新连接 MPRIS");
+    await flush();
+    assert.deepEqual(player.endpointCalls, ["mpris_endpoint", "mpris_reconnect"]);
+    assert.equal(player.bridge.getStatus(), "MPRIS 已连接");
+    assert.equal(player.bridge.canReconnect(), false);
+    assert.equal(player.stateUpdates(), 1);
+    assert.equal(player.requests.every(request => request.token === "new-token"), true);
+    player.polls[0].deliver([{ action: "playpause" }]);
+    await flush();
+    assert.equal(player.evaluations.includes("playpause"), true);
+    await player.bridge.stop();
+  });
+
+  it("replaces a failed connection and republishes state with the new endpoint and token", async () => {
+    const options = { failState: true, reconnectEndpoint: "http://localhost:1234|new-token" };
+    const player = setup(options);
+    await flush();
+    assert.match(player.bridge.getStatus(), /连接失败/);
+    assert.equal(player.bridge.canReconnect(), true);
+    assert.equal(player.polls[0].signal.aborted, true);
+    options.failState = false;
+    const previousRequests = player.requests.length;
+    player.bridge.reconnect();
+    await flush();
+    assert.equal(player.bridge.getStatus(), "MPRIS 已连接");
+    assert.equal(player.stateUpdates(), 2);
+    assert.equal(player.polls.length, 2);
+    assert.deepEqual(player.requests.slice(previousRequests), [
+      { url: "http://localhost:1234/commands?wait=1", token: "new-token" },
+      { url: "http://localhost:1234/state", token: "new-token" },
+    ]);
+    await player.bridge.stop();
+  });
+
+  it("waits for an in-flight state tick before reconnecting without another timer tick", async () => {
+    const player = setup({ endpoint: "!retry" });
+    await flush();
+    let release!: () => void;
+    player.holdSnapshot(new Promise<void>((resolve) => { release = resolve; }));
+    player.tick();
+    await flush();
+    player.bridge.reconnect();
+    player.bridge.reconnect();
+    assert.deepEqual(player.endpointCalls, ["mpris_endpoint", "mpris_endpoint"]);
+    release();
+    await flush();
+    assert.deepEqual(player.endpointCalls, ["mpris_endpoint", "mpris_endpoint", "mpris_reconnect"]);
+    assert.equal(player.bridge.getStatus(), "MPRIS 已连接");
+    await player.bridge.stop();
+  });
+
+  it("allows another attempt if manual reconnect fails", async () => {
+    const options = { endpoint: "!spawn", reconnectEndpoint: "!spawn:helper unavailable" };
+    const player = setup(options);
+    await flush();
+    player.bridge.reconnect();
+    await flush();
+    assert.equal(player.bridge.canReconnect(), true);
+    assert.match(player.bridge.getStatus(), /helper unavailable/);
+    options.reconnectEndpoint = "http://localhost|new-token";
+    player.bridge.reconnect();
+    await flush();
+    assert.equal(player.bridge.canReconnect(), false);
+    assert.equal(player.bridge.getStatus(), "MPRIS 已连接");
+    await player.bridge.stop();
+  });
+
+  it("does not offer reconnect on unsupported platforms or after stopping", async () => {
+    const unsupported = setup({ platform: "Win32" });
+    unsupported.bridge.reconnect();
+    await flush();
+    assert.equal(unsupported.bridge.canReconnect(), false);
+    assert.equal(unsupported.bridge.getStatus(), "仅 Linux 支持 MPRIS");
+    assert.deepEqual(unsupported.endpointCalls, []);
+    await unsupported.bridge.stop();
+    const player = setup({ endpoint: "!spawn" });
+    await flush();
+    await player.bridge.stop();
+    player.bridge.reconnect();
+    await flush();
+    assert.equal(player.bridge.canReconnect(), false);
+    assert.deepEqual(player.endpointCalls, ["mpris_endpoint"]);
   });
 });
 

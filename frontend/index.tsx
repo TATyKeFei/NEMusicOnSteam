@@ -48,6 +48,7 @@ function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
     && a.hasView === b.hasView
     && a.throttlingSupported === b.throttlingSupported
     && a.mprisStatus === b.mprisStatus
+    && a.mprisCanReconnect === b.mprisCanReconnect
     && a.mpvStatus === b.mpvStatus
     && a.recognitionStatus === b.recognitionStatus
     && a.settingsEntry === b.settingsEntry
@@ -240,19 +241,9 @@ function SettingsContent() {
       <Field
         label="播放器"
         description={`${snapshot.status}。点击顶部其他栏目即可返回 Steam 页面`}
-        bottomSeparator="standard"
+        bottomSeparator="thick"
       >
         <DialogButton onClick={() => player.open()}>{snapshot.mode === "closed" ? "打开" : "展开"}</DialogButton>
-      </Field>
-      <Field label="收起" description="播放器还在，只是让出画面" bottomSeparator="none">
-        <DialogButton onClick={() => player.collapse()} disabled={snapshot.mode === "closed"}>
-          收起
-        </DialogButton>
-      </Field>
-      <Field label="关闭" description="关掉内嵌页，后台播放也会停" bottomSeparator="thick">
-        <DialogButton onClick={() => player.close()} disabled={!snapshot.hasView && snapshot.mode === "closed"}>
-          关闭
-        </DialogButton>
       </Field>
       <Field label="启动时打开" description="Steam 主窗口出现后自动展开播放器。" bottomSeparator="standard">
         <Toggle
@@ -311,7 +302,16 @@ function SettingsContent() {
         description={`${SETTINGS_ENTRY_TEXT[snapshot.settingsEntry]}。Steam 更新后如果显示兼容注入，说明官方补丁没匹配上，可以去 Github 反馈`}
         bottomSeparator="standard"
       />
-      <Field label="系统媒体控制" description={snapshot.mprisStatus} />
+      <Field label="系统媒体控制" description={snapshot.mprisStatus}>
+        {snapshot.mprisCanReconnect && (
+          <DialogButton onClick={() => {
+            player.reconnectMpris();
+            setSnapshot(player.snapshot());
+          }}>
+            重连
+          </DialogButton>
+        )}
+      </Field>
       <Field
         label="一起听"
         description={`${together.note}。${togetherMembersText(together)}${together.buttonNote ? `播放栏按钮：${together.buttonNote}` : ""}${together.buttonAnchor ? `（挂在 ${together.buttonAnchor}）` : ""}${together.buttonBar ? `｜${together.buttonBar}` : ""}${together.syncNote ? `｜${together.syncNote}` : ""}${together.diagnostic ? `｜诊断：${together.diagnostic}` : ""}${probeText(together)}`}
@@ -368,11 +368,6 @@ function SettingsContent() {
           }}
         />
       </Field>
-      <Field
-        label="听歌识曲"
-        description={snapshot.recognitionStatus}
-        bottomSeparator="none"
-      />
     </>
   );
 }

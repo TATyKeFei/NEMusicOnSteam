@@ -86,6 +86,7 @@ export type PlayerSnapshot = {
   hasView: boolean;
   throttlingSupported: boolean | null;
   mprisStatus: string;
+  mprisCanReconnect: boolean;
   mpvStatus: string;
   recognitionStatus: string;
   settingsEntry: "native" | "injected" | "waiting";
@@ -194,6 +195,7 @@ export class PlayerController {
       hasView: this.view != null,
       throttlingSupported: this.throttlingSupported,
       mprisStatus: this.mpris.getStatus(),
+      mprisCanReconnect: this.mpris.canReconnect(),
       mpvStatus: this.mpv.getStatus(),
       recognitionStatus: this.recognition.getStatus(),
       settingsEntry: this.steamSettings?.entryStatus() ?? "waiting",
@@ -212,6 +214,10 @@ export class PlayerController {
     if (patch.uiScale != null) this.applyUiScale();
     this.syncView(true, this.render());
     return this.snapshot();
+  }
+
+  reconnectMpris(): void {
+    this.mpris.reconnect();
   }
 
   setQuality(value: number): void {

@@ -127,6 +127,17 @@ function mpris_endpoint()
     return "!spawn:" .. detail
 end
 
+---@ffi
+---@return string
+function mpris_reconnect()
+    stop_helper(mpris_dir)
+    mpris_dir = nil
+    mpris_token = nil
+    respawn_failures = 0
+    respawn_skip = 0
+    return mpris_endpoint()
+end
+
 local MPV_RESPAWN_SKIP_POLLS = { 10, 20, 40, 80, 120 }
 
 ---@ffi
