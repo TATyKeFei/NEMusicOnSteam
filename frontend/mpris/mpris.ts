@@ -135,7 +135,7 @@ export class MprisBridge {
     releasePlayerSession();
     if (endpoint && token) {
       try {
-        await fetch(`${endpoint}/shutdown`, { method: "POST", headers: { "X-NEMusic-Token": token } });
+        await fetch(`${endpoint}/shutdown`, { method: "POST", headers: { "X-NEMusic-Token": token }, keepalive: true });
       } catch {}
     }
   }

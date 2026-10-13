@@ -22,6 +22,9 @@ export type BrowserViewCreateOptions = {
 };
 
 export type SteamClient = {
+  User?: {
+    RegisterForShutdownStart?: (callback: () => void) => { unregister?: () => void } | (() => void) | void;
+  };
   URL?: {
     ExecuteSteamURL?: (url: string) => void;
   };

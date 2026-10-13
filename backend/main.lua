@@ -7,6 +7,8 @@ local mpris_dir = nil
 local mpris_token = nil
 local mpv_dir = nil
 local mpv_token = nil
+local unloading = false
+local helper_pids = {}
 
 -- 前端每 500ms 轮询一次，而每次尝试拉起辅助进程都会 fork 一个 python3，并在它启动
 -- 期间阻塞本进程最长一秒。没有喘息间隔的话，一个根本起不来的辅助进程会把这些阻塞连
@@ -38,12 +40,13 @@ local function launch_helper(path, dir, log_path)
         .. " </dev/null >" .. shell_quote(log_path) .. " 2>&1 & helper_pid=$!; echo $helper_pid >"
         .. shell_quote(pid_path)
     utils.exec(command)
+    helper_pids[dir] = utils.read_file(pid_path)
     return pid_path
 end
 
 local function stop_helper(dir)
     if dir == nil then return end
-    local pid = utils.read_file(dir .. "/pid")
+    local pid = helper_pids[dir] or utils.read_file(dir .. "/pid")
     if pid ~= nil then
         pid = pid:match("^%s*(%d+)%s*$")
         if pid ~= nil and tonumber(pid) ~= nil and tonumber(pid) > 1 then
@@ -55,6 +58,7 @@ local function stop_helper(dir)
         end
     end
     fs.remove_all(dir)
+    helper_pids[dir] = nil
 end
 
 -- 过去任何失败都只返回 ""，前端把它一律变成「请检查 Python/PyGObject/D-Bus」，导致用户
@@ -75,6 +79,7 @@ end
 ---@ffi
 ---@return string
 function mpris_endpoint()
+    if unloading then return "!shutdown" end
     if mpris_dir ~= nil then
         local port = utils.read_file(mpris_dir .. "/port")
         if port ~= nil and port:match("^%d+$") then
@@ -82,15 +87,14 @@ function mpris_endpoint()
             respawn_skip = 0
             return "http://127.0.0.1:" .. port .. "|" .. mpris_token
         end
-        -- 辅助进程退出时会删掉自己的运行目录，所以端口文件消失就意味着上一个进程已经
-        -- 没了，需要重新拉起一个。
-        mpris_dir = nil
-        mpris_token = nil
     end
     if respawn_skip > 0 then
         respawn_skip = respawn_skip - 1
         return "!retry"
     end
+    stop_helper(mpris_dir)
+    mpris_dir = nil
+    mpris_token = nil
     respawn_failures = respawn_failures + 1
     respawn_skip = RESPAWN_SKIP_POLLS[math.min(respawn_failures, #RESPAWN_SKIP_POLLS)]
     local script = millennium.assets.read("backend/mpris_helper.py")
@@ -109,6 +113,8 @@ function mpris_endpoint()
     -- 日志要放在运行目录之外：辅助进程退出时会清空该目录，一个在报出端口前就死掉的
     -- 辅助进程会把自己的回溯一起带走。
     local log_path = base .. "/nemusic-mpris.log"
+    mpris_dir = dir
+    mpris_token = token
     launch_helper(path, dir, log_path)
     for _ = 1, 20 do
         local port = utils.read_file(dir .. "/port")
@@ -130,6 +136,7 @@ end
 ---@ffi
 ---@return string
 function mpris_reconnect()
+    if unloading then return "!shutdown" end
     stop_helper(mpris_dir)
     mpris_dir = nil
     mpris_token = nil
@@ -143,6 +150,7 @@ local MPV_RESPAWN_SKIP_POLLS = { 10, 20, 40, 80, 120 }
 ---@ffi
 ---@return string
 function mpv_endpoint()
+    if unloading then return "!shutdown" end
     if mpv_dir ~= nil then
         local port = utils.read_file(mpv_dir .. "/port")
         if port ~= nil and port:match("^%d+$") then
@@ -151,13 +159,14 @@ function mpv_endpoint()
             mpv_last_failure = "!retry"
             return "http://127.0.0.1:" .. port .. "|" .. mpv_token
         end
-        mpv_dir = nil
-        mpv_token = nil
     end
     if mpv_respawn_skip > 0 then
         mpv_respawn_skip = mpv_respawn_skip - 1
         return mpv_last_failure
     end
+    stop_helper(mpv_dir)
+    mpv_dir = nil
+    mpv_token = nil
     mpv_respawn_failures = mpv_respawn_failures + 1
     mpv_respawn_skip = MPV_RESPAWN_SKIP_POLLS[math.min(mpv_respawn_failures, #MPV_RESPAWN_SKIP_POLLS)]
     local script = millennium.assets.read("backend/mpv_helper.py")
@@ -183,6 +192,8 @@ function mpv_endpoint()
         return mpv_last_failure
     end
     local log_path = base .. "/nemusic-mpv.log"
+    mpv_dir = dir
+    mpv_token = token
     launch_helper(path, dir, log_path)
     for _ = 1, 200 do
         local port = utils.read_file(dir .. "/port")
@@ -216,6 +227,8 @@ local function on_frontend_loaded()
 end
 
 local function on_unload()
+    if unloading then return end
+    unloading = true
     logger:info("NEMusicOnSteam unloading")
     -- 先收掉脱离 Steam 生命周期的辅助进程；前端的清理随后即使来不及完成也不会
     -- 把 Steam 留在后台。
@@ -227,6 +240,13 @@ local function on_unload()
     mpv_token = nil
     -- Steam 退出期间同步等 WebKit 返回会造成后端和前端相互等候。辅助进程已在上面
     -- 回收；视图和前端计时器由 Steam 自己的销毁流程处理，因此这里绝不跨进程等待。
+end
+
+---@ffi
+---@return string
+function shutdown_backend()
+    on_unload()
+    return "ok"
 end
 
 return {

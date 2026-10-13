@@ -67,7 +67,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
   const volumeCommands: number[] = [];
   const positionCommands: number[] = [];
   const order: string[] = [];
-  const requests: { url: string; signal?: AbortSignal }[] = [];
+  const requests: { url: string; signal?: AbortSignal; keepalive?: boolean }[] = [];
   let interval: () => void = () => {};
   let endpointGate: Promise<void> | null = null;
   let evaluationGate: { expression: string; promise: Promise<void> } | null = null;
@@ -84,8 +84,8 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
     if (expression.includes("splice")) return { actions: [] };
     return true;
   };
-  const fetch = async (url: string, init?: { body?: string; signal?: AbortSignal }) => {
-    requests.push({ url, signal: init?.signal });
+  const fetch = async (url: string, init?: { body?: string; signal?: AbortSignal; keepalive?: boolean }) => {
+    requests.push({ url, signal: init?.signal, keepalive: init?.keepalive });
     if (requestGate && url.endsWith(requestGate.path)) await requestGate.promise;
     if (url.endsWith("/state")) return { ok: true, json: async () => mpv };
     if (url.endsWith("/load")) {
@@ -169,7 +169,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
 }
 
 type TestBridge = {
-  setEnabled(enabled: boolean): void;
+  setEnabled(enabled: boolean, restoreWeb?: boolean): void;
   command(command: { action: string; value?: number }): Promise<boolean>;
   snapshot(): TrackState;
   getStatus(): string;
@@ -397,6 +397,22 @@ describe("MPV backend page scripts", () => {
 });
 
 describe("MPV bridge tick", () => {
+  it("dispatches shutdown without evaluating or resuming the page when Steam exits", async () => {
+    const player = setup();
+    player.bridge.setEnabled(true);
+    await flush();
+    player.evaluations.length = 0;
+    player.requests.length = 0;
+    player.bridge.setEnabled(false, false);
+    assert.deepEqual(player.evaluations, []);
+    assert.deepEqual(player.requests.map(request => ({ url: request.url, keepalive: request.keepalive })), [
+      { url: "http://localhost/shutdown", keepalive: true },
+    ]);
+    await flush();
+    player.tick();
+    assert.deepEqual(player.evaluations, []);
+  });
+
   it("does not mute or load a resolved track after the backend is disabled", async () => {
     const player = setup();
     const pending = deferred();

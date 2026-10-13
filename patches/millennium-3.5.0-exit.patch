@@ -1,0 +1,62 @@
+diff --git a/src/include/millennium/millennium_lifecycle.h b/src/include/millennium/millennium_lifecycle.h
+--- a/src/include/millennium/millennium_lifecycle.h
++++ b/src/include/millennium/millennium_lifecycle.h
+@@ -63,8 +63,8 @@ class millennium_lifecycle
+ 
+     static millennium_lifecycle& get()
+     {
+-        static millennium_lifecycle instance;
+-        return instance;
++        static millennium_lifecycle* instance = new millennium_lifecycle();
++        return *instance;
+     }
+ 
+     gate steam_ui_loaded;
+diff --git a/src/mep/crash_event_bus.cc b/src/mep/crash_event_bus.cc
+--- a/src/mep/crash_event_bus.cc
++++ b/src/mep/crash_event_bus.cc
+@@ -9,2 +9,2 @@ crash_event_bus& crash_event_bus::instance()
+-    static crash_event_bus s;
+-    return s;
++    static crash_event_bus* instance = new crash_event_bus();
++    return *instance;
+diff --git a/src/mep/sdk_ready_bus.cc b/src/mep/sdk_ready_bus.cc
+--- a/src/mep/sdk_ready_bus.cc
++++ b/src/mep/sdk_ready_bus.cc
+@@ -38,2 +38,2 @@ sdk_ready_bus& sdk_ready_bus::instance()
+-    static sdk_ready_bus inst;
+-    return inst;
++    static sdk_ready_bus* instance = new sdk_ready_bus();
++    return *instance;
+diff --git a/src/mep/console_capture.cc b/src/mep/console_capture.cc
+--- a/src/mep/console_capture.cc
++++ b/src/mep/console_capture.cc
+@@ -40,2 +40,2 @@ console_capture& console_capture::instance()
+-    static console_capture inst;
+-    return inst;
++    static console_capture* instance = new console_capture();
++    return *instance;
+diff --git a/src/mep/exception_capture.cc b/src/mep/exception_capture.cc
+--- a/src/mep/exception_capture.cc
++++ b/src/mep/exception_capture.cc
+@@ -39,2 +39,2 @@ exception_capture& exception_capture::instance()
+-    static exception_capture inst;
+-    return inst;
++    static exception_capture* instance = new exception_capture();
++    return *instance;
+diff --git a/src/mep/ffi_recorder.cc b/src/mep/ffi_recorder.cc
+--- a/src/mep/ffi_recorder.cc
++++ b/src/mep/ffi_recorder.cc
+@@ -38,2 +38,2 @@ ffi_recorder& ffi_recorder::instance()
+-    static ffi_recorder inst;
+-    return inst;
++    static ffi_recorder* instance = new ffi_recorder();
++    return *instance;
+diff --git a/src/mep/patch_stream_recorder.cc b/src/mep/patch_stream_recorder.cc
+--- a/src/mep/patch_stream_recorder.cc
++++ b/src/mep/patch_stream_recorder.cc
+@@ -39,2 +39,2 @@ patch_stream_recorder& patch_stream_recorder::instance()
+-    static patch_stream_recorder inst;
+-    return inst;
++    static patch_stream_recorder* instance = new patch_stream_recorder();
++    return *instance;

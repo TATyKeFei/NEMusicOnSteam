@@ -281,7 +281,7 @@ export class MpvBridge implements ExternalPlayback {
     }
   }
 
-  setEnabled(enabled: boolean): void {
+  setEnabled(enabled: boolean, restoreWeb = true): void {
     if (enabled === this.enabled) return;
     const generation = ++this.generation;
     this.enabled = enabled;
@@ -296,7 +296,7 @@ export class MpvBridge implements ExternalPlayback {
       this.timer = 0;
       this.requests?.abort();
       if (!this.stopping) {
-        const stopping = this.stop(resume);
+        const stopping = this.stop(resume, restoreWeb);
         this.stopping = stopping;
         const clearStopping = () => {
           if (this.stopping === stopping) this.stopping = null;
@@ -569,7 +569,7 @@ export class MpvBridge implements ExternalPlayback {
     };
   }
 
-  private async stop(resume: boolean): Promise<void> {
+  private async stop(resume: boolean, restoreWeb: boolean): Promise<void> {
     const endpoint = this.endpoint;
     const token = this.token;
     // resume 由调用方在清标志之前算好：mpv 没了页面得自己出声，除非用户本来就是按停/
@@ -582,12 +582,14 @@ export class MpvBridge implements ExternalPlayback {
     this.playRequested = false;
     this.previousStatus = "Stopped";
     this.state = { ...EMPTY_STATE };
-    try {
-      await tryEvaluateInPlayer(mpvUnmuteScript(resume), { userGesture: true });
-    } catch {}
+    if (restoreWeb) {
+      try {
+        await tryEvaluateInPlayer(mpvUnmuteScript(resume), { userGesture: true });
+      } catch {}
+    }
     if (endpoint && token) {
       try {
-        await fetch(`${endpoint}/shutdown`, { method: "POST", headers: { "X-NEMusic-Token": token } });
+        await fetch(`${endpoint}/shutdown`, { method: "POST", headers: { "X-NEMusic-Token": token }, keepalive: true });
       } catch {}
     }
   }

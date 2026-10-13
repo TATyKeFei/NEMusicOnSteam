@@ -127,6 +127,7 @@ export class PlayerController {
   private owner: SteamWindow | null = null;
   private client: SteamClient | null = null;
   private booted = false;
+  private shuttingDown = false;
   private pendingOpen = false;
   private loaded = false;
   private initializationReloaded = false;
@@ -160,6 +161,7 @@ export class PlayerController {
 
   boot(): void {
     if (this.booted) return;
+    this.shuttingDown = false;
     this.booted = true;
     this.settings = readSettings(browserStorage());
     this.steamPageSelectors = steamPageClasses();
@@ -173,18 +175,20 @@ export class PlayerController {
   }
 
   shutdown(): void {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    this.booted = false;
+    this.pendingOpen = false;
+    this.mode = "closed";
     if (this.desktopFullscreen || this.windowFullscreen) this.setFullscreen(false);
     window.clearInterval(this.timer);
     this.timer = 0;
     this.unbindWindow();
-    this.pendingOpen = false;
-    this.stopExternalPlayback();
+    this.stopExternalPlayback(false);
     this.destroyView();
     void this.mpris.stop();
     this.forceThrottle(false);
     this.chrome.destroy();
-    this.mode = "closed";
-    this.booted = false;
     this.owner = null;
   }
 
@@ -323,6 +327,7 @@ export class PlayerController {
   }
 
   private openOn(win: SteamWindow): string {
+    if (this.shuttingDown) return this.status;
     this.pendingOpen = false;
     const alreadyShowing = this.mode === "expanded" && this.loaded && this.view != null;
     this.mode = "expanded";
@@ -340,6 +345,7 @@ export class PlayerController {
   }
 
   private tick = (): void => {
+    if (this.shuttingDown) return;
     try {
       const popup = findMainPopup();
       const desktopAvailable = popup != null && popup.window.document.hidden !== true;
@@ -714,9 +720,9 @@ export class PlayerController {
   }
 
   /** 播放器没了就得把音频还给页面，并让 MPRIS 回到直接读页面状态。 */
-  private stopExternalPlayback(): void {
+  private stopExternalPlayback(restoreWeb = true): void {
     this.mpris.setExternalPlayback(null);
-    this.mpv.setEnabled(false);
+    this.mpv.setEnabled(false, restoreWeb);
   }
 
   // 直接复用 render() 已经算好的 bounds：排一次界面要对整个客户端文档做一次遍历，

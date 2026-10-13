@@ -53,6 +53,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
   let registrations = 0;
   let unregistrations = 0;
   let sessionReleases = 0;
+  const bridgeDisables: { enabled: boolean; restoreWeb?: boolean }[] = [];
   let onFullscreenRequest: ((active: boolean, fillWindow: boolean) => void) | null = null;
   let chromeHandlers: ChromeHandlers | null = null;
   const client = {
@@ -81,7 +82,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
   };
   class FakeBridge {
     start() {}
-    setEnabled() {}
+    setEnabled(enabled: boolean, restoreWeb?: boolean) { bridgeDisables.push({ enabled, restoreWeb }); }
     setExternalPlayback() {}
     async stop() {}
   }
@@ -153,6 +154,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     registrations: () => registrations,
     unregistrations: () => unregistrations,
     sessionReleases: () => sessionReleases,
+    bridgeDisables,
     get chromeHandlers() { return chromeHandlers; },
     async settle() { await player.viewCreation; },
     createPopup(id: number): SteamPopup & { window: SteamWindow } {
@@ -244,6 +246,43 @@ describe("player fullscreen modes", () => {
     assert.equal(runtime.player.desktopFullscreen, false);
     assert.equal(runtime.player.windowFullscreen, false);
     assert.equal(runtime.models.at(-1)?.fullscreen, false);
+  });
+});
+
+describe("player shutdown", () => {
+  it("destroys the view once without restoring web playback or reopening after a late tick", async () => {
+    const runtime = setup();
+    const popup = runtime.createPopup(1);
+    runtime.setPopup(popup);
+    runtime.player.booted = true;
+    runtime.player.tick();
+    await runtime.settle();
+    runtime.player.shutdown();
+    const renders = runtime.models.length;
+    runtime.player.shutdown();
+    runtime.player.tick();
+    assert.equal(runtime.created.length, 1);
+    assert.equal(runtime.destroyed.length, 1);
+    assert.equal(runtime.player.mode, "closed");
+    assert.equal(runtime.player.booted, false);
+    assert.equal(runtime.player.pendingOpen, false);
+    assert.equal(runtime.models.length, renders);
+    assert.equal(runtime.bridgeDisables.filter(change => change.restoreWeb === false).length, 1);
+  });
+
+  it("does not create a view when shutdown interrupts pending recovery", async () => {
+    let release!: (value: null) => void;
+    const retirement = new Promise<null>(resolve => { release = resolve; });
+    const runtime = setup({ retire: () => retirement });
+    const popup = runtime.createPopup(1);
+    runtime.setPopup(popup);
+    runtime.player.tick();
+    runtime.player.shutdown();
+    release(null);
+    await runtime.settle();
+    runtime.player.tick();
+    assert.equal(runtime.created.length, 0);
+    assert.equal(runtime.player.mode, "closed");
   });
 });
 

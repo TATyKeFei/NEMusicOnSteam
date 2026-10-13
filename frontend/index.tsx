@@ -1,12 +1,14 @@
-import { definePlugin, DialogButton, Dropdown, Field, TextField, Toggle } from "millennium";
+import { definePlugin, DialogButton, Dropdown, Field, TextField, Toggle, ffi } from "millennium";
 import { useEffect, useState, type ReactElement } from "react";
 import { getPlayer, shutdownPlayer, type PlayerSnapshot } from "./player/player.ts";
+import { registerSteamShutdown } from "./player/steam-shutdown.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
 import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
 import type { NotificationMode, PlaybackBackend } from "./settings.ts";
 import { SteamSettingsEntry } from "./widget/steam-settings.ts";
 
 const steamSettings = new SteamSettingsEntry(() => <SettingsContent />);
+const shutdownBackend = ffi<[], string>("shutdown_backend");
 let runtimeStopped = false;
 
 const NOTIFICATION_OPTIONS = [
@@ -415,6 +417,10 @@ export default definePlugin(() => {
   // 正常退出 Steam 时，插件管理器不一定有机会执行 onDismount；pagehide/beforeunload
   // 是 WebKit 销毁前最后能可靠收到的信号。先把 BrowserView 销毁，避免它继续持有主窗口。
   const onPageExit = () => { shutdown(); };
+  const unregisterShutdown = registerSteamShutdown(() => {
+    shutdown();
+    void shutdownBackend().catch(() => {});
+  });
   window.addEventListener("pagehide", onPageExit);
   window.addEventListener("beforeunload", onPageExit);
   getPlayer(steamSettings).boot();
@@ -424,6 +430,7 @@ export default definePlugin(() => {
     icon: <NoteIcon />,
     content: <SettingsContent />,
     onDismount: () => {
+      unregisterShutdown();
       window.removeEventListener("pagehide", onPageExit);
       window.removeEventListener("beforeunload", onPageExit);
       shutdown();
