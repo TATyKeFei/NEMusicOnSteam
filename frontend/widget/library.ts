@@ -19,6 +19,7 @@ export const LIBRARY_ENTRY_FALLBACK_CLASSES: LibraryEntryClasses = {
 
 type LibraryHandlers = {
   onOpen: () => void;
+  onSettings: () => void;
   onClose: () => void;
 };
 
@@ -26,11 +27,13 @@ const LIBRARY_ICON = "<svg viewBox=\"0 0 1024 1024\" aria-hidden=\"true\" fill=\
 
 const STYLE = `
 #${LIBRARY_ENTRY_ID} {
+  position: relative;
   display: flex;
   flex: 0 0 32px;
   min-height: 32px;
   margin: 4px 6px 6px;
   gap: 4px;
+  font: 13px 'Motiva Sans', Arial, Helvetica, sans-serif;
   pointer-events: auto;
   -webkit-app-region: no-drag;
 }
@@ -84,49 +87,97 @@ const STYLE = `
   gap: 4px;
 }
 #${LIBRARY_ENTRY_ID} .nemusic-library-toggle span { width: 9px; height: 9px; background: currentColor; }
+#${LIBRARY_ENTRY_ID} .nemusic-library-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 4px);
+  z-index: 20;
+  display: none;
+  min-width: 160px;
+  padding: 8px 0;
+  box-sizing: border-box;
+  flex-direction: column;
+  gap: 0;
+  border: 0;
+  border-radius: 0;
+  background: #3d4450;
+  box-shadow: 0 8px 26px 2px rgba(0, 0, 0, 0.2);
+}
+#${LIBRARY_ENTRY_ID}[data-menu-open="true"] .nemusic-library-menu { display: flex; }
+#${LIBRARY_ENTRY_ID} .nemusic-library-menu button {
+  flex: 0 0 auto;
+  width: 100%;
+  height: 35px;
+  min-height: 35px;
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #dcdedf;
+  font: inherit;
+  line-height: 19px;
+  text-align: left;
+  cursor: pointer;
+}
+#${LIBRARY_ENTRY_ID} .nemusic-library-menu button:hover,
+#${LIBRARY_ENTRY_ID} .nemusic-library-menu button:focus-visible {
+  background: #dcdedf;
+  color: #3d4450;
+  outline: none;
+}
 `;
 
 export class LibraryEntry {
   private host: HTMLElement | null = null;
+  private doc: Document | null = null;
   private row: HTMLDivElement | null = null;
   private openButton: HTMLButtonElement | null = null;
   private toggleButton: HTMLButtonElement | null = null;
+  private menu: HTMLDivElement | null = null;
   private style: HTMLStyleElement | null = null;
   private mode: PlayerMode | null = null;
+  private menuOpen = false;
   private handlers: LibraryHandlers | null = null;
 
   render(doc: Document, mode: PlayerMode, handlers: LibraryHandlers, classes: LibraryEntryClasses): void {
     this.handlers = handlers;
     if (!this.host?.isConnected) {
+      this.setMenuOpen(false);
       const host = doc.querySelector(`.${classes.container}`);
       this.host = host != null && isHtmlElement(host) ? host : null;
     }
-    if (this.host == null) return;
+    if (this.host == null) {
+      this.setMenuOpen(false);
+      return;
+    }
     if (this.row == null) this.create(doc, classes);
     if (this.row!.parentElement !== this.host || this.host.lastElementChild !== this.row) this.host.append(this.row!);
     if (this.mode === mode) return;
     this.mode = mode;
+    this.setMenuOpen(false);
     const active = mode === "expanded";
     this.openButton!.setAttribute("aria-pressed", String(active));
     this.openButton!.title = mode === "collapsed" ? "网易云正在后台，点击展开" : "打开网易云音乐";
-    const action = active ? "关闭网易云音乐" : mode === "collapsed" ? "展开网易云音乐" : "打开网易云音乐";
-    this.toggleButton!.title = action;
-    this.toggleButton!.setAttribute("aria-label", action);
   }
 
   destroy(): void {
+    this.setMenuOpen(false);
     this.row?.remove();
     this.style?.remove();
     this.host = null;
+    this.doc = null;
     this.row = null;
     this.openButton = null;
     this.toggleButton = null;
+    this.menu = null;
     this.style = null;
     this.handlers = null;
     this.mode = null;
+    this.menuOpen = false;
   }
 
   private create(doc: Document, classes: LibraryEntryClasses): void {
+    this.doc = doc;
     const style = doc.createElement("style");
     style.textContent = STYLE;
     doc.head.append(style);
@@ -135,7 +186,19 @@ export class LibraryEntry {
     const row = doc.createElement("div");
     row.id = LIBRARY_ENTRY_ID;
     row.addEventListener("click", event => event.stopPropagation());
-    row.addEventListener("keydown", event => event.stopPropagation());
+    row.addEventListener("keydown", event => {
+      event.stopPropagation();
+      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+      if (!this.toggleButton?.contains(event.target as Node) && !this.menu?.contains(event.target as Node)) return;
+      event.preventDefault();
+      const wasOpen = this.menuOpen;
+      this.setMenuOpen(true);
+      const items = Array.from(this.menu!.children) as HTMLButtonElement[];
+      const current = items.indexOf(doc.activeElement as HTMLButtonElement);
+      const index = !wasOpen || current < 0 ? (event.key === "ArrowUp" ? items.length - 1 : 0)
+        : (current + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+      items[index].focus();
+    });
     row.addEventListener("keyup", event => event.stopPropagation());
 
     const open = doc.createElement("button");
@@ -151,23 +214,87 @@ export class LibraryEntry {
     label.className = `${classes.label} nemusic-library-label`;
     label.textContent = "网易云音乐";
     open.append(label);
-    open.addEventListener("click", () => this.handlers?.onOpen());
+    open.addEventListener("click", () => {
+      this.setMenuOpen(false);
+      this.handlers?.onOpen();
+    });
 
     const toggle = doc.createElement("button");
     toggle.type = "button";
+    toggle.setAttribute("aria-haspopup", "menu");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", `${LIBRARY_ENTRY_ID}-menu`);
+    toggle.setAttribute("aria-label", "展开菜单");
+    toggle.title = "展开菜单";
     toggle.className = "nemusic-library-toggle";
     for (let index = 0; index < 4; index += 1) {
       const square = doc.createElement("span");
       square.setAttribute("aria-hidden", "true");
       toggle.append(square);
     }
-    toggle.addEventListener("click", () => {
-      if (this.mode === "expanded") this.handlers?.onClose();
-      else this.handlers?.onOpen();
+    toggle.addEventListener("click", () => this.setMenuOpen(!this.menuOpen));
+
+    const menu = doc.createElement("div");
+    menu.id = `${LIBRARY_ENTRY_ID}-menu`;
+    menu.className = "nemusic-library-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "网易云音乐菜单");
+    const settings = doc.createElement("button");
+    settings.type = "button";
+    settings.setAttribute("role", "menuitem");
+    settings.textContent = "设置";
+    settings.addEventListener("click", () => {
+      this.setMenuOpen(false);
+      this.handlers?.onSettings();
     });
-    row.append(open, toggle);
+    const close = doc.createElement("button");
+    close.type = "button";
+    close.setAttribute("role", "menuitem");
+    close.textContent = "关闭";
+    close.addEventListener("click", () => {
+      this.setMenuOpen(false);
+      this.handlers?.onClose();
+    });
+    menu.append(settings, close);
+    row.append(open, toggle, menu);
     this.row = row;
     this.openButton = open;
     this.toggleButton = toggle;
+    this.menu = menu;
+    this.setMenuOpen(false);
   }
+
+  private setMenuOpen(open: boolean): void {
+    if (this.row == null || this.toggleButton == null) return;
+    this.menuOpen = open;
+    this.row.setAttribute("data-menu-open", String(open));
+    this.toggleButton.setAttribute("aria-expanded", String(open));
+    this.toggleButton.setAttribute("aria-label", open ? "收起菜单" : "展开菜单");
+    this.toggleButton.title = open ? "收起菜单" : "展开菜单";
+    if (open) {
+      this.doc?.addEventListener("pointerdown", this.onOutsidePointer, true);
+      this.doc?.addEventListener("keydown", this.onMenuKey, true);
+    } else {
+      this.doc?.removeEventListener("pointerdown", this.onOutsidePointer, true);
+      this.doc?.removeEventListener("keydown", this.onMenuKey, true);
+    }
+  }
+
+  private onOutsidePointer = (event: PointerEvent): void => {
+    if (this.row?.contains(event.target as Node)) return;
+    this.setMenuOpen(false);
+  };
+
+  private onMenuKey = (event: KeyboardEvent): void => {
+    if (event.key !== "Escape" && event.key !== "Tab") return;
+    const focusInMenu = this.menu?.contains(this.doc?.activeElement ?? null) === true;
+    this.setMenuOpen(false);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      this.toggleButton?.focus();
+    } else if (focusInMenu) {
+      this.toggleButton?.focus();
+    }
+  };
 }

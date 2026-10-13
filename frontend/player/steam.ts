@@ -22,6 +22,9 @@ export type BrowserViewCreateOptions = {
 };
 
 export type SteamClient = {
+  URL?: {
+    ExecuteSteamURL?: (url: string) => void;
+  };
   Window?: {
     ToggleFullScreen?: (fullscreen: boolean) => void;
   };

@@ -1,12 +1,13 @@
 import { ROOT_ID } from "../constants.ts";
 import { headerHeightFromButtons, parkedBounds, type Bounds, type ButtonRect } from "./layout.ts";
-import { findSupernavRow, headerHeightFromNav, navTextItems } from "./nav.ts";
+import { findSupernavRow, headerHeightFromNav, NAV_INACTIVE_ATTR, NAV_INACTIVE_STYLE, NAV_SELECTED_CLASS, navTextItems } from "./nav.ts";
 import { LibraryEntry, LIBRARY_ENTRY_FALLBACK_CLASSES, type LibraryEntryClasses } from "./library.ts";
 
 export type PlayerMode = "closed" | "expanded" | "collapsed";
 
 export type ChromeHandlers = {
   onOpen: () => void;
+  onSettings: () => void;
   onNavigateAway: () => void;
   onClose: () => void;
 };
@@ -45,11 +46,15 @@ export class PlayerChrome {
   private page: HTMLDivElement | null = null;
   private slot: HTMLDivElement | null = null;
   private navigationHost: HTMLElement | null = null;
+  private selectedNavClass = NAV_SELECTED_CLASS;
+  private inactiveNavigation = new Set<HTMLElement>();
+  private navigationStyle: HTMLStyleElement | null = null;
   private handlers: ChromeHandlers | null = null;
   private headerHeight: number | null = null;
 
-  mount(doc: Document, handlers: ChromeHandlers, libraryClasses: LibraryEntryClasses = LIBRARY_ENTRY_FALLBACK_CLASSES): void {
+  mount(doc: Document, handlers: ChromeHandlers, libraryClasses: LibraryEntryClasses = LIBRARY_ENTRY_FALLBACK_CLASSES, selectedNavClass = NAV_SELECTED_CLASS): void {
     this.libraryClasses = libraryClasses;
+    this.selectedNavClass = selectedNavClass;
     if (this.doc === doc && this.root?.isConnected) {
       this.handlers = handlers;
       return;
@@ -57,6 +62,10 @@ export class PlayerChrome {
     this.destroy();
     this.doc = doc;
     this.handlers = handlers;
+    const navigationStyle = doc.createElement("style");
+    navigationStyle.textContent = NAV_INACTIVE_STYLE;
+    doc.head.append(navigationStyle);
+    this.navigationStyle = navigationStyle;
     const root = doc.createElement("div");
     root.id = ROOT_ID;
     root.style.position = "fixed";
@@ -86,6 +95,8 @@ export class PlayerChrome {
   destroy(): void {
     this.library.destroy();
     this.bindNavigation(null);
+    this.navigationStyle?.remove();
+    this.navigationStyle = null;
     this.root?.remove();
     this.doc = null;
     this.root = null;
@@ -107,6 +118,7 @@ export class PlayerChrome {
     const nav = this.navigationHost;
     this.library.render(doc, model.mode, this.handlers!, this.libraryClasses);
     const expanded = model.mode === "expanded";
+    this.paintNavigation(expanded);
     const parked = model.mode === "collapsed" && model.keepAlive;
     const header = model.fullscreen ? 0 : headerHeightFromNav(nav?.getBoundingClientRect().bottom ?? null, this.headerFallback(doc));
     const pageBox: Bounds = { x: 0, y: header, width, height: Math.max(1, height - header) };
@@ -131,6 +143,7 @@ export class PlayerChrome {
 
   private bindNavigation(host: HTMLElement | null): void {
     if (this.navigationHost === host) return;
+    this.restoreNavigation();
     this.navigationHost?.removeEventListener("click", this.onNavClick, true);
     this.navigationHost = host;
     this.headerHeight = null;
@@ -141,8 +154,32 @@ export class PlayerChrome {
     const host = this.navigationHost;
     const target = event.target;
     if (host == null || target == null || !navTextItems(host).some(item => item.contains(target as Node))) return;
+    this.restoreNavigation();
     this.handlers?.onNavigateAway();
   };
+
+  private paintNavigation(expanded: boolean): void {
+    if (!expanded || this.navigationHost == null) {
+      this.restoreNavigation();
+      return;
+    }
+    const selectedClasses = this.selectedNavClass.split(/\s+/).filter(Boolean);
+    const selectedItems = new Set(navTextItems(this.navigationHost).filter(item => selectedClasses.some(name => item.classList.contains(name))));
+    for (const item of this.inactiveNavigation) {
+      if (selectedItems.has(item)) continue;
+      item.removeAttribute(NAV_INACTIVE_ATTR);
+      this.inactiveNavigation.delete(item);
+    }
+    for (const item of selectedItems) {
+      if (item.getAttribute(NAV_INACTIVE_ATTR) !== "1") item.setAttribute(NAV_INACTIVE_ATTR, "1");
+      this.inactiveNavigation.add(item);
+    }
+  }
+
+  private restoreNavigation(): void {
+    for (const item of this.inactiveNavigation) item.removeAttribute(NAV_INACTIVE_ATTR);
+    this.inactiveNavigation.clear();
+  }
 
   invalidateHeader(): void {
     this.headerHeight = null;

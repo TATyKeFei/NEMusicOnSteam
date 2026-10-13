@@ -1,6 +1,6 @@
 import { findModule } from "millennium";
 import type { ReactNode } from "react";
-import { steamGlobals } from "../player/steam.ts";
+import { sharedSteamClient, steamGlobals, type SteamWindow } from "../player/steam.ts";
 
 type MountedPage = { dialog: HTMLElement; button: HTMLButtonElement; dispose: () => void };
 
@@ -18,13 +18,24 @@ export class SteamSettingsEntry {
   private classes = FALLBACK_CLASSES;
   private nativeSeen = false;
   private injected = false;
+  private pendingOpen = false;
+  private readonly content: () => ReactNode;
 
-  constructor(private readonly content: () => ReactNode) {}
+  constructor(content: () => ReactNode) {
+    this.content = content;
+  }
 
   /** 设置页是来自 Lua 补丁，还是我们自己注入的 DOM。 */
   entryStatus(): "native" | "injected" | "waiting" {
     if (this.nativeSeen) return "native";
     return this.injected ? "injected" : "waiting";
+  }
+
+  open(win: SteamWindow): void {
+    this.pendingOpen = true;
+    const client = win.SteamClient?.URL?.ExecuteSteamURL != null ? win.SteamClient : sharedSteamClient();
+    client?.URL?.ExecuteSteamURL?.("steam://open/settings");
+    this.sync();
   }
 
   start(): void {
@@ -41,6 +52,7 @@ export class SteamSettingsEntry {
   stop(): void {
     window.clearInterval(this.timer);
     this.timer = 0;
+    this.pendingOpen = false;
     for (const page of this.mounted.values()) page.dispose();
     this.mounted.clear();
   }
@@ -58,7 +70,12 @@ export class SteamSettingsEntry {
     }
     for (const popup of Array.from(steamGlobals().g_PopupManager?.GetPopups?.() ?? [])) {
       const doc = popup.window?.document;
-      if (!doc || popup.window?.closed || this.mounted.has(doc)) continue;
+      if (!doc || popup.window?.closed) continue;
+      const mounted = this.mounted.get(doc);
+      if (mounted != null) {
+        this.selectRequestedPage(mounted.button);
+        continue;
+      }
       const dialog = doc.querySelector<HTMLElement>(this.selector("SettingsModal"));
       if (!dialog) continue;
       const list = dialog.querySelector<HTMLElement>(this.selector("PagedSettingsDialog_PageList"));
@@ -67,15 +84,28 @@ export class SteamSettingsEntry {
       if (list.textContent?.includes("网易云音乐")) {
         // Lua 补丁加的设置路由已经在列表里放了一个入口，说明补丁生效了。
         this.nativeSeen = true;
+        if (this.pendingOpen) {
+          const button = Array.from(list.querySelectorAll<HTMLElement>(this.selector("PagedSettingsDialog_PageListItem")))
+            .find(item => item.textContent?.includes("网易云音乐"));
+          if (button != null) this.selectRequestedPage(button);
+        }
         continue;
       }
       try {
-        this.mounted.set(doc, this.mount(dialog, list, column));
+        const page = this.mount(dialog, list, column);
+        this.mounted.set(doc, page);
         this.injected = true;
+        this.selectRequestedPage(page.button);
       } catch (error) {
         console.warn("[NEMusic] Steam settings entry", error);
       }
     }
+  }
+
+  private selectRequestedPage(button: HTMLElement): void {
+    if (!this.pendingOpen) return;
+    this.pendingOpen = false;
+    button.click();
   }
 
   private mount(dialog: HTMLElement, list: HTMLElement, column: HTMLElement): MountedPage {

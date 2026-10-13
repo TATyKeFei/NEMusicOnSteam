@@ -14,7 +14,7 @@
 
 | 系统    | 可用性                 | 备注及注意事项       |
 | :---    | :---                   | :---                 |
-| Linux   | 支持（主要推荐）       | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不爆改应该都支持                       |
+| Linux   | 支持推荐               | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不是逆天爆改故意针对的都支持           |
 | Windows | 残废不推荐             | 本项目依赖MPRIS实现大部分功能，由于Windows没有MPRIS且我不用身边没有Windows设备测试，对于Win的支持完全不保证  |
 | Mac OS  | 未测试适配             | 我是穷鬼安卓人没钱买苹果测试，但如您看上此项目且愿意长期帮忙测试我会很感谢             |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
@@ -27,21 +27,21 @@
 
 | 支持功能   | 支持状况                                              | 备注   |
 | :---       | :---                                                  | :---   |
-| MPRIS      | 仅 Linux 支持                                                  | 仅Linux支持，Windows没有MPRIS不支持  |
-| 通知       | 支持                                                  | 支持KDE原生通知、Mako等通知服务; Windows未测试        |
+| MPRIS      | 仅 Linux       | 仅Linux支持，Windows没有MPRIS不支持  |
+| 通知       | 支持           | 支持KDE原生通知、Mako等通知服务; Windows未测试        |
 | 一起听     | 支持           | 可以加入/创建一起听房间。无法使用消息和麦克风语音聊天功能 |
 | 音质设置   | 支持           | 在**Steam → 设置 → 网易云音乐**里可以设置。但要注意账号是否有vip不然开不了高音质 |
 | 后台播放   | 支持           | 依赖Steam的通话api，如果你正在使用通话功能可能导致中断。不过应该没人边打电话边听歌吧?       |
 | 下载歌曲   | 支持           | 列表里的歌曲更多菜单里新增了“下载”按钮，在**Steam → 设置 → 网易云音乐**里可以选下载音质和目录，默认路径 `~/Music/网易云音乐` |
-| 听歌识曲   | 仅 Linux 支持  | 支持桌面音频、麦克风输入录制                     |
-| 歌词       | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#歌词](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E6%AD%8C%E8%AF%8D)            |
-| 全局快捷键 | 仅 Linux 支持  | 依赖 MPRIS 连接，做法见[#全局快捷键](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E5%85%A8%E5%B1%80%E5%BF%AB%E6%8D%B7%E9%94%AE)       |
-| 多播放引擎支持 | 仅 Linux 支持 | 可选 mpv、mpd 作为音频播放器引擎              |
+| 听歌识曲   | 仅 Linux       | 支持桌面音频、麦克风输入录制                     |
+| 歌词       | 仅 Linux       | 依赖 MPRIS 连接，做法见[#歌词](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E6%AD%8C%E8%AF%8D)            |
+| 全局快捷键 | 仅 Linux       | 依赖 MPRIS 连接，做法见[#全局快捷键](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E5%85%A8%E5%B1%80%E5%BF%AB%E6%8D%B7%E9%94%AE)       |
+| 多播放后端支持 | 仅 Linux   | 可选 mpv、mpd 作为音频播放器引擎              |
 | 界面Ui缩放 | 支持           | 网易云很多样式都是根据固定像素而不是分辨率百分比导致ui在高分辨率大尺寸的显示器显得很小。这个功能可以解决   |
-| 全屏与窗口铺满 | 支持 | 点击搜索框右侧全屏按钮进入桌面全屏；按住 Shift 点击只铺满当前 Steam 窗口，不改变窗口大小。再次点击或按 Esc 退出 |
-| 手柄控制支持 | 正在制作      | 为一些掌机如SteamDeck服务，就不用搞得屏幕一堆指纹了 |
+| 全屏与窗口铺满 | 支持       | 点击搜索框右侧全屏按钮进入桌面全屏；按住 Shift 点击只铺满当前 Steam 窗口，不改变窗口大小。再次点击或按 Esc 退出 |
+| 手柄控制支持 | 正在制作     | 为一些掌机如SteamDeck服务，就不用搞得屏幕一堆指纹了 |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为sbSteam还不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
-| UnblockNeteaseMusic | 后续支持 | 解锁灰色无版权音乐                     |
+| UnblockNeteaseMusic | 后续支持 | 解锁灰色版权音乐                     |
 | last.fm    | 后续支持       |  |
 | API 接口   | 后续支持       | 其他插件可以使用api控制播放暂停歌曲       |
 
@@ -81,6 +81,8 @@
 # 怎么用?
 
 装好并启用之后，在 Steam 库左下角点击 **网易云音乐** 即可打开
+
+入口右侧的四方格按钮可展开菜单，点击 **设置** 进入网易云音乐设置页，点击 **关闭** 停止播放并关闭播放器。
 
 第一次打开会让你扫码登录一下，之后都不会弹登录了
 

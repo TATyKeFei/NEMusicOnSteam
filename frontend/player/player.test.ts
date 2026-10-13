@@ -3,8 +3,10 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
-import type { ChromeModel } from "../widget/chrome.ts";
+import type { ChromeHandlers, ChromeModel } from "../widget/chrome.ts";
+import type { SteamSettingsStatus } from "./player.ts";
 import { LIBRARY_ENTRY_FALLBACK_CLASSES } from "../widget/library.ts";
+import { NAV_SELECTED_CLASS } from "../widget/nav.ts";
 import type { Bounds } from "../widget/layout.ts";
 import { sameBounds } from "../widget/layout.ts";
 import { isPlayerDocument, PLAYER_URL } from "../constants.ts";
@@ -40,7 +42,7 @@ type Controller = {
   shutdown(): void;
 };
 
-function setup(options: { desktopSupported?: boolean; failToggle?: boolean; playbackBackend?: string; keepAliveWhenCollapsed?: boolean; ready?: () => Promise<boolean>; retire?: (destroyNative?: () => void) => Promise<PlayerRecoverySnapshot | null> } = {}) {
+function setup(options: { desktopSupported?: boolean; failToggle?: boolean; playbackBackend?: string; keepAliveWhenCollapsed?: boolean; ready?: () => Promise<boolean>; retire?: (destroyNative?: () => void) => Promise<PlayerRecoverySnapshot | null>; steamSettings?: SteamSettingsStatus } = {}) {
   const models: ChromeModel[] = [];
   const toggles: boolean[] = [];
   const created: { view: BrowserView; options: BrowserViewCreateOptions; bounds: Bounds[]; visible: boolean[]; callbacks: Map<string, (...args: unknown[]) => void> }[] = [];
@@ -52,6 +54,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
   let unregistrations = 0;
   let sessionReleases = 0;
   let onFullscreenRequest: ((active: boolean, fillWindow: boolean) => void) | null = null;
+  let chromeHandlers: ChromeHandlers | null = null;
   const client = {
     Window: options.desktopSupported === false ? {} : {
       ToggleFullScreen(active: boolean) {
@@ -84,7 +87,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
   }
   const ControllerClass = runInNewContext(`${source}; PlayerController`, {
     PlayerChrome: class {
-      mount() {}
+      mount(_doc: Document, handlers: ChromeHandlers) { chromeHandlers = handlers; }
       render(model: ChromeModel) {
         models.push(model);
         if (model.mode === "expanded") return { x: 0, y: 64, width: 1920, height: 1016 };
@@ -106,6 +109,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     },
     STEAM_PAGE_FALLBACK_CLASSES: {},
     LIBRARY_ENTRY_FALLBACK_CLASSES,
+    NAV_SELECTED_CLASS,
     readSettings: () => ({ keepAliveWhenCollapsed: options.keepAliveWhenCollapsed ?? true, disableBackgroundThrottling: false, playbackBackend: options.playbackBackend ?? "web" }),
     browserStorage: () => null,
     findModule: () => null,
@@ -135,8 +139,8 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     retirePlayerTargets: options.retire ?? (async () => null),
     window: { setInterval: () => 1, clearInterval() {} },
     console: { warn() {}, error() {} },
-  }) as new () => Controller;
-  const player = new ControllerClass();
+  }) as new (steamSettings?: SteamSettingsStatus) => Controller;
+  const player = new ControllerClass(options.steamSettings);
   player.mode = "expanded";
   return {
     player,
@@ -149,6 +153,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     registrations: () => registrations,
     unregistrations: () => unregistrations,
     sessionReleases: () => sessionReleases,
+    get chromeHandlers() { return chromeHandlers; },
     async settle() { await player.viewCreation; },
     createPopup(id: number): SteamPopup & { window: SteamWindow } {
       const win = {
@@ -239,6 +244,24 @@ describe("player fullscreen modes", () => {
     assert.equal(runtime.player.desktopFullscreen, false);
     assert.equal(runtime.player.windowFullscreen, false);
     assert.equal(runtime.models.at(-1)?.fullscreen, false);
+  });
+});
+
+describe("library menu actions", () => {
+  it("opens settings for the main Steam window and closes playback only for the close action", () => {
+    const windows: SteamWindow[] = [];
+    const runtime = setup({ steamSettings: { entryStatus: () => "waiting", open: win => { windows.push(win); } } });
+    const popup = runtime.createPopup(1);
+    runtime.setPopup(popup);
+    runtime.player.mode = "closed";
+    runtime.player.tick();
+    assert.ok(runtime.chromeHandlers);
+    runtime.chromeHandlers.onSettings();
+    assert.deepEqual(windows, [popup.window]);
+    assert.equal(runtime.player.mode, "closed");
+    runtime.player.mode = "collapsed";
+    runtime.chromeHandlers.onClose();
+    assert.equal(runtime.player.mode, "closed");
   });
 });
 

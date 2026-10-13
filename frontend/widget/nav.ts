@@ -1,3 +1,21 @@
+export const NAV_SELECTED_CLASS = "_1gqEjB5QsKT_NftD1dEsdZ";
+export const NAV_INACTIVE_ATTR = "data-nemusic-nav-inactive";
+
+export const NAV_INACTIVE_STYLE = `
+[${NAV_INACTIVE_ATTR}] > * {
+  color: #dcdedf !important;
+  text-shadow: none !important;
+  transition: none !important;
+  animation: none !important;
+}
+[${NAV_INACTIVE_ATTR}]:hover > * { color: #fff !important; }
+[${NAV_INACTIVE_ATTR}] > *::after {
+  display: none !important;
+  transition: none !important;
+  animation: none !important;
+}
+`;
+
 export function isHtmlElement(element: Element): element is HTMLElement {
   return element.namespaceURI === "http://www.w3.org/1999/xhtml";
 }

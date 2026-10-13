@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 import { PlayerChrome } from "./chrome.ts";
+import { NAV_INACTIVE_ATTR, NAV_SELECTED_CLASS } from "./nav.ts";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 
@@ -21,6 +22,7 @@ type FakeElement = {
   textContent: string;
   children: FakeElement[];
   parentElement: FakeElement | null;
+  remove: () => void;
   classList: {
     add: (...names: string[]) => void;
     remove: (...names: string[]) => void;
@@ -32,6 +34,7 @@ type FakeElement = {
   removeEventListener: () => void;
   getAttribute: (name: string) => string | null;
   setAttribute: (name: string, value: string) => void;
+  removeAttribute: (name: string) => void;
   contains: (node: unknown) => boolean;
   querySelector: () => null;
   querySelectorAll: (selector: string) => FakeElement[];
@@ -79,6 +82,11 @@ function fakeElement(counts: Counts, tagName: string, rect: Rect): FakeElement {
     textContent: "",
     children,
     parentElement: null,
+    remove: () => {
+      if (element.parentElement == null) return;
+      element.parentElement.children = element.parentElement.children.filter(child => child !== element);
+      element.parentElement = null;
+    },
     classList: {
       add: (...names) => { for (const name of names) classes.add(name); },
       remove: (...names) => { for (const name of names) classes.delete(name); },
@@ -90,6 +98,7 @@ function fakeElement(counts: Counts, tagName: string, rect: Rect): FakeElement {
     removeEventListener: () => {},
     getAttribute: (name) => attributes.get(name) ?? null,
     setAttribute: (name, value) => { attributes.set(name, value); },
+    removeAttribute: name => { attributes.delete(name); },
     contains: (node) => { for (let current = node as FakeElement | null; current != null; current = current.parentElement) if (current === element) return true; return false; },
     querySelector: () => null,
     querySelectorAll: (selector) => (selector === "button" ? subtree(element, (child) => child.tagName === "BUTTON") : []),
@@ -114,16 +123,20 @@ function chromeFixture() {
   const clientRect = (): Rect => ({ top: 0, left: 0, right: 1000, bottom: 600, width: 1000, height: 600 });
   const html = fakeElement(counts, "HTML", clientRect());
   const body = fakeElement(counts, "BODY", clientRect());
+  const head = fakeElement(counts, "HEAD", clientRect());
   const host = fakeElement(counts, "DIV", { top: 0, left: 0, right: 1000, bottom: 40, width: 1000, height: 40 });
   const library = fakeElement(counts, "DIV", { top: 0, left: 100, right: 200, bottom: 40, width: 100, height: 40 });
   const community = fakeElement(counts, "DIV", { top: 0, left: 200, right: 300, bottom: 40, width: 100, height: 40 });
   library.textContent = "库";
   community.textContent = "社区";
+  library.classList.add(NAV_SELECTED_CLASS, "nav-menu");
+  community.classList.add("nav-menu");
   host.append(library, community);
   let navigations = 0;
   const doc = {
     documentElement: html,
     body,
+    head,
     defaultView: {
       getComputedStyle: () => ({ display: "flex", flexDirection: "row", fontSize: "18px", textTransform: "uppercase", cursor: "pointer" }),
     },
@@ -142,6 +155,7 @@ function chromeFixture() {
   const chrome = new PlayerChrome();
   chrome.mount(doc, {
     onOpen: () => {},
+    onSettings: () => {},
     onNavigateAway: () => { navigations += 1; },
     onClose: () => {},
   });
@@ -149,9 +163,12 @@ function chromeFixture() {
     chrome,
     counts,
     host,
+    head,
     library,
+    community,
     navigations: () => navigations,
     close: () => chrome.render({ mode: "closed", status: "", keepAlive: true, fullscreen: false }),
+    collapse: () => chrome.render({ mode: "collapsed", status: "", keepAlive: true, fullscreen: false }),
     open: () => chrome.render({ mode: "expanded", status: "", keepAlive: true, fullscreen: false }),
     fullscreen: () => chrome.render({ mode: "expanded", status: "", keepAlive: true, fullscreen: true }),
     slot: () => (body.children[0] as FakeElement).children[1],
@@ -210,5 +227,59 @@ describe("Player chrome layout cost", () => {
   it("does not register a backend patch that inserts the old top navigation entry", () => {
     const backend = readFileSync(new URL("../../backend/main.lua", import.meta.url), "utf8");
     assert.doesNotMatch(backend, /NEMusicOnSteamNav|nemusic-nav-link|SuperNav/);
+  });
+
+  it("clears the library highlight while expanded and restores it when collapsed or closed", () => {
+    const player = chromeFixture();
+    player.open();
+    assert.equal(player.library.classList.contains(NAV_SELECTED_CLASS), true);
+    assert.equal(player.library.getAttribute(NAV_INACTIVE_ATTR), "1");
+    assert.equal(player.library.classList.contains("nav-menu"), true);
+    assert.equal(player.community.classList.contains(NAV_SELECTED_CLASS), false);
+    player.collapse();
+    assert.equal(player.library.classList.contains(NAV_SELECTED_CLASS), true);
+    assert.equal(player.library.getAttribute(NAV_INACTIVE_ATTR), null);
+    player.open();
+    player.close();
+    assert.equal(player.library.classList.contains(NAV_SELECTED_CLASS), true);
+    assert.equal(player.library.getAttribute(NAV_INACTIVE_ATTR), null);
+  });
+
+  it("keeps the inactive appearance when Steam rerenders on hover without waiting for another tick", () => {
+    const player = chromeFixture();
+    player.open();
+    player.library.classList.remove(NAV_SELECTED_CLASS);
+    player.library.classList.add(NAV_SELECTED_CLASS);
+    assert.equal(player.library.getAttribute(NAV_INACTIVE_ATTR), "1");
+    player.close();
+    assert.equal(player.library.classList.contains(NAV_SELECTED_CLASS), true);
+    assert.equal(player.library.getAttribute(NAV_INACTIVE_ATTR), null);
+  });
+
+  it("restores the selection before returning to Steam or unloading the plugin", () => {
+    const player = chromeFixture();
+    player.open();
+    player.host.dispatch("click", { target: player.library });
+    assert.equal(player.library.classList.contains(NAV_SELECTED_CLASS), true);
+    assert.equal(player.library.getAttribute(NAV_INACTIVE_ATTR), null);
+    player.open();
+    player.chrome.destroy();
+    assert.equal(player.library.classList.contains(NAV_SELECTED_CLASS), true);
+    assert.equal(player.library.getAttribute(NAV_INACTIVE_ATTR), null);
+    assert.equal(player.head.children.length, 0);
+  });
+
+  it("leaves Steam's current route selection intact when it changes during playback", () => {
+    const player = chromeFixture();
+    player.open();
+    player.library.classList.remove(NAV_SELECTED_CLASS);
+    player.community.classList.add(NAV_SELECTED_CLASS);
+    player.open();
+    assert.equal(player.library.getAttribute(NAV_INACTIVE_ATTR), null);
+    assert.equal(player.community.getAttribute(NAV_INACTIVE_ATTR), "1");
+    player.close();
+    assert.equal(player.library.classList.contains(NAV_SELECTED_CLASS), false);
+    assert.equal(player.community.classList.contains(NAV_SELECTED_CLASS), true);
+    assert.equal(player.community.getAttribute(NAV_INACTIVE_ATTR), null);
   });
 });

@@ -1,6 +1,7 @@
 import { findModule } from "millennium";
 import { PlayerChrome, type PlayerMode } from "../widget/chrome.ts";
 import { LIBRARY_ENTRY_FALLBACK_CLASSES, type LibraryEntryClasses } from "../widget/library.ts";
+import { NAV_SELECTED_CLASS } from "../widget/nav.ts";
 import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "../constants.ts";
 import { DownloadBridge, type DownloadSnapshot } from "../download/download.ts";
 import { sameBounds, type Bounds } from "../widget/layout.ts";
@@ -64,7 +65,20 @@ function libraryEntryClasses(): LibraryEntryClasses {
   return classes;
 }
 
-export type SteamSettingsStatus = { entryStatus: () => "native" | "injected" | "waiting" };
+function navigationSelectedClass(): string {
+  try {
+    const navigation = findModule(module => typeof module?.SuperNavMenu === "string" && typeof module?.Selected === "string");
+    return navigation?.Selected ?? NAV_SELECTED_CLASS;
+  } catch (error) {
+    console.warn("[NEMusic] navigation selected class", error);
+    return NAV_SELECTED_CLASS;
+  }
+}
+
+export type SteamSettingsStatus = {
+  entryStatus: () => "native" | "injected" | "waiting";
+  open: (win: SteamWindow) => void;
+};
 
 export type PlayerSnapshot = {
   mode: PlayerMode;
@@ -101,6 +115,7 @@ export class PlayerController {
   }));
   private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
   private libraryClasses: LibraryEntryClasses = LIBRARY_ENTRY_FALLBACK_CLASSES;
+  private selectedNavClass = NAV_SELECTED_CLASS;
   private steamPageShown: boolean | null = null;
   private yieldedForSteamPage = false;
   private settings: PlayerSettings = readSettings(browserStorage());
@@ -148,6 +163,7 @@ export class PlayerController {
     this.settings = readSettings(browserStorage());
     this.steamPageSelectors = steamPageClasses();
     this.libraryClasses = libraryEntryClasses();
+    this.selectedNavClass = navigationSelectedClass();
     this.pendingOpen = this.settings.openOnStart;
     this.timer = window.setInterval(this.tick, TICK_MS);
     this.mpris.start();
@@ -351,11 +367,12 @@ export class PlayerController {
     if (win.document?.body == null) return;
     this.chrome.mount(win.document, {
       onOpen: () => this.open(),
+      onSettings: () => this.steamSettings?.open(win),
       onNavigateAway: () => {
         if (this.mode === "expanded") this.collapse();
       },
       onClose: () => this.close(),
-    }, this.libraryClasses);
+    }, this.libraryClasses, this.selectedNavClass);
     this.bindWindowEvents(win);
   }
 
