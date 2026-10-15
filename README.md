@@ -100,15 +100,15 @@ npm test
 npm run build      # 测试开发时: npm run dev 
 ```
 
-构建产物在 `dist/<插件 id>-<版本号>.star`，例如 `dist/icu.tatyrealms.nemos-0.1.0.star`，版本号取自 `millennium.toml` 的 `[plugin].version`
+插件构建产物在 `dist/<name>-<version>.star`
 
-```安装
-cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
-```
+其他文件都是构建过程的中间文件、许可证好方便分发，插件本体已经包含了
 
-不建议把 `millennium.toml` 里的 `output_path` 改成 `auto` 构建
+构建成功后，如果 `~/.local/share/millennium/plugins/` 目录存在，会自动把插件复制过去；目录不存在则跳过，不会创建目录
 
-由于使用了[脚本](scripts/build.mjs)自动添加版本号后缀，为 auto 时 Millennium 会重启 Steam 热重载棍母插件浪费时间
+不建议把 `millennium.toml` 里的 `output_path` 改成 `auto` 构建，因为不好用
+
+[构建脚本](scripts/build.mjs)会统一生成带名称和版本号的安装包，并按目录是否存在决定是否复制
 
 # 已知限制
 
@@ -142,6 +142,7 @@ cp ./dist/icu.tatyrealms.nemos-0.1.0.star ~/.local/share/millennium/plugins/
 | open orpheus | [Github仓库](https://github.com/YUCLing/open-orpheus)          | 能让Linux运行网易云客户端，听歌识曲功能参考了此项目 |
 | NeteaseCloudMusicApiEnhanced | [Github仓库](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | 听歌识曲api接口功能用了他 |
 | Qplayer    | [Github仓库](https://github.com/TIMER-err/qplayer)               | 第三方网易云音乐客户端，一起听功能参考了他          |
+| UnblockNeteaseMusic | [Github仓库](https://github.com/UnblockNeteaseMusic/server) | 支持播放无声源歌曲[上游库和许可证](THIRD_PARTY_NOTICES.md) |
 
 # 为什么有网易云客户端还要去写这个？
 

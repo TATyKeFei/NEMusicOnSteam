@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import "./build-unblock.mjs";
@@ -14,10 +15,11 @@ const field = (body, key) =>
 
 const plugin = section("plugin");
 const id = field(plugin, "id");
+const name = field(plugin, "name");
 const version = field(plugin, "version");
 
-if (!id || !version) {
-  console.error("build: 无法从 millennium.toml 的 [plugin] 读取 id 或 version");
+if (!id || !name || !version) {
+  console.error("build: 无法从 millennium.toml 的 [plugin] 读取 id、name 或 version");
   process.exit(1);
 }
 
@@ -42,6 +44,15 @@ if (!existsSync(built)) {
   process.exit(0);
 }
 
-const versioned = path.join(path.dirname(built), `${id}-${version}.star`);
+const versioned = path.join(path.dirname(built), `${name}-${version}.star`);
 renameSync(built, versioned);
 console.log(`build: 产物 ${path.relative(root, versioned)}`);
+
+const pluginsDirectory = path.join(homedir(), ".local", "share", "millennium", "plugins");
+if (statSync(pluginsDirectory, { throwIfNoEntry: false })?.isDirectory()) {
+  const installed = path.join(pluginsDirectory, path.basename(versioned));
+  if (installed !== versioned) copyFileSync(versioned, installed);
+  console.log(`build: 已复制到 ${installed}`);
+} else {
+  console.log(`build: ${pluginsDirectory} 不存在，跳过复制`);
+}
