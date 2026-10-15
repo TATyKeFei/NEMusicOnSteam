@@ -615,6 +615,14 @@ class DownloadTestCase(ServiceTestCase):
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
 
+    def test_alternate_audio_download_uses_source_headers(self):
+        job = {"active": True}
+        with patch.object(helper, "urlopen", side_effect=OSError("offline")) as open_audio:
+            self.service.run_download(job, "https://cn-example.bilivideo.com/song.m4a", self.directory.name, "歌", "m4a")
+        request = open_audio.call_args.args[0]
+        self.assertEqual(request.get_header("Referer"), "https://www.bilibili.com/")
+        self.assertEqual(request.get_header("User-agent"), "okhttp/3.4.1")
+
     def post_download(self, payload, token="test-token"):
         handler_type = self.service.make_handler()
         handler = handler_type.__new__(handler_type)

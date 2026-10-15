@@ -59,7 +59,7 @@ const webPlaying: TrackState = {
   rate: 1,
 };
 
-function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
+function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean } = {}) {
   const evaluations: string[] = [];
   const loads: Payload[] = [];
   const webCommands: string[] = [];
@@ -133,6 +133,13 @@ function setup(options: { web?: TrackState | null; mpv?: Payload } = {}) {
 
   const bridge = new api.Bridge({
     quality: () => 1,
+    ...(options.resolver ? {
+      holdWebDuringResolution: () => true,
+      resolveTrack: async () => {
+        const track = await evaluate("download");
+        return { ...(track as typeof downloadTrack), source: options.alternate ? "unblock" : "api" };
+      },
+    } : {}),
     commandWeb: async (command: { action: string }) => {
       webCommands.push(command.action);
       order.push(`web:${command.action}`);
@@ -397,6 +404,68 @@ describe("MPV backend page scripts", () => {
 });
 
 describe("MPV bridge tick", () => {
+  it("discards a match when the webpage switches songs during resolution", async () => {
+    const player = setup({ resolver: true });
+    const pending = deferred();
+    player.holdEvaluation("download", pending.promise);
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setWeb({ ...webPlaying, trackId: "t2", title: "另一首" });
+    pending.resolve();
+    await flush();
+    assert.equal(player.loads.length, 0);
+    player.setMpv({ active: true, playbackStatus: "Playing", trackId: "t2" });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.length, 1);
+    assert.equal(player.loads[0].trackId, "t2");
+    player.bridge.setEnabled(false);
+  });
+
+  it("holds the trial player paused and does not seek the substitute to the trial clock", async () => {
+    const player = setup({ resolver: true, alternate: true, mpv: { active: true, playbackStatus: "Playing", trackId: "t1" } });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.equal(player.loads.length, 1);
+    player.setMpv({ active: true, playbackStatus: "Playing", trackId: "t1", position: 70, volume: 1 });
+    player.tick();
+    await flush();
+    assert.deepEqual(player.positionCommands, []);
+    assert.match(player.lastSync(), /if \(false\)/);
+    assert.match(player.lastSync(), /else if \(true\)/);
+    player.bridge.setEnabled(false);
+  });
+
+  it("respects pause and stop commands issued during a slow audio match", async () => {
+    for (const action of ["pause", "stop"]) {
+      const player = setup({ resolver: true, alternate: true });
+      const pending = deferred();
+      player.holdEvaluation("download", pending.promise);
+      player.bridge.setEnabled(true);
+      await flush();
+      await player.bridge.command({ action });
+      player.setMpv({ active: action !== "stop", playbackStatus: action === "stop" ? "Stopped" : "Paused", trackId: "t1" });
+      pending.resolve();
+      await flush();
+      assert.equal(player.loads.length, action === "stop" ? 0 : 1);
+      if (action === "pause") assert.equal(player.loads[0].autoplay, false);
+      player.bridge.setEnabled(false);
+    }
+  });
+
+  it("reloads a lost alternate track even though the trial webpage is held paused", async () => {
+    const player = setup({ resolver: true, alternate: true, mpv: { active: true, playbackStatus: "Playing", trackId: "t1" } });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setWeb({ ...webPlaying, playbackStatus: "Paused" });
+    player.setMpv({ active: false, playbackStatus: "Stopped" });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.length, 2);
+    assert.equal(player.loads[1].autoplay, true);
+    player.bridge.setEnabled(false);
+  });
+
   it("dispatches shutdown without evaluating or resuming the page when Steam exits", async () => {
     const player = setup();
     player.bridge.setEnabled(true);

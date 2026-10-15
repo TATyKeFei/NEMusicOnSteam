@@ -1,4 +1,5 @@
 import { DEFAULT_DOWNLOAD_NAME_TEMPLATE, DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download/download-player.ts";
+import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } from "./unblock/sources.ts";
 
 export type LauncherPosition = { left: number; bottom: number } | { left: number; top: number };
 
@@ -9,6 +10,8 @@ export const UI_SCALE_MAX = 1.5;
 
 export type PlayerSettings = {
   playbackBackend: PlaybackBackend;
+  unblockEnabled: boolean;
+  unblockSources: UnblockSource[];
   uiScale: number;
   openOnStart: boolean;
   keepAliveWhenCollapsed: boolean;
@@ -24,6 +27,8 @@ export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
 
 export const defaultSettings: PlayerSettings = {
   playbackBackend: "web",
+  unblockEnabled: false,
+  unblockSources: DEFAULT_UNBLOCK_SOURCES,
   uiScale: 1,
   openOnStart: false,
   keepAliveWhenCollapsed: true,
@@ -85,6 +90,8 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
   );
   return {
     playbackBackend: playbackBackendOr(record.playbackBackend, defaultSettings.playbackBackend),
+    unblockEnabled: booleanOr(record.unblockEnabled, defaultSettings.unblockEnabled),
+    unblockSources: sanitizeUnblockSources(record.unblockSources),
     uiScale: uiScaleOr(record.uiScale, defaultSettings.uiScale),
     openOnStart: booleanOr(record.openOnStart, defaultSettings.openOnStart),
     keepAliveWhenCollapsed: booleanOr(record.keepAliveWhenCollapsed, defaultSettings.keepAliveWhenCollapsed),

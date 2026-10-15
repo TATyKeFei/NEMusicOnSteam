@@ -23,7 +23,10 @@ export type DownloadTrack = {
   artist: string;
   album: string;
   cover: string;
-  source: "api" | "player";
+  source: "api" | "player" | "unblock";
+  songId?: number;
+  trial?: boolean;
+  provider?: string;
 };
 
 /** 从列表行里选中的歌曲，而不是当前恰好在播的那一首。 */
@@ -63,7 +66,7 @@ export function songFileName(template: string, parts: { title: unknown; artist: 
   });
 }
 
-export function downloadScript(value: number, song?: DownloadSong): string {
+export function downloadScript(value: number, song?: DownloadSong, allowUnavailable = false): string {
   const requested = downloadLevel(value);
   if (requested == null) throw new Error(`不支持的下载音质: ${value}`);
   const target =
@@ -95,6 +98,7 @@ export function downloadScript(value: number, song?: DownloadSong): string {
     const name = String(target?.name || track?.name || metadata?.title || '').trim();
     const artist = String(target?.artist || artists || metadata?.artist || '').trim();
     if (!id) throw new Error('没有正在播放的歌曲，请先在播放器里播放一首歌');
+    const info = { songId: id, name, artist, album: String(target ? target.album : album || metadata?.album || '').trim(), cover: String(target ? target.cover : cover || '').trim() };
     let code = null;
     let item = null;
     try {
@@ -123,8 +127,11 @@ export function downloadScript(value: number, song?: DownloadSong): string {
         album: String(target?.album || album || metadata?.album || '').trim(),
         cover: String(target?.cover || cover || '').trim(),
         source: 'api',
+        songId: id,
+        trial: Boolean(item.freeTrialInfo),
       };
     }
+    if (${allowUnavailable ? "true" : "false"}) return { ...info, url: '', type: '', size: 0, br: 0, level: '', source: 'api', trial: false };
     if (target) {
       if (Number.isFinite(code) && code !== 200) throw new Error('网易云接口返回 code ' + code + '，可能已下架或需要在播放器里重新登录');
       throw new Error('网易云没有返回可下载地址，可能是无版权、需要 VIP 或账号未登录');

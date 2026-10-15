@@ -148,7 +148,7 @@ function mpvUnmuteScript(resume: boolean): string {
  * howler 没有给 audio 节点绑 play/pause 事件，直接戳节点页面根本不知道。
  * allowPause 为假表示正处在切歌过渡里，此时页面必须保持播放，不然歌会断。
  */
-function mpvSyncScript(playing: boolean, allowPause: boolean): string {
+function mpvSyncScript(playing: boolean, allowPause: boolean, holdWeb = false): string {
   return `(() => {
     const howler = globalThis.Howler;
     const bridge = globalThis.__NEMusicOnSteamMpvMedia;
@@ -158,12 +158,12 @@ function mpvSyncScript(playing: boolean, allowPause: boolean): string {
     let touched = 0;
     for (const howl of howler._howls) {
       if (!howl || typeof howl.playing !== 'function') continue;
-      if (${playing ? "true" : "false"}) {
+      if (${playing && !holdWeb ? "true" : "false"}) {
         if (howl.playing() || !resumable(howl) || typeof howl.play !== 'function') continue;
         howl.play();
         bridge.paused.delete(howl);
         touched++;
-      } else if (${allowPause ? "true" : "false"}) {
+      } else if (${allowPause || holdWeb ? "true" : "false"}) {
         if (!howl.playing()) continue;
         howl.pause();
         bridge.paused.add(howl);
@@ -227,6 +227,8 @@ function describeFailure(result: string): string {
 type MpvOptions = {
   quality: () => number;
   commandWeb: (command: Command) => Promise<boolean>;
+  resolveTrack?: (quality: number, signal?: AbortSignal) => Promise<DownloadTrack>;
+  holdWebDuringResolution?: () => boolean;
 };
 
 type MpvPayload = Partial<TrackState> & { url?: string; autoplay?: boolean; position?: number };
@@ -269,6 +271,8 @@ export class MpvBridge implements ExternalPlayback {
   private playRequested = false;
   private lastWebTrackId = "";
   private pendingAutoplay = 0;
+  private alternateTrack = false;
+  private transportEpoch = 0;
   private readonly options: MpvOptions;
 
   constructor(options: MpvOptions) {
@@ -342,6 +346,7 @@ export class MpvBridge implements ExternalPlayback {
   }
 
   private async executeCommand(command: Command, generation: number): Promise<boolean> {
+    if (["play", "pause", "playpause", "stop"].includes(command.action)) this.transportEpoch++;
     if (command.action === "next" || command.action === "previous") {
       const autoplay = this.state.playbackStatus === "Playing" || this.pendingAutoplay > 0;
       await tryEvaluateInPlayer(allowWebActionScript(command.action));
@@ -461,7 +466,7 @@ export class MpvBridge implements ExternalPlayback {
       // 进度同理：网页的进度条也是 div[role=slider]，拖完没有事件可听，只能靠快照发现。
       // 只在两边同一首且都在播时对账——暂停中 seek 会把刚按住的 mpv 拽走；
       // position 为 0 视作读不到进度（页面还没量出来），否则会把 mpv 甩回开头。
-      if (next.active && web?.canSeek && web.trackId && web.trackId === next.trackId
+      if (!this.alternateTrack && next.active && web?.canSeek && web.trackId && web.trackId === next.trackId
         && next.playbackStatus === "Playing" && web.playbackStatus === "Playing"
         && web.position > 0 && Math.abs(web.position - next.position) > SEEK_EPSILON) {
         await this.request("/command", generation, { action: "setposition", value: Math.round(web.position * 1_000_000) });
@@ -471,8 +476,9 @@ export class MpvBridge implements ExternalPlayback {
       // 播完和掉轨是两回事：播完时 path 还在，掉轨时辅助进程连 path 都没有了。
       // 前者往下一首走，后者把原来那首原样接回来，不然 mpv 辅助进程重启一次就跳歌。
       const ended = next.active && this.previousStatus === "Playing" && next.playbackStatus === "Stopped" && !this.stopRequested;
+      const alternatePlaying = this.alternateTrack && this.state.playbackStatus === "Playing";
       const lost = !next.active && !this.stopRequested && Boolean(web?.trackId) && web?.trackId === this.lastWebTrackId
-        && (web.playbackStatus === "Playing" || this.playRequested);
+        && (web.playbackStatus === "Playing" || this.playRequested || alternatePlaying);
       this.state = next;
       this.previousStatus = next.playbackStatus;
       if (ended && next.trackId) {
@@ -480,14 +486,14 @@ export class MpvBridge implements ExternalPlayback {
         if (!this.isCurrent(generation)) return;
         if (handled) this.pendingAutoplay = PENDING_AUTOPLAY_TICKS;
       } else if (lost && web) {
-        await this.loadFromWeb(web, this.shouldAutoplay(web), generation);
+        await this.loadFromWeb(web, this.shouldAutoplay(web) || alternatePlaying, generation);
         if (!this.isCurrent(generation)) return;
       }
       if (next.playbackStatus === "Playing") this.playRequested = false;
       this.status = "mpv 已连接";
       // mpv 是唯一的音频出口：它停了页面就必须停，否则页面会静音地把整首歌播完再自动
       // 切歌，新歌又会把暂停中的 mpv 拉起来。切歌过渡期（pendingAutoplay）不许按停。
-      await tryEvaluateInPlayer(mpvSyncScript(next.playbackStatus === "Playing", this.pendingAutoplay === 0), { userGesture: true });
+      await tryEvaluateInPlayer(mpvSyncScript(next.playbackStatus === "Playing", this.pendingAutoplay === 0, this.alternateTrack), { userGesture: true });
     } catch (error) {
       if (!this.isCurrent(generation)) return;
       console.warn("[NEMusic] mpv bridge", error);
@@ -508,12 +514,28 @@ export class MpvBridge implements ExternalPlayback {
   }
 
   private async loadFromWeb(web: TrackState, autoplay: boolean, generation: number): Promise<void> {
-    const result = await tryEvaluateInPlayer(downloadScript(this.options.quality()), { awaitPromise: true });
+    const transportEpoch = this.transportEpoch;
+    if (this.options.holdWebDuringResolution?.()) {
+      await tryEvaluateInPlayer(mpvSyncScript(false, true), { userGesture: true });
+      if (!this.isCurrent(generation)) return;
+    }
+    const result = this.options.resolveTrack
+      ? await this.options.resolveTrack(this.options.quality(), this.requests?.signal)
+      : await tryEvaluateInPlayer(downloadScript(this.options.quality()), { awaitPromise: true });
     if (!this.isCurrent(generation)) return;
     const track = result as DownloadTrack | null;
     if (!track?.url || !/^https?:/.test(track.url)) {
       throw new Error("网易云没有返回可供 mpv 播放的音频地址");
     }
+    if (this.options.resolveTrack) {
+      const current = await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true }) as TrackState | null;
+      if (!this.isCurrent(generation) || current?.trackId !== web.trackId) return;
+    }
+    if (transportEpoch !== this.transportEpoch && this.stopRequested) {
+      this.lastWebTrackId = web.trackId;
+      return;
+    }
+    this.alternateTrack = track.source === "unblock";
     await tryEvaluateInPlayer(MPV_MUTE_SCRIPT);
     if (!this.isCurrent(generation)) return;
     const response = await this.request("/load", generation, {
@@ -524,7 +546,7 @@ export class MpvBridge implements ExternalPlayback {
       artUrl: track.cover || web.artUrl,
       trackId: web.trackId,
       position: web.position,
-      autoplay,
+      autoplay: transportEpoch === this.transportEpoch ? autoplay : this.playRequested,
       // mpv 的初始音量是 100%：不把网页音量带上，从网页切过来就是一声爆音。
       volume: web.volume,
     });
@@ -577,6 +599,7 @@ export class MpvBridge implements ExternalPlayback {
     this.endpoint = null;
     this.token = null;
     this.lastWebTrackId = "";
+    this.alternateTrack = false;
     this.pendingAutoplay = 0;
     this.stopRequested = false;
     this.playRequested = false;

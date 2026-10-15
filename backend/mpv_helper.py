@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from audio_source import audio_headers
 
 
 SOCKET_NAME = "mpv.sock"
@@ -295,6 +296,8 @@ class MpvService:
         if isinstance(volume, (int, float)) and not isinstance(volume, bool):
             # mpv 默认音量是 100%：先按网页音量落好再放声，否则从网页切过来就是一声爆音。
             self.mpv.command("set_property", "volume", max(0.0, min(100.0, float(volume) * 100)))
+        headers = audio_headers(url)
+        self.mpv.command("set_property", "http-header-fields", [f"{key}: {value}" for key, value in headers.items()])
         self.mpv.command("loadfile", url, "replace")
         self.mpv.command("set_property", "pause", True)
         self.mpv.set_position(position)

@@ -69,11 +69,29 @@ function downloadFixture(options: FixtureOptions = {}) {
     state,
     context,
     requests,
-    run: (value: number, song?: DownloadSong) => runInNewContext(downloadScript(value, song), context),
+    run: (value: number, song?: DownloadSong, allowUnavailable = false) => runInNewContext(downloadScript(value, song, allowUnavailable), context),
   };
 }
 
 describe("NetEase download resolution", () => {
+  it("returns the real song id and flags a trial URL for the optional matcher", async () => {
+    const player = downloadFixture({ payload: { code: 200, data: [{ ...API_RESULT, freeTrialInfo: { start: 0, end: 30 } }] } });
+    const result = await player.run(320, undefined, true);
+    assert.equal(result.songId, 12345);
+    assert.equal(result.trial, true);
+    assert.equal(result.url, API_RESULT.url);
+  });
+
+  it("keeps selected-song metadata on missing URLs instead of using another playing stream", async () => {
+    const player = downloadFixture({ payload: { code: 200, data: [{ url: null }] }, currentSrc: PLAYING_STREAM });
+    const result = await player.run(320, { id: 67890, name: "灰歌", artist: "歌手" }, true);
+    assert.equal(result.songId, 67890);
+    assert.equal(result.name, "灰歌");
+    assert.equal(result.url, "");
+    assert.equal(result.album, "");
+    assert.equal(result.cover, "");
+  });
+
   it("maps every quality to a NetEase level and asks for flac only from lossless up", () => {
     for (const [value, expected] of Object.entries(LEVELS)) assert.deepEqual(downloadLevel(Number(value)), expected);
     for (const value of [0, 100000, NaN, Infinity]) assert.equal(downloadLevel(value), null);

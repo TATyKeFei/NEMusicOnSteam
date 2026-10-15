@@ -21,6 +21,19 @@ describe("settings", () => {
     assert.equal(uiScaleOr("125%", 1), 1);
   });
 
+  it("defaults to disabled and filters duplicate or unsupported unblock sources in order", () => {
+    assert.equal(sanitizeSettings({}).unblockEnabled, false);
+    assert.equal(sanitizeSettings({ unblockEnabled: "true" }).unblockEnabled, false);
+    assert.equal(sanitizeSettings({ unblockEnabled: true }).unblockEnabled, true);
+    assert.deepEqual(sanitizeSettings({ unblockSources: ["bilivideo", "qq", "kuwo", "bilivideo", null] }).unblockSources, ["bilivideo", "kuwo"]);
+    for (const unblockSources of [[], null, "kuwo", ["unsupported"]]) {
+      assert.deepEqual(sanitizeSettings({ unblockSources }).unblockSources, ["kuwo", "kugou", "bilivideo"]);
+    }
+    const settings = sanitizeSettings({});
+    settings.unblockSources.push("bodian");
+    assert.deepEqual(sanitizeSettings({}).unblockSources, ["kuwo", "kugou", "bilivideo"]);
+  });
+
   it("keeps a download directory and quality but rejects unsupported levels", () => {
     assert.equal(sanitizeSettings({ downloadDirectory: "  /home/me/音乐  " }).downloadDirectory, "/home/me/音乐");
     assert.equal(sanitizeSettings({ downloadDirectory: 12 }).downloadDirectory, "");

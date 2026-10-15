@@ -16,7 +16,7 @@ local function fixture(ready)
             write_file = function(path, value) files[path] = value; return true end,
             exec = function(command)
                 table.insert(commands, command)
-                if command:match("^setsid python3") then
+                if command:match("^setsid ") then
                     local directory = assert(command:match("helper_pid >'([^']+)/pid'"))
                     local pid = tostring(5000 + #launches)
                     files[directory .. "/pid"] = pid
@@ -67,19 +67,21 @@ end
 local active = fixture(true)
 assert(active.backend.mpris_endpoint():match("^http://"))
 assert(active.backend.mpv_endpoint():match("^http://"))
+assert(active.backend.unblock_endpoint():match("^http://"))
 active.during_stop(function(backend)
     assert(backend.mpris_endpoint() == "!shutdown")
     assert(backend.mpris_reconnect() == "!shutdown")
     assert(backend.mpv_endpoint() == "!shutdown")
+    assert(backend.unblock_endpoint() == "!shutdown")
 end)
 active.unload()
-assert(#active.launches == 2 and #active.removed == 2)
+assert(#active.launches == 3 and #active.removed == 3)
 for _, launch in ipairs(active.launches) do assert_stopped(active, launch) end
 local command_count = #active.commands
 active.unload()
 assert(#active.commands == command_count)
 
-for _, method in ipairs({ "mpris_endpoint", "mpv_endpoint" }) do
+for _, method in ipairs({ "mpris_endpoint", "mpv_endpoint", "unblock_endpoint" }) do
     local retry_result = method == "mpris_endpoint" and "!retry" or "!spawn"
     local pending = fixture(false)
     assert(pending.backend[method]() == "!spawn")
@@ -122,8 +124,21 @@ print("PASS helper shutdown, startup timeouts, delayed readiness, retries, and r
 local shutdown = fixture(true)
 assert(shutdown.backend.mpris_endpoint():match("^http://"))
 assert(shutdown.backend.mpv_endpoint():match("^http://"))
+assert(shutdown.backend.unblock_endpoint():match("^http://"))
 assert(shutdown.backend.shutdown_backend() == "ok")
-assert(#shutdown.removed == 2)
+assert(#shutdown.removed == 3)
 for _, launch in ipairs(shutdown.launches) do assert_stopped(shutdown, launch) end
 assert(shutdown.backend.mpris_endpoint() == "!shutdown")
 print("PASS Steam exit cleans helper processes before backend unload")
+
+local unblock = fixture(true)
+assert(#unblock.launches == 0)
+assert(unblock.backend.unblock_endpoint():match("^http://"))
+local first = unblock.launches[1]
+assert(unblock.backend.unblock_stop() == "ok")
+assert_stopped(unblock, first)
+assert(unblock.backend.unblock_endpoint():match("^http://"))
+assert(#unblock.launches == 2)
+unblock.unload()
+assert_stopped(unblock, unblock.launches[2])
+print("PASS optional matcher starts on demand and stops on disable")

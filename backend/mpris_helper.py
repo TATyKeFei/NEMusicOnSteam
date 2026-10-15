@@ -14,6 +14,7 @@ from http.client import HTTPException
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
+from audio_source import audio_headers
 
 from gi.repository import Gio, GLib
 from recognition import RecognitionService
@@ -776,7 +777,7 @@ class MprisService:
         notify_system = str(meta.get("notify") or "system") == "system"
         path = None
         try:
-            request = Request(url, headers={"User-Agent": "NEMusicOnSteam", "Referer": "https://music.163.com/"})
+            request = Request(url, headers=audio_headers(url))
             with urlopen(request, timeout=DOWNLOAD_TIMEOUT) as response:
                 declared_total = int(response.headers.get("Content-Length") or 0)
                 if declared_total > MAX_DOWNLOAD_BYTES:

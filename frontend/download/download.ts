@@ -85,9 +85,11 @@ export class DownloadBridge {
   private songs = 0;
   private menuBroken = false;
   private menuInstalled = false;
+  private readonly resolveTrack?: (quality: number, song?: DownloadSong) => Promise<DownloadTrack>;
 
-  constructor(options: () => DownloadOptions) {
+  constructor(options: () => DownloadOptions, resolveTrack?: (quality: number, song?: DownloadSong) => Promise<DownloadTrack>) {
     this.options = options;
+    this.resolveTrack = resolveTrack;
   }
 
   setEnabled(enabled: boolean): void {
@@ -278,6 +280,7 @@ export class DownloadBridge {
   }
 
   private async resolve(quality: number, song?: DownloadSong): Promise<DownloadTrack> {
+    if (this.resolveTrack) return this.resolveTrack(quality, song);
     const result = await this.evaluate(downloadScript(quality, song));
     const track = result as DownloadTrack | null;
     if (!track?.url) throw new Error("没有解析到可下载的音频地址");

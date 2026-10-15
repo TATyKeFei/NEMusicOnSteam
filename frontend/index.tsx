@@ -7,6 +7,7 @@ import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./toge
 import type { NotificationMode, PlaybackBackend } from "./settings.ts";
 import { SteamSettingsEntry } from "./widget/steam-settings.ts";
 import { SETTINGS_ICON } from "./widget/settings-icon.ts";
+import { sanitizeUnblockSources } from "./unblock/sources.ts";
 
 const steamSettings = new SteamSettingsEntry(() => <SettingsContent />);
 const shutdownBackend = ffi<[], string>("shutdown_backend");
@@ -42,6 +43,7 @@ function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
     && a.mprisStatus === b.mprisStatus
     && a.mprisCanReconnect === b.mprisCanReconnect
     && a.mpvStatus === b.mpvStatus
+    && a.unblockStatus === b.unblockStatus
     && a.recognitionStatus === b.recognitionStatus
     && a.settingsEntry === b.settingsEntry
     && JSON.stringify(a.quality) === JSON.stringify(b.quality)
@@ -78,6 +80,7 @@ function SettingsContent() {
   const [snapshot, setSnapshot] = useState<PlayerSnapshot>(() => player.snapshot());
   const [directory, setDirectory] = useState(() => snapshot.settings.downloadDirectory);
   const [nameTemplate, setNameTemplate] = useState(() => snapshot.settings.downloadNameTemplate);
+  const [unblockSources, setUnblockSources] = useState(() => snapshot.settings.unblockSources.join(", "));
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -102,6 +105,11 @@ function SettingsContent() {
   };
 
   const settings = snapshot.settings;
+  const commitUnblockSources = () => {
+    const sources = sanitizeUnblockSources(unblockSources.split(/[,，\s]+/).filter(Boolean));
+    setUnblockSources(sources.join(", "));
+    if (sources.join(",") !== settings.unblockSources.join(",")) setSnapshot(player.updateSettings({ unblockSources: sources }));
+  };
   const quality = snapshot.quality;
   const together = snapshot.together;
   const qualityOptions = QUALITY_OPTIONS.some(option => option.data === quality.preferred) || quality.preferred == null
@@ -133,6 +141,30 @@ function SettingsContent() {
           onChange={option => setSnapshot(player.updateSettings({ playbackBackend: option.data }))}
         />
       </Field>
+      <Field
+        label="UnblockNeteaseMusic（实验性）"
+        description="仅 Linux：网页点击灰歌、mpv 播放和下载在官方无地址或仅有试听时尝试其他音源。需要 Node.js 22+。"
+        bottomSeparator="standard"
+      >
+        <Toggle value={settings.unblockEnabled} onChange={unblockEnabled => setSnapshot(player.updateSettings({ unblockEnabled }))} />
+      </Field>
+      {settings.unblockEnabled && <>
+        <Field
+          label="解灰音源顺序"
+          description="按填写顺序匹配，用逗号分隔。可选 kuwo（酷我）、kugou（酷狗）、bodian（波点）、bilibili（音频）、bilivideo（视频）。按回车或移开焦点保存；实际版本和音质取决于音源。"
+          bottomSeparator="standard"
+        >
+          <TextField
+            value={unblockSources}
+            onChange={event => setUnblockSources(event.target.value)}
+            onBlur={commitUnblockSources}
+            onKeyDown={event => { if (event.key === "Enter") commitUnblockSources(); }}
+          />
+        </Field>
+        <Field label="解灰服务" description={snapshot.unblockStatus} bottomSeparator="standard">
+          <DialogButton onClick={() => player.checkUnblock()}>检测连接</DialogButton>
+        </Field>
+      </>}
       <Field
         label="网易云界面缩放"
         description="只缩放内嵌的网易云页面，修改后立即生效"

@@ -4,15 +4,17 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "dev": "mkdir -p dist && starlight watch",
-    "test": "node --experimental-strip-types --test frontend/*.test.ts frontend/**/*.test.ts",
+    "dev": "node scripts/build-unblock.mjs && starlight watch",
+    "test": "node --experimental-strip-types --test frontend/*.test.ts frontend/**/*.test.ts backend/*.test.cjs",
     "typecheck": "tsc --noEmit",
     "prepare": "starlight lsp"
   },
   "devDependencies": {
+    "@unblockneteasemusic/server": "0.28.0",
     "@steambrew/starlight": "^1.1.3",
     "@types/react": "19.1.1",
     "@types/react-dom": "19.1.1",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "esbuild": "^0.25.12"
   }
 }

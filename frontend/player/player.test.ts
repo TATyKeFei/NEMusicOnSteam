@@ -99,6 +99,11 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
       destroy() {}
     },
     MprisBridge: FakeBridge,
+    UnblockBridge: class {
+      reset() {}
+      installPageHook() {}
+      getStatus() { return "已关闭"; }
+    },
     MpvBridge: FakeBridge,
     MPV_MUTE_SCRIPT: "mpv-mute",
     RecognitionBridge: FakeBridge,

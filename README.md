@@ -14,7 +14,7 @@
 
 | 系统    | 可用性                 | 备注及注意事项       |
 | :---    | :---                   | :---                 |
-| Linux   | 支持推荐               | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不是逆天爆改故意针对的都支持           |
+| Linux   | 支持                   | 仅测试了Arch+KDE+Niri(DMS)，其他发行版或桌面环境不是逆天爆改故意针对的都支持           |
 | Windows | 残废不推荐             | 本项目依赖MPRIS实现大部分功能，由于Windows没有MPRIS且我不用身边没有Windows设备测试，对于Win的支持完全不保证  |
 | Mac OS  | 未测试适配             | 我是穷鬼安卓人没钱买苹果测试，但如您看上此项目且愿意长期帮忙测试我会很感谢             |
 | FreeBSD | 未测试                 | Linux可以的话也许FreeBSD理论也可以                                                     |
@@ -37,12 +37,12 @@
 | 歌词       | 仅 Linux       | 依赖 MPRIS 连接，做法见[#歌词](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E6%AD%8C%E8%AF%8D)            |
 | 全局快捷键 | 仅 Linux       | 依赖 MPRIS 连接，做法见[#全局快捷键](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E5%85%A8%E5%B1%80%E5%BF%AB%E6%8D%B7%E9%94%AE)       |
 | 多播放后端支持 | 仅 Linux   | 可选 mpv、mpd 作为音频播放器引擎              |
-| 界面Ui缩放 | 支持           | 网易云很多样式都是根据固定像素而不是分辨率百分比导致ui在高分辨率大尺寸的显示器显得很小。这个功能可以解决   |
+| 界面Ui缩放 | 支持           | 网易云很多样式都是根据固定像素而不是分辨率百分比，导致ui在高分辨率大尺寸的显示器显得很小。缩放可以解决这些问题  |
 | 全屏与窗口铺满 | 支持       | 点击搜索框右侧全屏按钮进入桌面全屏；按住 Shift 点击只铺满当前 Steam 窗口，不改变窗口大小。再次点击或按 Esc 退出 |
-| 手柄控制支持 | 正在制作     | 为一些掌机如SteamDeck服务，就不用搞得屏幕一堆指纹了 |
+| UnblockNeteaseMusic | 支持  | 支持下载播放灰色无声源歌曲，在官方无地址或仅有试听时尝试其他音源 |
 | Steam叠加页面 | 正在尝试支持 | 仅支持X11的游戏/软件，因为sbSteam还不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
-| UnblockNeteaseMusic | 后续支持 | 解锁灰色版权音乐                     |
 | last.fm    | 后续支持       |  |
+| 手柄控制支持 | 后续支持     | 为一些掌机如SteamDeck服务，就不用搞得屏幕一堆指纹了 |
 | API 接口   | 后续支持       | 其他插件可以使用api控制播放暂停歌曲       |
 
 # 不支持功能

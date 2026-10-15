@@ -7,6 +7,10 @@ local mpris_dir = nil
 local mpris_token = nil
 local mpv_dir = nil
 local mpv_token = nil
+local unblock_dir = nil
+local unblock_token = nil
+local unblock_skip = 0
+local unblock_failure = "!retry"
 local unloading = false
 local helper_pids = {}
 
@@ -32,11 +36,11 @@ end
 -- 辅助进程是从 Steam 后端脱离出来的，前端的异步 fetch 在 Steam 退出时不一定来得及
 -- 发出 /shutdown。启动时把它们放进自己的进程组并记录组长 PID，这样 on_unload 可以同步
 -- 收掉 Python、识曲录音子进程以及 mpv，避免 Steam 关掉窗口后还留在后台。
-local function launch_helper(path, dir, log_path)
+local function launch_helper(path, dir, log_path, interpreter)
     local pid_path = dir .. "/pid"
     -- exec 让 $! 就是 setsid/python 的 PID，而不是临时 shell 的 PID；只有它是
     -- 新进程组组长时，退出时的 kill -- -PID 才能连同 mpv、parec 一起回收。
-    local command = "setsid python3 " .. shell_quote(path) .. " " .. shell_quote(dir)
+    local command = "setsid " .. (interpreter or "python3") .. " " .. shell_quote(path) .. " " .. shell_quote(dir)
         .. " </dev/null >" .. shell_quote(log_path) .. " 2>&1 & helper_pid=$!; echo $helper_pid >"
         .. shell_quote(pid_path)
     utils.exec(command)
@@ -109,6 +113,8 @@ function mpris_endpoint()
     local path = dir .. "/helper.py"
     if not utils.write_file(path, script) then return "!write-helper" end
     if not utils.write_file(dir .. "/recognition.py", recognition) then return "!write-recognition" end
+    local audio_source = millennium.assets.read("backend/audio_source.py")
+    if audio_source == nil or not utils.write_file(dir .. "/audio_source.py", audio_source) then return "!write-audio-source" end
     if not utils.write_file(dir .. "/token", token) then return "!write-token" end
     -- 日志要放在运行目录之外：辅助进程退出时会清空该目录，一个在报出端口前就死掉的
     -- 辅助进程会把自己的回溯一起带走。
@@ -183,6 +189,11 @@ function mpv_endpoint()
     end
     utils.exec("chmod 700 " .. shell_quote(dir))
     local path = dir .. "/helper.py"
+    local audio_source = millennium.assets.read("backend/audio_source.py")
+    if audio_source == nil or not utils.write_file(dir .. "/audio_source.py", audio_source) then
+        mpv_last_failure = "!write-audio-source"
+        return mpv_last_failure
+    end
     if not utils.write_file(path, script) then
         mpv_last_failure = "!write-helper"
         return mpv_last_failure
@@ -217,6 +228,60 @@ function mpv_endpoint()
     return mpv_last_failure
 end
 
+---@ffi
+---@return string
+function unblock_stop()
+    stop_helper(unblock_dir)
+    unblock_dir = nil
+    unblock_token = nil
+    unblock_skip = 0
+    return "ok"
+end
+
+---@ffi
+---@return string
+function unblock_endpoint()
+    if unloading then return "!shutdown" end
+    if unblock_dir ~= nil then
+        local port = utils.read_file(unblock_dir .. "/port")
+        if port ~= nil and port:match("^%d+$") then
+            unblock_skip = 0
+            return "http://127.0.0.1:" .. port .. "|" .. unblock_token
+        end
+    end
+    if unblock_skip > 0 then
+        unblock_skip = unblock_skip - 1
+        return unblock_failure
+    end
+    unblock_stop()
+    unblock_skip = 10
+    local script = millennium.assets.read("dist/unblock_helper.cjs")
+    if script == nil then return "!asset-helper" end
+    local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
+    local dir = base .. "/nemusic-unblock-" .. utils.uuid()
+    if not fs.create_directories(dir) then return "!mkdir:" .. base end
+    utils.exec("chmod 700 " .. shell_quote(dir))
+    unblock_dir = dir
+    unblock_token = utils.uuid()
+    local path = dir .. "/helper.cjs"
+    if not utils.write_file(path, script) then return "!write-helper" end
+    if not utils.write_file(dir .. "/token", unblock_token) then return "!write-token" end
+    local log_path = base .. "/nemusic-unblock.log"
+    launch_helper(path, dir, log_path, "env -u LD_LIBRARY_PATH -u LD_PRELOAD node")
+    for _ = 1, 20 do
+        local port = utils.read_file(dir .. "/port")
+        if port ~= nil and port:match("^%d+$") then
+            unblock_skip = 0
+            fs.remove(log_path)
+            return "http://127.0.0.1:" .. port .. "|" .. unblock_token
+        end
+        utils.sleep(50)
+    end
+    local detail = last_log_line(log_path)
+    unblock_failure = detail == "" and "!spawn" or "!spawn:" .. detail
+    return unblock_failure
+end
+
 local function on_load()
     logger:info("NEMusicOnSteam loaded with Millennium " .. tostring(millennium.version()))
     millennium.ready()
@@ -234,6 +299,7 @@ local function on_unload()
     -- 把 Steam 留在后台。
     stop_helper(mpris_dir)
     stop_helper(mpv_dir)
+    unblock_stop()
     mpris_dir = nil
     mpris_token = nil
     mpv_dir = nil

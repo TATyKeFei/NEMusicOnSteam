@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import "./build-unblock.mjs";
 
 const root = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const toml = readFileSync(path.join(root, "millennium.toml"), "utf8");

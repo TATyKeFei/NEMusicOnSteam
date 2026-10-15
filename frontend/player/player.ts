@@ -17,8 +17,9 @@ import { RecognitionBridge } from "../recognition/recognition.ts";
 import { FullscreenButtonBridge } from "../fullscreen/fullscreen.ts";
 import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
 import { TogetherBridge, type TogetherSnapshot } from "../together/together.ts";
+import { UnblockBridge } from "../unblock/unblock.ts";
 import type { IdentityVariant } from "../together/identity-player.ts";
-import { browserStorage, readSettings, writeSettings, type PlayerSettings } from "../settings.ts";
+import { browserStorage, readSettings, writeSettings, sanitizeSettings, type PlayerSettings } from "../settings.ts";
 import { STEAM_PAGE_FALLBACK_CLASSES, steamPageTransition, steamPageVisible, type SteamPageSelectors } from "./steam-page.ts";
 import {
   BROWSER_VIEW_STACK_TOP,
@@ -88,6 +89,7 @@ export type PlayerSnapshot = {
   mprisStatus: string;
   mprisCanReconnect: boolean;
   mpvStatus: string;
+  unblockStatus: string;
   recognitionStatus: string;
   settingsEntry: "native" | "injected" | "waiting";
   quality: QualitySnapshot;
@@ -99,8 +101,11 @@ export type PlayerSnapshot = {
 export class PlayerController {
   private readonly chrome = new PlayerChrome();
   private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); }, () => this.settings.notificationMode);
+  private readonly unblock = new UnblockBridge(() => ({ enabled: this.settings.unblockEnabled, sources: this.settings.unblockSources }));
   private readonly mpv = new MpvBridge({
     quality: () => this.settings.downloadQuality,
+    resolveTrack: (quality, signal) => this.unblock.resolve(quality, undefined, signal),
+    holdWebDuringResolution: () => this.settings.unblockEnabled,
     commandWeb: async command => Boolean(await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true })),
   });
   private readonly recognition = new RecognitionBridge();
@@ -112,7 +117,7 @@ export class PlayerController {
     directory: this.settings.downloadDirectory,
     nameTemplate: this.settings.downloadNameTemplate,
     notificationMode: this.settings.notificationMode,
-  }));
+  }), (quality, song) => this.unblock.resolve(quality, song));
   private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
   private libraryClasses: LibraryEntryClasses = LIBRARY_ENTRY_FALLBACK_CLASSES;
   private selectedNavClass = NAV_SELECTED_CLASS;
@@ -186,6 +191,7 @@ export class PlayerController {
     this.stopExternalPlayback(false);
     this.destroyView();
     void this.mpris.stop();
+    this.unblock.reset();
     this.forceThrottle(false);
     this.chrome.destroy();
     this.owner = null;
@@ -200,19 +206,22 @@ export class PlayerController {
       mprisStatus: this.mpris.getStatus(),
       mprisCanReconnect: this.mpris.canReconnect(),
       mpvStatus: this.mpv.getStatus(),
+      unblockStatus: this.unblock.getStatus(),
       recognitionStatus: this.recognition.getStatus(),
       settingsEntry: this.steamSettings?.entryStatus() ?? "waiting",
       quality: this.quality.snapshot(),
       together: this.together.snapshot(),
       download: this.download.snapshot(),
-      settings: { ...this.settings, launcher: { ...this.settings.launcher } },
+      settings: { ...this.settings, launcher: { ...this.settings.launcher }, unblockSources: [...this.settings.unblockSources] },
     };
   }
 
   /** 返回刷新后的快照，调用方可以直接喂给 setState。 */
   updateSettings(patch: Partial<PlayerSettings>): PlayerSnapshot {
-    this.settings = { ...this.settings, ...patch, launcher: patch.launcher ?? this.settings.launcher };
+    this.settings = sanitizeSettings({ ...this.settings, ...patch, launcher: patch.launcher ?? this.settings.launcher });
     writeSettings(browserStorage(), this.settings);
+    if (patch.unblockEnabled != null || patch.unblockSources != null) this.unblock.reset();
+    if (patch.unblockEnabled != null || patch.unblockSources != null) void this.unblock.installPageHook();
     if (patch.playbackBackend != null) this.applyPlaybackBackend();
     if (patch.uiScale != null) this.applyUiScale();
     this.syncView(true, this.render());
@@ -221,6 +230,10 @@ export class PlayerController {
 
   reconnectMpris(): void {
     this.mpris.reconnect();
+  }
+
+  checkUnblock(): void {
+    void this.unblock.check();
   }
 
   setQuality(value: number): void {
@@ -622,6 +635,8 @@ export class PlayerController {
         throw new Error("网易云页面初始化失败，请点击刷新重试");
       }
       this.applyUiScale();
+      await this.unblock.installPageHook();
+      if (this.view !== view) return;
       const snapshot = this.restorePending ?? await tryEvaluateInPlayer(PLAYER_RECOVERY_CHECKPOINT_SCRIPT) as PlayerRecoverySnapshot | null;
       if (this.view !== view) return;
       if (snapshot != null) {
