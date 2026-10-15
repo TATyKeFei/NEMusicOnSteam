@@ -112,7 +112,6 @@ export class PlayerController {
     directory: this.settings.downloadDirectory,
     nameTemplate: this.settings.downloadNameTemplate,
     notificationMode: this.settings.notificationMode,
-    downloadNotificationMode: this.settings.downloadNotificationMode,
   }));
   private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
   private libraryClasses: LibraryEntryClasses = LIBRARY_ENTRY_FALLBACK_CLASSES;

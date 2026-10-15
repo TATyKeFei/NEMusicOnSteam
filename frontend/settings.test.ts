@@ -28,6 +28,20 @@ describe("settings", () => {
     for (const quality of ["320", 0, 300, 320.5, NaN, null]) assert.equal(sanitizeSettings({ downloadQuality: quality }).downloadQuality, 320);
   });
 
+  it("merges separate notification preferences using the existing track notification mode", () => {
+    for (const notificationMode of ["system", "steam", "none"]) {
+      const settings = sanitizeSettings({ notificationMode, downloadNotificationMode: notificationMode === "none" ? "steam" : "none" });
+      assert.equal(settings.notificationMode, notificationMode);
+      assert.equal("downloadNotificationMode" in settings, false);
+    }
+  });
+
+  it("falls back to a valid legacy download notification preference or the default", () => {
+    assert.equal(sanitizeSettings({ downloadNotificationMode: "none" }).notificationMode, "none");
+    assert.equal(sanitizeSettings({ notificationMode: "invalid", downloadNotificationMode: "steam" }).notificationMode, "steam");
+    assert.equal(sanitizeSettings({ notificationMode: "invalid", downloadNotificationMode: "invalid" }).notificationMode, "system");
+  });
+
   it("round-trips through a storage stub", () => {
     const saved = new Map<string, string>();
     const storage = {

@@ -17,7 +17,6 @@ export type PlayerSettings = {
   downloadDirectory: string;
   downloadQuality: number;
   notificationMode: NotificationMode;
-  downloadNotificationMode: NotificationMode;
   downloadNameTemplate: string;
 };
 
@@ -33,7 +32,6 @@ export const defaultSettings: PlayerSettings = {
   downloadDirectory: "",
   downloadQuality: DEFAULT_DOWNLOAD_QUALITY,
   notificationMode: "system",
-  downloadNotificationMode: "system",
   downloadNameTemplate: DEFAULT_DOWNLOAD_NAME_TEMPLATE,
 };
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
@@ -81,7 +79,10 @@ export function sanitizeLauncher(value: unknown): LauncherPosition {
 
 export function sanitizeSettings(value: unknown): PlayerSettings {
   const record = value != null && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const notificationMode = notificationModeOr(record.notificationMode, defaultSettings.notificationMode);
+  const notificationMode = notificationModeOr(
+    record.notificationMode,
+    notificationModeOr(record.downloadNotificationMode, defaultSettings.notificationMode),
+  );
   return {
     playbackBackend: playbackBackendOr(record.playbackBackend, defaultSettings.playbackBackend),
     uiScale: uiScaleOr(record.uiScale, defaultSettings.uiScale),
@@ -92,8 +93,6 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     downloadDirectory: directoryOr(record.downloadDirectory, defaultSettings.downloadDirectory),
     downloadQuality: isDownloadQuality(record.downloadQuality) ? record.downloadQuality : defaultSettings.downloadQuality,
     notificationMode,
-    // 拆分之前保存的设置只有一个开关管两个渠道：保持它们同步。
-    downloadNotificationMode: notificationModeOr(record.downloadNotificationMode ?? record.notificationMode, notificationMode),
     downloadNameTemplate: templateOr(record.downloadNameTemplate, defaultSettings.downloadNameTemplate),
   };
 }

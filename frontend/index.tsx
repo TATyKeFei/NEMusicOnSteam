@@ -6,6 +6,7 @@ import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
 import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
 import type { NotificationMode, PlaybackBackend } from "./settings.ts";
 import { SteamSettingsEntry } from "./widget/steam-settings.ts";
+import { SETTINGS_ICON } from "./widget/settings-icon.ts";
 
 const steamSettings = new SteamSettingsEntry(() => <SettingsContent />);
 const shutdownBackend = ffi<[], string>("shutdown_backend");
@@ -30,17 +31,6 @@ const UI_SCALE_OPTIONS = [
   { data: 1.25, label: "125%" },
   { data: 1.5, label: "150%" },
 ];
-
-function NoteIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        fill="currentColor"
-        d="M9 18.5a2.5 2.5 0 1 1-2-2.45V6.2l10-2v9.85a2.5 2.5 0 1 1-2-2.45V7.1l-6 1.2v10.2Z"
-      />
-    </svg>
-  );
-}
 
 // snapshot() 每次调用都会返回全新的对象，所以无条件喂给 setState 会让整个面板每秒重渲染
 // 好几次，哪怕什么都没变。
@@ -83,37 +73,11 @@ function identityText(identity: PlayerSnapshot["together"]["identity"]): string 
   return `${who}；实际发出去的 cookie：${wire}。${warn}`;
 }
 
-function togetherMembersText(together: PlayerSnapshot["together"]): string {
-  if (!together.inRoom) return "不在房间里";
-  // 服务端 status/get 的名单才是真的：页面 store 里那份是 IM 推的，网页版收不到IM，
-  // 有时只剩一个没有头像的自己（那是「鬼房」，服务端根本没登记这次加入）。
-  if (together.serverMembers.length) {
-    const others = together.serverMembers.filter(member => member.userId !== together.accountId);
-    // 昵称和头像是我们自己去用户资料接口补的（服务端 roomUsers 只给 uid），补到了就写出来。
-    const named = others.filter(member => member.nickname);
-    const names = named.map(member => member.nickname);
-    const plain = others.length - named.length;
-    const list = [...names, ...(plain ? [`${plain} 人只有 uid`] : [])].join("、");
-    return list ? `服务端名单：${list}` : "服务端名单里只有你自己，对面还没进来（或对面没把房间码给你）";
-  }
-  if (!together.members.length) return "网易云还没告诉我们房间里有谁";
-  const others = together.members.filter(member => member.userId !== together.accountId);
-  const names = others.map(member => member.nickname || member.userId);
-  return names.length ? `房间里还有：${names.join("、")}` : "目前只有你一个人在房间里";
-}
-
-/** 播放状态的最近变化。网页版没有一起听的接收通道，只能靠这个定位是谁在重播。 */
-function probeText(together: PlayerSnapshot["together"]): string {
-  if (!together.inRoom || !together.probe.length) return "";
-  return `最近变化：${together.probe.join(" → ")}`;
-}
-
 function SettingsContent() {
   const player = getPlayer(steamSettings);
   const [snapshot, setSnapshot] = useState<PlayerSnapshot>(() => player.snapshot());
   const [directory, setDirectory] = useState(() => snapshot.settings.downloadDirectory);
   const [nameTemplate, setNameTemplate] = useState(() => snapshot.settings.downloadNameTemplate);
-  const [joinCode, setJoinCode] = useState("");
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -152,7 +116,10 @@ function SettingsContent() {
   // MPRIS 以及基于它的快捷键命令只在 Linux 上存在。
 
   return (
-    <>
+    <div
+      className="nemusic-settings-content"
+      style={{ flex: "1 1 0", height: "100%", minHeight: 0, overflowX: "hidden", overflowY: "auto", scrollbarGutter: "stable", paddingRight: 12, boxSizing: "border-box" }}
+    >
       <Field
         label="播放后端"
         description={settings.playbackBackend === "mpv"
@@ -240,13 +207,6 @@ function SettingsContent() {
           }}
         />
       </Field>
-      <Field
-        label="播放器"
-        description={`${snapshot.status}。点击顶部其他栏目即可返回 Steam 页面`}
-        bottomSeparator="thick"
-      >
-        <DialogButton onClick={() => player.open()}>{snapshot.mode === "closed" ? "打开" : "展开"}</DialogButton>
-      </Field>
       <Field label="启动时打开" description="Steam 主窗口出现后自动展开播放器。" bottomSeparator="standard">
         <Toggle
           value={settings.openOnStart}
@@ -274,8 +234,8 @@ function SettingsContent() {
         />
       </Field>
       <Field
-        label="切歌通知"
-        description="切歌时如何提醒。系统通知走桌面通知（Linux 需要 Python 辅助进程），Steam 弹窗用右下角的 Steam 通知样式，无则不提醒"
+        label="通知方式"
+        description="切歌、下载完成或失败时统一使用此提醒方式。系统通知走桌面通知（Linux 需要 Python 辅助进程），Steam 弹窗用右下角的 Steam 通知样式，无则不提醒"
         bottomSeparator="standard"
       >
         <Dropdown
@@ -283,19 +243,6 @@ function SettingsContent() {
           selectedOption={settings.notificationMode}
           onChange={option => {
             setSnapshot(player.updateSettings({ notificationMode: option.data as NotificationMode }));
-          }}
-        />
-      </Field>
-      <Field
-        label="下载通知"
-        description="下载完成或失败时如何提醒，选项含义同上"
-        bottomSeparator="standard"
-      >
-        <Dropdown
-          rgOptions={NOTIFICATION_OPTIONS}
-          selectedOption={settings.downloadNotificationMode}
-          onChange={option => {
-            setSnapshot(player.updateSettings({ downloadNotificationMode: option.data as NotificationMode }));
           }}
         />
       </Field>
@@ -315,46 +262,6 @@ function SettingsContent() {
         )}
       </Field>
       <Field
-        label="一起听"
-        description={`${together.note}。${togetherMembersText(together)}${together.buttonNote ? `播放栏按钮：${together.buttonNote}` : ""}${together.buttonAnchor ? `（挂在 ${together.buttonAnchor}）` : ""}${together.buttonBar ? `｜${together.buttonBar}` : ""}${together.syncNote ? `｜${together.syncNote}` : ""}${together.diagnostic ? `｜诊断：${together.diagnostic}` : ""}${probeText(together)}`}
-        bottomSeparator="standard"
-      >
-        <DialogButton
-          onClick={() => {
-            if (together.inRoom) player.leaveTogether();
-            else player.startTogether();
-            setSnapshot(player.snapshot());
-          }}
-          disabled={together.busy || !together.supported || (together.inRoom ? false : !together.loggedIn)}
-        >
-          {together.inRoom ? "退出房间" : "开始一起听"}
-        </DialogButton>
-      </Field>
-      <Field
-        label="加入一起听"
-        description="粘贴对方给的邀请链接或房间码。官方接受接口要房主 uid，复制端给的完整链接里带着它；只有裸房间码时会先问服务端要房主，拿不到就要求完整链接"
-        bottomSeparator="standard"
-      >
-        <TextField
-          value={joinCode}
-          onChange={event => setJoinCode(event.target.value)}
-          onKeyDown={event => {
-            if (event.key !== "Enter" || !joinCode.trim()) return;
-            player.joinTogether(joinCode);
-            setSnapshot(player.snapshot());
-          }}
-        />
-        <DialogButton
-          onClick={() => {
-            player.joinTogether(joinCode);
-            setSnapshot(player.snapshot());
-          }}
-          disabled={together.busy || !together.supported || !together.loggedIn || together.inRoom || !joinCode.trim()}
-        >
-          加入房间
-        </DialogButton>
-      </Field>
-      <Field
         label="一起听身份"
         description={identityText(together.identity)}
         bottomSeparator="standard"
@@ -370,12 +277,16 @@ function SettingsContent() {
           }}
         />
       </Field>
-    </>
+    </div>
   );
 }
 
 export function renderSettings(): ReactElement {
   return <SettingsContent />;
+}
+
+export function renderSettingsIcon(): ReactElement {
+  return <span style={{ display: "inline-flex", width: 20, height: 20 }} dangerouslySetInnerHTML={{ __html: SETTINGS_ICON }} />;
 }
 
 /** @ffi */
@@ -427,7 +338,7 @@ export default definePlugin(() => {
   steamSettings.start();
   return {
     title: "网易云音乐",
-    icon: <NoteIcon />,
+    icon: renderSettingsIcon(),
     content: <SettingsContent />,
     onDismount: () => {
       unregisterShutdown();

@@ -4,6 +4,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
 import type { SteamWindow } from "../player/steam.ts";
+import { SETTINGS_ICON } from "./settings-icon.ts";
 
 const luaSource = readFileSync(new URL("../../backend/main.lua", import.meta.url), "utf8");
 const patch = luaSource.match(/find = \[\[(return Ga.*?)\]\],[\s\S]*?replace = \[=\[([\s\S]*?)\]=\]/);
@@ -119,13 +120,14 @@ describe("Steam settings page integration", () => {
     const expression = settingsList.replace(new RegExp(patch[1]), () => patch[2].replaceAll("#{{self}}", "testPlugin"));
     assert.notEqual(expression, settingsList);
     const content = { type: "NetEaseSettings" };
+    const icon = { type: "NetEaseLogo" };
     const account = { visible: true, route: "/settings/account" };
     const pages = runInNewContext(`${expression}; settingsPages()`, {
       a: { useMemo: (factory: () => unknown) => factory() },
       e: { jsx: (component: unknown) => typeof component === "function" ? component() : { type: component } },
       d: { Music: "MusicIcon" },
       r: { BV: { Settings: { Music: () => "/settings/music" } } },
-      testPlugin: { renderSettings: () => content },
+      testPlugin: { renderSettings: () => content, renderSettingsIcon: () => icon },
       Kr: ["Account", "Hidden"],
       Ua: { Account: account, Hidden: { visible: false } },
       l: { I0: "separator" },
@@ -135,5 +137,12 @@ describe("Steam settings page integration", () => {
     assert.equal(pages[1].title, "网易云音乐");
     assert.equal(pages[1].route, "/settings/nemusic");
     assert.equal(pages[1].content, content);
+    assert.equal(pages[1].icon, icon);
+  });
+
+  it("uses the logo.svg artwork for the settings icon", () => {
+    const asset = readFileSync(new URL("../../assets/icon/logo.svg", import.meta.url), "utf8");
+    const paths = (svg: string) => [...svg.matchAll(/<path[^>]*\sd="([^"]*)"/g)].map(match => match[1]);
+    assert.deepEqual(paths(SETTINGS_ICON), paths(asset));
   });
 });

@@ -1,15 +1,18 @@
 import { findModule } from "millennium";
 import type { ReactNode } from "react";
 import { sharedSteamClient, steamGlobals, type SteamWindow } from "../player/steam.ts";
+import { SETTINGS_ICON } from "./settings-icon.ts";
 
-type MountedPage = { dialog: HTMLElement; button: HTMLButtonElement; dispose: () => void };
+type MountedPage = { dialog: HTMLElement; button: HTMLElement; dispose: () => void };
 
 const FALLBACK_CLASSES = {
   SettingsModal: "_3few7361SOf4k_YuKCmM62",
-  PagedSettingsDialog_PageList: "gNwozyl1BAcDyyhUKvx1Y",
-  PagedSettingsDialog_PageListItem: "_2mL2HfT5AkDXRi1YBnRWKa",
-  PagedSettingDialog_ContentColumn: "ZjHHXZlnZhCahNrBFplWc",
-  Active: "_1ELdDY5kb5jxjXe-FpWBo5",
+  PagedSettingsDialog_PageList: "_18QCu-7MTzd51UpVbYysDy",
+  PagedSettingsDialog_PageListItem: "_1-vlriAtKYDViAEunue4VO",
+  PageListItem_Icon: "_1rD8X96FdnksZLvRRlEiCR",
+  PageListItem_Title: "_2PPbMrzl8PKBwpkjYs9b0i",
+  PagedSettingDialog_ContentColumn: "OX7USkJ5dDP_icD00Gal6",
+  Active: "_2DpXjzK3WWsOtUWUrcuOG7",
 };
 
 export class SteamSettingsEntry {
@@ -40,7 +43,8 @@ export class SteamSettingsEntry {
 
   start(): void {
     if (this.timer) return;
-    const layout = findModule(module => typeof module?.PagedSettingsDialog_PageList === "string");
+    const layout = findModule(module => typeof module?.PagedSettingsDialog_PageList === "string" && typeof module?.ResponsivePageList === "string")
+      ?? findModule(module => typeof module?.PagedSettingsDialog_PageList === "string");
     const settings = findModule(module => typeof module?.SettingsModal === "string");
     this.classes = { ...FALLBACK_CLASSES, ...layout, ...settings };
     // 为了一个用户很少打开的对话框，无休止地 GetPopups() 再对每个 popup 做一次
@@ -110,20 +114,32 @@ export class SteamSettingsEntry {
 
   private mount(dialog: HTMLElement, list: HTMLElement, column: HTMLElement): MountedPage {
     const doc = dialog.ownerDocument;
-    const button = doc.createElement("button");
+    const button = doc.createElement("div");
     button.id = "nemusic-settings-entry";
-    button.type = "button";
+    button.tabIndex = 0;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", "false");
+    button.setAttribute("aria-controls", "nemusic-settings-page");
     button.className = this.classes.PagedSettingsDialog_PageListItem;
-    button.textContent = "♫　网易云音乐";
-    Object.assign(button.style, { width: "100%", border: "0", font: "inherit", textAlign: "left", cursor: "pointer", flexShrink: "0" });
+    button.style.flexShrink = "0";
+    const icon = doc.createElement("div");
+    icon.className = this.classes.PageListItem_Icon;
+    icon.innerHTML = SETTINGS_ICON;
+    const label = doc.createElement("div");
+    label.className = this.classes.PageListItem_Title;
+    label.textContent = "网易云音乐";
+    button.append(icon, label);
     const page = doc.createElement("section");
     page.id = "nemusic-settings-page";
     page.setAttribute("aria-label", "网易云音乐");
-    Object.assign(page.style, { overflowY: "auto", flex: "1", minWidth: "0", padding: "24px", boxSizing: "border-box" });
+    page.setAttribute("role", "tabpanel");
+    page.setAttribute("aria-labelledby", button.id);
+    Object.assign(page.style, { position: "absolute", inset: "0", display: "flex", flexDirection: "column", overflow: "hidden", minHeight: "0", minWidth: "0", padding: "24px", boxSizing: "border-box" });
     const title = doc.createElement("h2");
     title.textContent = "网易云音乐";
-    Object.assign(title.style, { margin: "0 0 24px", fontSize: "22px", color: "#fff" });
+    Object.assign(title.style, { margin: "0 0 24px", fontSize: "22px", color: "#fff", flexShrink: "0" });
     const content = doc.createElement("div");
+    Object.assign(content.style, { display: "flex", flexDirection: "column", flex: "1 1 0", minHeight: "0", minWidth: "0" });
     page.append(title, content);
     let root: { render: (node: ReactNode) => void; unmount: () => void } | null = null;
     const hidden = new Map<HTMLElement, string>();
@@ -139,6 +155,7 @@ export class SteamSettingsEntry {
       selected.clear();
       button.classList.remove(...activeClasses);
       button.removeAttribute("aria-current");
+      button.setAttribute("aria-selected", "false");
     };
     const onNavigate = (event: Event) => {
       if (!event.composedPath().includes(button)) dismiss();
@@ -156,6 +173,7 @@ export class SteamSettingsEntry {
         }
         button.classList.add(...activeClasses);
         button.setAttribute("aria-current", "page");
+        button.setAttribute("aria-selected", "true");
         column.append(page);
         root = window.SP_REACTDOM.createRoot(content);
         root!.render(this.content());
@@ -164,7 +182,13 @@ export class SteamSettingsEntry {
         console.error("[NEMusic] Steam settings page", error);
       }
     };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      button.click();
+    };
     button.addEventListener("click", onClick);
+    button.addEventListener("keydown", onKeyDown);
     list.addEventListener("click", onNavigate, true);
     list.append(button);
     return {
@@ -174,6 +198,7 @@ export class SteamSettingsEntry {
         dismiss();
         list.removeEventListener("click", onNavigate, true);
         button.removeEventListener("click", onClick);
+        button.removeEventListener("keydown", onKeyDown);
         button.remove();
       },
     };

@@ -43,7 +43,6 @@ export type DownloadOptions = {
   directory: string;
   nameTemplate: string;
   notificationMode: NotificationMode;
-  downloadNotificationMode: NotificationMode;
 };
 
 const POLL_MS = 800;
@@ -141,7 +140,7 @@ export class DownloadBridge {
       }
       return;
     }
-    const { quality, directory, nameTemplate, downloadNotificationMode } = this.options();
+    const { quality, directory, nameTemplate, notificationMode } = this.options();
     const generation = ++this.generation;
     this.busy = true;
     this.progress = null;
@@ -163,7 +162,7 @@ export class DownloadBridge {
           artist: track.artist,
           album: track.album,
           cover: track.cover,
-          notify: downloadNotificationMode,
+          notify: notificationMode,
         },
       });
       if (generation !== this.generation) return;
@@ -187,7 +186,7 @@ export class DownloadBridge {
         }
         this.progress = null;
         this.status = job.path ? `已保存到 ${job.path}` : "下载已结束但没有生成文件";
-        if (downloadNotificationMode === "steam") {
+        if (notificationMode === "steam") {
           steamToast("下载完成", job.path || this.status);
         }
         return;
@@ -196,7 +195,7 @@ export class DownloadBridge {
       if (generation === this.generation) {
         this.status = message(error);
         this.toast(this.status);
-        if (downloadNotificationMode === "steam") {
+        if (notificationMode === "steam") {
           steamToast("下载失败", this.status);
         }
       }
