@@ -107,15 +107,6 @@ describe("Steam settings page integration", () => {
     assert.equal(settings.selections(), 0);
   });
 
-  it("在后端卸载时终止脱离 Steam 的辅助进程", () => {
-    assert.ok(luaSource.includes('(interpreter or "python3")'));
-    assert.ok(luaSource.includes("kill -TERM -- -"));
-    assert.ok(luaSource.includes("stop_helper(mpris_dir)"));
-    assert.ok(luaSource.includes("stop_helper(mpv_dir)"));
-    assert.ok(luaSource.includes("unblock_stop()"));
-    assert.doesNotMatch(luaSource.match(/local function on_unload\(\)[\s\S]*?\nend\n\nreturn/)?.[0] ?? "", /call_frontend_method/);
-  });
-
   it("adds a native settings route and renders the plugin component without replacing Steam's pages", () => {
     assert.ok(patch);
     const expression = settingsList.replace(new RegExp(patch[1]), () => patch[2].replaceAll("#{{self}}", "testPlugin"));

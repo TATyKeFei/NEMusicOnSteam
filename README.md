@@ -102,8 +102,10 @@
 
 ```bash
 npm install
-npm test
+npm run check      # 类型检查 + Node/Python/Lua 测试，需要 python3 和 Lua 5.4
 npm run build      # 测试开发时: npm run dev 
+
+npm run build -- --no-install   # 只打包、不复制到millennium插件目录
 ```
 
 插件构建产物在 `dist/<name>-<version>.star`

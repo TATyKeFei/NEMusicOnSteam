@@ -48,6 +48,8 @@ const versioned = path.join(path.dirname(built), `${name}-${version}.star`);
 renameSync(built, versioned);
 console.log(`build: 产物 ${path.relative(root, versioned)}`);
 
+if (process.argv.includes("--no-install")) process.exit(0);
+
 const pluginsDirectory = path.join(homedir(), ".local", "share", "millennium", "plugins");
 if (statSync(pluginsDirectory, { throwIfNoEntry: false })?.isDirectory()) {
   const installed = path.join(pluginsDirectory, path.basename(versioned));

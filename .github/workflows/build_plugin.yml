@@ -23,14 +23,14 @@ jobs:
     - name: Install dependencies
       run: npm ci
 
-    - name: Typecheck
-      run: npm run typecheck
+    - name: Install backend test runtime
+      run: sudo apt-get update && sudo apt-get install -y lua5.4
 
-    - name: Run tests
-      run: npm test
+    - name: Check types and run all test suites
+      run: npm run check
 
     - name: Build plugin
-      run: npm run build
+      run: npm run build -- --no-install
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
+import { HelperClient, HelperConnectionError } from "../runtime/helper-client.ts";
 
 const source = stripTypeScriptTypes(
   readFileSync(new URL("./mpris.ts", import.meta.url), "utf8")
@@ -29,7 +30,9 @@ function setup(options: { trackId?: string; lyric?: unknown; platform?: string; 
   let targetQueries = 0;
   let lyricCalls = 0;
   const clock = { now: 0 };
-  const Bridge = runInNewContext(`${targetSource}\n${source}; MprisBridge`, {
+  const Bridge = runInNewContext(`${targetSource}\nconst mprisHelper = new HelperClient(ffi('mpris_endpoint'), ffi('mpris_reconnect'), fetch);\n${source}; MprisBridge`, {
+    HelperClient,
+    HelperConnectionError,
     navigator: { platform: options.platform ?? "Linux" },
     window: {
       setInterval(callback: () => void) { interval = callback; return 1; },

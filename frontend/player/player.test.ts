@@ -12,6 +12,7 @@ import { sameBounds } from "../widget/layout.ts";
 import { isPlayerDocument, PLAYER_URL } from "../constants.ts";
 import { browserId, type BrowserView, type BrowserViewCreateOptions, type SteamPopup, type SteamWindow } from "./steam.ts";
 import { PLAYER_READY_SCRIPT, PLAYER_RECOVERY_SCRIPT, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
+import { ViewBridges } from "./view-bridges.ts";
 
 const source = stripTypeScriptTypes(
   readFileSync(new URL("./player.ts", import.meta.url), "utf8")
@@ -99,6 +100,9 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
       destroy() {}
     },
     MprisBridge: FakeBridge,
+    ViewBridges,
+    mprisHelper: {},
+    steamToast() {},
     UnblockBridge: class {
       reset() {}
       installPageHook() {}

@@ -1,16 +1,9 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { stripTypeScriptTypes } from "node:module";
 import { describe, it } from "node:test";
-import { runInNewContext } from "node:vm";
 import type { DownloadSong } from "./download-player.ts";
 import type { NotificationMode } from "../settings.ts";
-
-const source = stripTypeScriptTypes(
-  readFileSync(new URL("./download.ts", import.meta.url), "utf8")
-    .replace(/^import [\s\S]*? from [^;]+;\n/gm, "")
-    .replace(/^export /gm, ""),
-);
+import { HelperClient } from "../runtime/helper-client.ts";
+import { DownloadBridge } from "./download.ts";
 
 const flush = () => new Promise<void>(resolve => setImmediate(resolve));
 const songs: DownloadSong[] = [
@@ -19,13 +12,6 @@ const songs: DownloadSong[] = [
   { id: 3, name: "第三首", artist: "歌手" },
 ];
 
-type TestBridge = {
-  setEnabled(enabled: boolean): void;
-  tickMenu(): Promise<void>;
-  download(song: DownloadSong): Promise<void>;
-  snapshot(): { busy: boolean };
-};
-
 function setup(options: { notificationMode?: NotificationMode; downloadError?: string } = {}) {
   const pending: DownloadSong[] = [];
   const downloaded: number[] = [];
@@ -33,45 +19,33 @@ function setup(options: { notificationMode?: NotificationMode; downloadError?: s
   const notifications: { title: string; body: string }[] = [];
   const waits: (() => void)[] = [];
   const downloadError = options.downloadError ?? "";
-  let currentSong: DownloadSong | null = null;
-  const Bridge = runInNewContext(`${source}; DownloadBridge`, {
-    window: {
-      setInterval: () => 1,
-      clearInterval() {},
-      setTimeout: (callback: () => void) => { waits.push(callback); return 1; },
-    },
-    ffi: () => async () => "http://localhost|test-token",
-    MENU_POLL_SCRIPT: "poll",
-    MENU_TICK_SCRIPT: "install",
-    menuToastScript: () => "toast",
-    steamToast: (title: string, body: string) => { notifications.push({ title, body }); },
-    songFileName: () => "歌曲",
-    downloadScript: (_quality: number, song: DownloadSong) => {
-      currentSong = song;
-      return "download";
-    },
-    evaluateInPlayer: async (expression: string) => {
-      if (expression === "toast") return true;
-      if (expression === "download") {
-        return { url: `https://audio.example/${currentSong!.id}.mp3`, name: currentSong!.name, artist: currentSong!.artist, source: "api" };
-      }
-      return { installed: true, menus: 1, songs: 1, pending: pending.splice(0) };
-    },
-    fetch: async (_url: string, options: { body?: string }) => {
-      if (options.body) {
-        const payload = JSON.parse(options.body);
+  const requests: string[] = [];
+  const helper = new HelperClient(async () => "http://localhost:1|old-token", async () => "http://localhost:2|new-token",
+    async (url, init) => {
+      requests.push(String(url));
+      if (init?.body) {
+        const payload = JSON.parse(String(init.body));
         downloaded.push(Number(payload.url.match(/\/(\d+)\.mp3$/)[1]));
         notificationModes.push(payload.notify);
       }
-      return {
-        ok: true,
-        status: options.body ? 202 : 200,
-        json: async () => ({ active: false, error: downloadError, path: "/music/song.mp3" }),
-      };
+      return new Response(JSON.stringify({ active: false, error: downloadError, path: "/music/song.mp3" }), { status: init?.body ? 202 : 200 });
+    });
+  let poll = () => {};
+  const bridge = new DownloadBridge(
+    () => ({ quality: 320, directory: "", nameTemplate: "{title}", notificationMode: options.notificationMode ?? "none" }),
+    {
+      helper,
+      evaluate: async () => ({ installed: true, menus: 1, songs: 1, pending: pending.splice(0) }),
+      notify: (title, body) => { notifications.push({ title, body }); },
+      timers: {
+        setInterval: callback => { poll = callback as () => void; return 1; },
+        clearInterval() {},
+        setTimeout: callback => { waits.push(callback as () => void); return 1; },
+      },
     },
-  }) as new (options: unknown) => TestBridge;
-  const bridge = new Bridge(() => ({ quality: 320, directory: "", nameTemplate: "{title}", notificationMode: options.notificationMode ?? "none" }));
-  return { bridge, pending, downloaded, waits, notificationModes, notifications };
+    async (_quality, song) => ({ url: `https://audio.example/${song!.id}.mp3`, name: song!.name, artist: song!.artist, source: "api" }),
+  );
+  return { bridge, pending, downloaded, waits, notificationModes, notifications, helper, requests, poll: () => poll() };
 }
 
 async function finishDownloads(player: ReturnType<typeof setup>) {
@@ -100,7 +74,7 @@ describe("download menu queue", () => {
     void player.bridge.download(songs[0]);
     await flush();
     player.pending.push(...songs.slice(1));
-    void player.bridge.tickMenu();
+    player.poll();
     await finishDownloads(player);
     assert.deepEqual(player.downloaded, [1, 2, 3]);
     assert.equal(player.bridge.snapshot().busy, false);
@@ -139,4 +113,20 @@ describe("shared notification mode", () => {
       assert.deepEqual(player.notifications, notificationMode === "steam" ? [{ title: "下载失败", body: "下载错误" }] : []);
     });
   }
+});
+
+describe("download helper restart", () => {
+  it("uses the shared replacement endpoint for subsequent downloads", async () => {
+    const player = setup();
+    player.pending.push(songs[0]);
+    player.bridge.setEnabled(true);
+    await finishDownloads(player);
+    await player.helper.connect(true);
+    const previous = player.requests.length;
+    player.pending.push(songs[1]);
+    player.poll();
+    await finishDownloads(player);
+    assert.deepEqual(player.downloaded, [1, 2]);
+    assert.ok(player.requests.slice(previous).every(url => url.startsWith("http://localhost:2/")));
+  });
 });

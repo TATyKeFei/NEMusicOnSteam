@@ -6,6 +6,9 @@
     "build": "node scripts/build.mjs",
     "dev": "node scripts/build-unblock.mjs && starlight watch",
     "test": "node --experimental-strip-types --test frontend/*.test.ts frontend/**/*.test.ts backend/*.test.cjs",
+    "test:python": "python3 -m unittest discover -s backend -p 'test_*.py' && python3 -m unittest discover -s tools/diagnostics -p 'test_*.py'",
+    "test:lua": "lua tests/backend-lifecycle.lua",
+    "check": "npm run typecheck && npm test && npm run test:python && npm run test:lua",
     "typecheck": "tsc --noEmit",
     "prepare": "starlight lsp"
   },

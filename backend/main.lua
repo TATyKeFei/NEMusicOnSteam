@@ -3,31 +3,36 @@ local millennium = require("millennium")
 local utils = require("utils")
 local fs = require("fs")
 
-local mpris_dir = nil
-local mpris_token = nil
-local mpv_dir = nil
-local mpv_token = nil
-local unblock_dir = nil
-local unblock_token = nil
-local unblock_skip = 0
-local unblock_failure = "!retry"
 local unloading = false
 local helper_pids = {}
 
--- 前端每 500ms 轮询一次，而每次尝试拉起辅助进程都会 fork 一个 python3，并在它启动
--- 期间阻塞本进程最长一秒。没有喘息间隔的话，一个根本起不来的辅助进程会把这些阻塞连
--- 续叠加。所以这里用「跳过的轮询次数」计数，而不是去读时钟：utils.time_ms() 在这个
--- 32 位 Lua 宿主里会返回负数，早期基于截止时间的判断把它的 0 哨兵值当成「还在未来」，
--- 于是 mpris_endpoint 永远返回 "" 再也不重试。
--- 首个间隔取 5s：PyGObject 冷启动经常超过下面 1s 的端口等待，在第一个还在启动时再 fork
--- 一个，会留下两个进程抢同一个 D-Bus 名字——抢输的那个仍在提供 MPRIS 客户端根本看不到
--- 的 HTTP 服务。
+-- 宿主的 time_ms 在 32 位 Lua 下可能溢出，因此按调用次数退避。
+-- 给冷启动留出余量，避免尚未写端口文件时重复启动进程争抢 D-Bus 名称。
 local RESPAWN_SKIP_POLLS = { 10, 20, 40, 80, 120 }
-local respawn_failures = 0
-local respawn_skip = 0
-local mpv_respawn_failures = 0
-local mpv_respawn_skip = 0
-local mpv_last_failure = "!retry"
+local helpers = {
+    mpris = {
+        name = "mpris", entry = "helper.py", polls = 20, retry_only = true,
+        assets = {
+            { "backend/mpris_helper.py", "helper.py", "helper" },
+            { "backend/recognition.py", "recognition.py", "recognition" },
+            { "backend/audio_source.py", "audio_source.py", "audio-source" },
+            { "backend/download_files.py", "download_files.py", "download-files" },
+            { "backend/audio_tags.py", "audio_tags.py", "audio-tags" },
+        },
+    },
+    mpv = {
+        name = "mpv", entry = "helper.py", polls = 200,
+        assets = {
+            { "backend/mpv_helper.py", "helper.py", "helper" },
+            { "backend/audio_source.py", "audio_source.py", "audio-source" },
+        },
+    },
+    unblock = {
+        name = "unblock", entry = "helper.cjs", polls = 20, fixed_skip = 10,
+        interpreter = "env -u LD_LIBRARY_PATH -u LD_PRELOAD node",
+        assets = { { "dist/unblock_helper.cjs", "helper.cjs", "helper" } },
+    },
+}
 
 local function shell_quote(value)
     return "'" .. value:gsub("'", "'\\''") .. "'"
@@ -80,206 +85,110 @@ local function last_log_line(path)
     return line
 end
 
----@ffi
----@return string
-function mpris_endpoint()
+local function reset_helper(helper)
+    stop_helper(helper.dir)
+    helper.dir = nil
+    helper.token = nil
+    helper.failures = 0
+    helper.skip = 0
+    helper.failure = "!retry"
+end
+
+local function helper_endpoint(helper)
     if unloading then return "!shutdown" end
-    if mpris_dir ~= nil then
-        local port = utils.read_file(mpris_dir .. "/port")
-        if port ~= nil and port:match("^%d+$") then
-            respawn_failures = 0
-            respawn_skip = 0
-            return "http://127.0.0.1:" .. port .. "|" .. mpris_token
+    local function ready_endpoint()
+        if helper.dir == nil then return nil end
+        local port = utils.read_file(helper.dir .. "/port")
+        if port == nil or not port:match("^%d+$") then return nil end
+        helper.failures = 0
+        helper.skip = 0
+        helper.failure = "!retry"
+        return "http://127.0.0.1:" .. port .. "|" .. helper.token
+    end
+    local endpoint = ready_endpoint()
+    if endpoint ~= nil then return endpoint end
+    if (helper.skip or 0) > 0 then
+        helper.skip = helper.skip - 1
+        return helper.retry_only and "!retry" or helper.failure
+    end
+    stop_helper(helper.dir)
+    helper.dir = nil
+    helper.token = nil
+    helper.failures = (helper.failures or 0) + 1
+    helper.skip = helper.fixed_skip or RESPAWN_SKIP_POLLS[math.min(helper.failures, #RESPAWN_SKIP_POLLS)]
+    local function failure(reason, cleanup)
+        helper.failure = reason
+        if cleanup then
+            stop_helper(helper.dir)
+            helper.dir = nil
+            helper.token = nil
+        end
+        return reason
+    end
+    local assets = {}
+    for _, asset in ipairs(helper.assets) do
+        local content = millennium.assets.read(asset[1])
+        if content == nil then return failure("!asset-" .. asset[3]) end
+        table.insert(assets, { asset[2], content, asset[3] })
+    end
+    local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
+    local dir = base .. "/nemusic-" .. helper.name .. "-" .. utils.uuid()
+    if not fs.create_directories(dir) then return failure("!mkdir:" .. base) end
+    helper.dir = dir
+    helper.token = utils.uuid()
+    utils.exec("chmod 700 " .. shell_quote(dir))
+    for _, asset in ipairs(assets) do
+        if not utils.write_file(dir .. "/" .. asset[1], asset[2]) then
+            return failure("!write-" .. asset[3], true)
         end
     end
-    if respawn_skip > 0 then
-        respawn_skip = respawn_skip - 1
-        return "!retry"
-    end
-    stop_helper(mpris_dir)
-    mpris_dir = nil
-    mpris_token = nil
-    respawn_failures = respawn_failures + 1
-    respawn_skip = RESPAWN_SKIP_POLLS[math.min(respawn_failures, #RESPAWN_SKIP_POLLS)]
-    local script = millennium.assets.read("backend/mpris_helper.py")
-    if script == nil then return "!asset-helper" end
-    local recognition = millennium.assets.read("backend/recognition.py")
-    if recognition == nil then return "!asset-recognition" end
-    local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
-    local dir = base .. "/nemusic-mpris-" .. utils.uuid()
-    local token = utils.uuid()
-    if not fs.create_directories(dir) then return "!mkdir:" .. base end
-    utils.exec("chmod 700 " .. shell_quote(dir))
-    local path = dir .. "/helper.py"
-    if not utils.write_file(path, script) then return "!write-helper" end
-    if not utils.write_file(dir .. "/recognition.py", recognition) then return "!write-recognition" end
-    local audio_source = millennium.assets.read("backend/audio_source.py")
-    if audio_source == nil or not utils.write_file(dir .. "/audio_source.py", audio_source) then return "!write-audio-source" end
-    if not utils.write_file(dir .. "/token", token) then return "!write-token" end
-    -- 日志要放在运行目录之外：辅助进程退出时会清空该目录，一个在报出端口前就死掉的
-    -- 辅助进程会把自己的回溯一起带走。
-    local log_path = base .. "/nemusic-mpris.log"
-    mpris_dir = dir
-    mpris_token = token
-    launch_helper(path, dir, log_path)
-    for _ = 1, 20 do
-        local port = utils.read_file(dir .. "/port")
-        if port ~= nil and port:match("^%d+$") then
-            mpris_dir = dir
-            mpris_token = token
-            respawn_failures = 0
-            respawn_skip = 0
+    if not utils.write_file(dir .. "/token", helper.token) then return failure("!write-token", true) end
+    -- 日志留在运行目录外，进程启动失败清理目录时仍能读取错误。
+    local log_path = base .. "/nemusic-" .. helper.name .. ".log"
+    launch_helper(dir .. "/" .. helper.entry, dir, log_path, helper.interpreter)
+    for _ = 1, helper.polls do
+        endpoint = ready_endpoint()
+        if endpoint ~= nil then
             fs.remove(log_path)
-            return "http://127.0.0.1:" .. port .. "|" .. token
+            return endpoint
         end
         utils.sleep(50)
     end
     local detail = last_log_line(log_path)
-    if detail == "" then return "!spawn" end
-    return "!spawn:" .. detail
+    return failure(detail == "" and "!spawn" or "!spawn:" .. detail)
+end
+
+---@ffi
+---@return string
+function mpris_endpoint()
+    return helper_endpoint(helpers.mpris)
 end
 
 ---@ffi
 ---@return string
 function mpris_reconnect()
     if unloading then return "!shutdown" end
-    stop_helper(mpris_dir)
-    mpris_dir = nil
-    mpris_token = nil
-    respawn_failures = 0
-    respawn_skip = 0
+    reset_helper(helpers.mpris)
     return mpris_endpoint()
 end
-
-local MPV_RESPAWN_SKIP_POLLS = { 10, 20, 40, 80, 120 }
 
 ---@ffi
 ---@return string
 function mpv_endpoint()
-    if unloading then return "!shutdown" end
-    if mpv_dir ~= nil then
-        local port = utils.read_file(mpv_dir .. "/port")
-        if port ~= nil and port:match("^%d+$") then
-            mpv_respawn_failures = 0
-            mpv_respawn_skip = 0
-            mpv_last_failure = "!retry"
-            return "http://127.0.0.1:" .. port .. "|" .. mpv_token
-        end
-    end
-    if mpv_respawn_skip > 0 then
-        mpv_respawn_skip = mpv_respawn_skip - 1
-        return mpv_last_failure
-    end
-    stop_helper(mpv_dir)
-    mpv_dir = nil
-    mpv_token = nil
-    mpv_respawn_failures = mpv_respawn_failures + 1
-    mpv_respawn_skip = MPV_RESPAWN_SKIP_POLLS[math.min(mpv_respawn_failures, #MPV_RESPAWN_SKIP_POLLS)]
-    local script = millennium.assets.read("backend/mpv_helper.py")
-    if script == nil then
-        mpv_last_failure = "!asset-helper"
-        return mpv_last_failure
-    end
-    local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
-    local dir = base .. "/nemusic-mpv-" .. utils.uuid()
-    local token = utils.uuid()
-    if not fs.create_directories(dir) then
-        mpv_last_failure = "!mkdir:" .. base
-        return mpv_last_failure
-    end
-    utils.exec("chmod 700 " .. shell_quote(dir))
-    local path = dir .. "/helper.py"
-    local audio_source = millennium.assets.read("backend/audio_source.py")
-    if audio_source == nil or not utils.write_file(dir .. "/audio_source.py", audio_source) then
-        mpv_last_failure = "!write-audio-source"
-        return mpv_last_failure
-    end
-    if not utils.write_file(path, script) then
-        mpv_last_failure = "!write-helper"
-        return mpv_last_failure
-    end
-    if not utils.write_file(dir .. "/token", token) then
-        mpv_last_failure = "!write-token"
-        return mpv_last_failure
-    end
-    local log_path = base .. "/nemusic-mpv.log"
-    mpv_dir = dir
-    mpv_token = token
-    launch_helper(path, dir, log_path)
-    for _ = 1, 200 do
-        local port = utils.read_file(dir .. "/port")
-        if port ~= nil and port:match("^%d+$") then
-            mpv_dir = dir
-            mpv_token = token
-            mpv_respawn_failures = 0
-            mpv_respawn_skip = 0
-            mpv_last_failure = "!retry"
-            fs.remove(log_path)
-            return "http://127.0.0.1:" .. port .. "|" .. token
-        end
-        utils.sleep(50)
-    end
-    local detail = last_log_line(log_path)
-    if detail == "" then
-        mpv_last_failure = "!spawn"
-    else
-        mpv_last_failure = "!spawn:" .. detail
-    end
-    return mpv_last_failure
+    return helper_endpoint(helpers.mpv)
 end
 
 ---@ffi
 ---@return string
 function unblock_stop()
-    stop_helper(unblock_dir)
-    unblock_dir = nil
-    unblock_token = nil
-    unblock_skip = 0
+    reset_helper(helpers.unblock)
     return "ok"
 end
 
 ---@ffi
 ---@return string
 function unblock_endpoint()
-    if unloading then return "!shutdown" end
-    if unblock_dir ~= nil then
-        local port = utils.read_file(unblock_dir .. "/port")
-        if port ~= nil and port:match("^%d+$") then
-            unblock_skip = 0
-            return "http://127.0.0.1:" .. port .. "|" .. unblock_token
-        end
-    end
-    if unblock_skip > 0 then
-        unblock_skip = unblock_skip - 1
-        return unblock_failure
-    end
-    unblock_stop()
-    unblock_skip = 10
-    local script = millennium.assets.read("dist/unblock_helper.cjs")
-    if script == nil then return "!asset-helper" end
-    local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
-    local dir = base .. "/nemusic-unblock-" .. utils.uuid()
-    if not fs.create_directories(dir) then return "!mkdir:" .. base end
-    utils.exec("chmod 700 " .. shell_quote(dir))
-    unblock_dir = dir
-    unblock_token = utils.uuid()
-    local path = dir .. "/helper.cjs"
-    if not utils.write_file(path, script) then return "!write-helper" end
-    if not utils.write_file(dir .. "/token", unblock_token) then return "!write-token" end
-    local log_path = base .. "/nemusic-unblock.log"
-    launch_helper(path, dir, log_path, "env -u LD_LIBRARY_PATH -u LD_PRELOAD node")
-    for _ = 1, 20 do
-        local port = utils.read_file(dir .. "/port")
-        if port ~= nil and port:match("^%d+$") then
-            unblock_skip = 0
-            fs.remove(log_path)
-            return "http://127.0.0.1:" .. port .. "|" .. unblock_token
-        end
-        utils.sleep(50)
-    end
-    local detail = last_log_line(log_path)
-    unblock_failure = detail == "" and "!spawn" or "!spawn:" .. detail
-    return unblock_failure
+    return helper_endpoint(helpers.unblock)
 end
 
 local function on_load()
@@ -297,13 +206,9 @@ local function on_unload()
     logger:info("NEMusicOnSteam unloading")
     -- 先收掉脱离 Steam 生命周期的辅助进程；前端的清理随后即使来不及完成也不会
     -- 把 Steam 留在后台。
-    stop_helper(mpris_dir)
-    stop_helper(mpv_dir)
-    unblock_stop()
-    mpris_dir = nil
-    mpris_token = nil
-    mpv_dir = nil
-    mpv_token = nil
+    reset_helper(helpers.mpris)
+    reset_helper(helpers.mpv)
+    reset_helper(helpers.unblock)
     -- Steam 退出期间同步等 WebKit 返回会造成后端和前端相互等候。辅助进程已在上面
     -- 回收；视图和前端计时器由 Steam 自己的销毁流程处理，因此这里绝不跨进程等待。
 end

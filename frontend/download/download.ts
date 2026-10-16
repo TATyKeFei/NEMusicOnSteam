@@ -1,7 +1,5 @@
-import { ffi } from "millennium";
-import { evaluateInPlayer } from "../player/player-target.ts";
+import { HelperConnectionError, type HelperClient } from "../runtime/helper-client.ts";
 import type { NotificationMode } from "../settings.ts";
-import { steamToast } from "../widget/toast.ts";
 import {
   downloadScript,
   PLAYING_LIST_SCRIPT,
@@ -45,20 +43,22 @@ export type DownloadOptions = {
   notificationMode: NotificationMode;
 };
 
+export type DownloadDependencies = {
+  helper: Pick<HelperClient, "request">;
+  evaluate: (expression: string) => Promise<unknown>;
+  notify: (title: string, body: string) => void;
+  timers?: Pick<Window, "setInterval" | "clearInterval" | "setTimeout">;
+};
+
 const POLL_MS = 800;
 const MENU_TICK_MS = 1000;
 const DISABLED_STATUS = "打开播放器后可以下载当前歌曲";
 const MENU_WAITING = "歌曲列表里每行的「···」菜单也能下载";
 const MENU_LOST = "找到歌曲菜单但没认出这首歌，可能是网易云改版了";
 const MENU_BROKEN = "菜单下载装不上，可能是网易云改版了";
-const getEndpoint = ffi<[], string>("mpris_endpoint");
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message.split("\n")[0].replace(/^Error: /, "") : String(error);
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
 /** 辅助进程会用 {"error": "..."} 回应被拒绝的请求；优先用它，而不是笼统的提示。 */
@@ -78,17 +78,19 @@ export class DownloadBridge {
   private queue: DownloadSong[] = [];
   private status = DISABLED_STATUS;
   private progress: DownloadProgress | null = null;
-  private endpoint: string | null = null;
-  private token: string | null = null;
   private timer = 0;
   private menus = 0;
   private songs = 0;
   private menuBroken = false;
   private menuInstalled = false;
   private readonly resolveTrack?: (quality: number, song?: DownloadSong) => Promise<DownloadTrack>;
+  private readonly dependencies: DownloadDependencies;
+  private readonly timers: NonNullable<DownloadDependencies["timers"]>;
 
-  constructor(options: () => DownloadOptions, resolveTrack?: (quality: number, song?: DownloadSong) => Promise<DownloadTrack>) {
+  constructor(options: () => DownloadOptions, dependencies: DownloadDependencies, resolveTrack?: (quality: number, song?: DownloadSong) => Promise<DownloadTrack>) {
     this.options = options;
+    this.dependencies = dependencies;
+    this.timers = dependencies.timers ?? window;
     this.resolveTrack = resolveTrack;
   }
 
@@ -101,13 +103,11 @@ export class DownloadBridge {
     this.queue = [];
     this.status = enabled ? "可以下载当前正在播放的歌曲" : DISABLED_STATUS;
     if (enabled) {
-      this.timer = window.setInterval((): void => void this.tickMenu(), MENU_TICK_MS);
+      this.timer = this.timers.setInterval((): void => void this.tickMenu(), MENU_TICK_MS);
       void this.tickMenu();
     } else {
-      window.clearInterval(this.timer);
+      this.timers.clearInterval(this.timer);
       this.timer = 0;
-      this.endpoint = null;
-      this.token = null;
       this.menus = 0;
       this.songs = 0;
       this.menuBroken = false;
@@ -176,7 +176,7 @@ export class DownloadBridge {
       if (!started.ok) throw new Error(await failureText(started, "下载请求被拒绝"));
       this.status = "正在下载";
       while (generation === this.generation) {
-        await delay(POLL_MS);
+        await new Promise(resolve => this.timers.setTimeout(resolve, POLL_MS));
         if (generation !== this.generation) return;
         const response = await this.request("/download");
         if (!response.ok) throw new Error("读取下载进度失败");
@@ -189,7 +189,7 @@ export class DownloadBridge {
         this.progress = null;
         this.status = job.path ? `已保存到 ${job.path}` : "下载已结束但没有生成文件";
         if (notificationMode === "steam") {
-          steamToast("下载完成", job.path || this.status);
+          this.dependencies.notify("下载完成", job.path || this.status);
         }
         return;
       }
@@ -198,7 +198,7 @@ export class DownloadBridge {
         this.status = message(error);
         this.toast(this.status);
         if (notificationMode === "steam") {
-          steamToast("下载失败", this.status);
+          this.dependencies.notify("下载失败", this.status);
         }
       }
     } finally {
@@ -289,25 +289,19 @@ export class DownloadBridge {
 
   /** 在共享的播放器会话上求值，该会话只 attach 一次然后反复复用。 */
   private async evaluate(expression: string): Promise<unknown> {
-    return evaluateInPlayer(expression, { awaitPromise: true });
-  }
-
-  private async connect(): Promise<boolean> {
-    if (this.endpoint && this.token) return true;
-    const result = await getEndpoint();
-    const separator = result.lastIndexOf("|");
-    if (separator < 0) return false;
-    this.endpoint = result.slice(0, separator);
-    this.token = result.slice(separator + 1);
-    return true;
+    return this.dependencies.evaluate(expression);
   }
 
   private async request(path: string, options: { method?: string; body?: unknown } = {}): Promise<Response> {
-    if (!(await this.connect())) throw new Error("下载需要 Python 3 和 MPRIS 辅助进程，目前仅 Linux 支持");
-    return fetch(`${this.endpoint}${path}`, {
-      method: options.method ?? "GET",
-      headers: { "X-NEMusic-Token": this.token!, ...(options.body ? { "Content-Type": "application/json" } : {}) },
-      body: options.body ? JSON.stringify(options.body) : undefined,
-    });
+    try {
+      return await this.dependencies.helper.request(path, {
+        method: options.method ?? "GET",
+        headers: options.body ? { "Content-Type": "application/json" } : {},
+        body: options.body ? JSON.stringify(options.body) : undefined,
+      });
+    } catch (error) {
+      if (error instanceof HelperConnectionError) throw new Error("下载需要 Python 3 和 MPRIS 辅助进程，目前仅 Linux 支持");
+      throw error;
+    }
   }
 }

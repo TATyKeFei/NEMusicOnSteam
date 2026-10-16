@@ -3,8 +3,8 @@ import { tryEvaluateInPlayer } from "../player/player-target.ts";
 import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
 import { downloadScript, type DownloadTrack } from "../download/download-player.ts";
 import type { PlaybackBackend } from "../settings.ts";
-import type { Command } from "./mpris-player.ts";
-import type { ExternalPlayback, TrackState } from "./mpris.ts";
+import type { Command } from "../mpris/mpris-player.ts";
+import type { ExternalPlayback, TrackState } from "../mpris/mpris.ts";
 
 const getEndpoint = ffi<[], string>("mpv_endpoint");
 

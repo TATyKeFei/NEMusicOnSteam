@@ -104,6 +104,13 @@ function room(together: Record<string, unknown>, rest: FixtureOptions = {}) {
 }
 
 describe("一起听房间状态", () => {
+  it("快照与同步使用相同的队列字段和歌曲包装解析", () => {
+    const current = room({ status: "together", roomInfo: { roomId: "42" } }, {
+      togetherList: { displayTrackIds: [{ invalid: true }], tracks: [{ trackId: 7 }, { song: { id: 8 } }] },
+    });
+    assert.deepEqual(current.run<TogetherState>(TOGETHER_STATE_SCRIPT).songIds, ["7", "8"]);
+  });
+
   it("读出 host uid 和房间状态", () => {
     const state = room({
       status: "togetherOwner",

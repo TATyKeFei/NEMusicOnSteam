@@ -1,4 +1,5 @@
-import { ffi } from "millennium";
+import { mprisHelper } from "../runtime/mpris-helper.ts";
+import { HelperConnectionError, type HelperConnection } from "../runtime/helper-client.ts";
 import { releasePlayerSession, tryEvaluateInPlayer } from "../player/player-target.ts";
 import type { NotificationMode } from "../settings.ts";
 import { steamToast } from "../widget/toast.ts";
@@ -24,9 +25,6 @@ export type TrackState = {
   shuffle: boolean;
   rate: number;
 };
-
-const getEndpoint = ffi<[], string>("mpris_endpoint");
-const reconnectEndpoint = ffi<[], string>("mpris_reconnect");
 
 const FAILURE_REASONS: Record<string, string> = {
   retry: "MPRIS 辅助进程启动失败，正在重试",
@@ -78,8 +76,7 @@ export class MprisBridge {
   private timer = 0;
   private busy = false;
   private enabled = false;
-  private endpoint: string | null = null;
-  private token: string | null = null;
+  private connection: HelperConnection | null = null;
   private state: TrackState = EMPTY_STATE;
   private lastLyricsTrackId = "";
   private settledLyricsTrackId = "";
@@ -124,18 +121,17 @@ export class MprisBridge {
     this.reconnectRequested = false;
     this.commandRequest?.abort();
     this.pendingCommands = [];
-    const endpoint = this.endpoint;
-    const token = this.token;
-    this.endpoint = null;
-    this.token = null;
+    const connection = this.connection;
+    this.connection = null;
+    mprisHelper.invalidate();
     this.lastSentLyrics = null;
     this.lastSentState = null;
     this.fetchedLyrics = null;
     this.lastToastedTrack = "";
     releasePlayerSession();
-    if (endpoint && token) {
+    if (connection) {
       try {
-        await fetch(`${endpoint}/shutdown`, { method: "POST", headers: { "X-NEMusic-Token": token }, keepalive: true });
+        await mprisHelper.request("/shutdown", { method: "POST", keepalive: true }, connection);
       } catch {}
     }
   }
@@ -178,32 +174,34 @@ export class MprisBridge {
       this.commandRequest?.abort();
       this.commandRequest = null;
       this.pendingCommands = [];
-      this.endpoint = null;
-      this.token = null;
+      this.connection = null;
       this.commandError = "";
     }
-    if (this.endpoint && this.token) return true;
-    const result = await (reconnect ? reconnectEndpoint() : getEndpoint());
-    if (!this.timer) return false;
-    const separator = result.lastIndexOf("|");
-    if (separator < 0) {
-      this.status = describeFailure(result);
+    if (this.connection && this.connection === mprisHelper.peek()) return true;
+    try {
+      const connection = await mprisHelper.connect(reconnect);
+      if (!this.timer) return false;
+      this.commandRequest?.abort();
+      this.commandRequest = null;
+      this.pendingCommands = [];
+      this.connection = connection;
+      this.lastSentLyrics = null;
+      this.lastSentState = null;
+      return true;
+    } catch (error) {
+      if (!(error instanceof HelperConnectionError)) throw error;
+      this.status = describeFailure(error.result);
       this.connectionFailed = true;
       return false;
     }
-    this.endpoint = result.slice(0, separator);
-    this.token = result.slice(separator + 1);
-    this.lastSentLyrics = null;
-    this.lastSentState = null;
-    return true;
   }
 
   private async request(path: string, body?: Partial<TrackState>): Promise<Response> {
-    return fetch(`${this.endpoint}${path}`, {
+    return mprisHelper.request(path, {
       method: body ? "POST" : "GET",
-      headers: { "X-NEMusic-Token": this.token!, ...(body ? { "Content-Type": "application/json" } : {}) },
+      headers: body ? { "Content-Type": "application/json" } : {},
       body: body ? JSON.stringify(body) : undefined,
-    });
+    }, this.connection!);
   }
 
   // 歌词在后台抓取：LYRICS_SCRIPT 会等待页面自己调 /api/song/lyric（2 秒超时），在 tick
@@ -249,15 +247,15 @@ export class MprisBridge {
   }
 
   private async listenForCommands(): Promise<void> {
-    if (this.commandRequest || !this.timer || !this.endpoint || !this.token) return;
+    if (this.commandRequest || !this.timer || !this.connection) return;
+    const connection = this.connection;
     const controller = new AbortController();
     this.commandRequest = controller;
     try {
       while (this.timer && !controller.signal.aborted) {
-        const response = await fetch(`${this.endpoint}/commands?wait=1`, {
-          headers: { "X-NEMusic-Token": this.token! },
+        const response = await mprisHelper.request("/commands?wait=1", {
           signal: controller.signal,
-        });
+        }, connection);
         if (!response.ok) throw new Error(`MPRIS command poll failed: ${response.status}`);
         const commands = (await response.json()) as Command[];
         if (controller.signal.aborted || !this.timer) return;
@@ -327,11 +325,11 @@ export class MprisBridge {
       this.status = "MPRIS 连接失败；请检查 Steam 控制台和辅助进程日志或去Github反馈";
       this.connectionFailed = true;
       this.commandRequest?.abort();
-      this.endpoint = null;
-      this.token = null;
+      if (this.connection) mprisHelper.invalidate(this.connection);
+      this.connection = null;
     } finally {
       this.busy = false;
-      if (this.timer && (this.reconnectRequested || (this.pendingCommands.length && this.endpoint))) void this.tick();
+      if (this.timer && (this.reconnectRequested || (this.pendingCommands.length && this.connection))) void this.tick();
     }
   }
 

@@ -1,8 +1,6 @@
 import { DEFAULT_DOWNLOAD_NAME_TEMPLATE, DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download/download-player.ts";
 import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } from "./unblock/sources.ts";
 
-export type LauncherPosition = { left: number; bottom: number } | { left: number; top: number };
-
 export type NotificationMode = "system" | "steam" | "none";
 export type PlaybackBackend = "web" | "mpv";
 export const UI_SCALE_MIN = 0.8;
@@ -16,7 +14,6 @@ export type PlayerSettings = {
   openOnStart: boolean;
   keepAliveWhenCollapsed: boolean;
   disableBackgroundThrottling: boolean;
-  launcher: LauncherPosition;
   downloadDirectory: string;
   downloadQuality: number;
   notificationMode: NotificationMode;
@@ -33,7 +30,6 @@ export const defaultSettings: PlayerSettings = {
   openOnStart: false,
   keepAliveWhenCollapsed: true,
   disableBackgroundThrottling: true,
-  launcher: { left: 16, bottom: 16 },
   downloadDirectory: "",
   downloadQuality: DEFAULT_DOWNLOAD_QUALITY,
   notificationMode: "system",
@@ -73,15 +69,6 @@ function templateOr(value: unknown, fallback: string): string {
   return cleaned === "" ? fallback : cleaned;
 }
 
-export function sanitizeLauncher(value: unknown): LauncherPosition {
-  if (value == null || typeof value !== "object") return { ...defaultSettings.launcher };
-  const record = value as Record<string, unknown>;
-  if (!finiteNumber(record.left)) return { ...defaultSettings.launcher };
-  if (finiteNumber(record.top)) return { left: record.left, top: record.top };
-  if (finiteNumber(record.bottom)) return { left: record.left, bottom: record.bottom };
-  return { ...defaultSettings.launcher };
-}
-
 export function sanitizeSettings(value: unknown): PlayerSettings {
   const record = value != null && typeof value === "object" ? (value as Record<string, unknown>) : {};
   const notificationMode = notificationModeOr(
@@ -96,7 +83,6 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     openOnStart: booleanOr(record.openOnStart, defaultSettings.openOnStart),
     keepAliveWhenCollapsed: booleanOr(record.keepAliveWhenCollapsed, defaultSettings.keepAliveWhenCollapsed),
     disableBackgroundThrottling: booleanOr(record.disableBackgroundThrottling, defaultSettings.disableBackgroundThrottling),
-    launcher: sanitizeLauncher(record.launcher),
     downloadDirectory: directoryOr(record.downloadDirectory, defaultSettings.downloadDirectory),
     downloadQuality: isDownloadQuality(record.downloadQuality) ? record.downloadQuality : defaultSettings.downloadQuality,
     notificationMode,
@@ -126,21 +112,4 @@ export function browserStorage(): Storage | null {
   } catch {
     return null;
   }
-}
-
-export function clampLauncher(
-  position: LauncherPosition,
-  viewportWidth: number,
-  viewportHeight: number,
-  boxWidth: number,
-  boxHeight: number,
-): LauncherPosition {
-  const maxLeft = Math.max(0, viewportWidth - boxWidth);
-  const left = Math.min(Math.max(0, position.left), maxLeft);
-  if ("top" in position) {
-    const maxTop = Math.max(0, viewportHeight - boxHeight);
-    return { left, top: Math.min(Math.max(0, position.top), maxTop) };
-  }
-  const maxBottom = Math.max(0, viewportHeight - boxHeight);
-  return { left, bottom: Math.min(Math.max(0, position.bottom), maxBottom) };
 }

@@ -1,4 +1,5 @@
-local function fixture(ready)
+local function fixture(ready, options)
+    options = options or {}
     local files = {}
     local launches = {}
     local removed = {}
@@ -8,12 +9,19 @@ local function fixture(ready)
     local during_stop
     local modules = {
         logger = { info = function() end },
-        millennium = { assets = { read = function() return "helper" end } },
+        millennium = { assets = { read = function(path)
+            if path == options.missing_asset then return nil end
+            return "helper"
+        end } },
         utils = {
             getenv = function() return "/tmp" end,
             uuid = function() serial = serial + 1; return tostring(serial) end,
             read_file = function(path) return files[path] end,
-            write_file = function(path, value) files[path] = value; return true end,
+            write_file = function(path, value)
+                if options.failed_write and path:sub(-#options.failed_write) == options.failed_write then return false end
+                files[path] = value
+                return true
+            end,
             exec = function(command)
                 table.insert(commands, command)
                 if command:match("^setsid ") then
@@ -142,3 +150,30 @@ assert(#unblock.launches == 2)
 unblock.unload()
 assert_stopped(unblock, unblock.launches[2])
 print("PASS optional matcher starts on demand and stops on disable")
+
+local packaged = fixture(true)
+assert(packaged.backend.mpris_endpoint():match("^http://"))
+local directory = packaged.launches[1].directory
+for _, name in ipairs({ "helper.py", "recognition.py", "audio_source.py", "download_files.py", "audio_tags.py", "token" }) do
+    assert(packaged.files[directory .. "/" .. name], "missing helper dependency: " .. name)
+end
+packaged.unload()
+
+for _, item in ipairs({
+    { "mpris_endpoint", "backend/download_files.py", "!asset-download-files" },
+    { "mpris_endpoint", "backend/audio_tags.py", "!asset-audio-tags" },
+    { "mpv_endpoint", "backend/audio_source.py", "!asset-audio-source" },
+    { "unblock_endpoint", "dist/unblock_helper.cjs", "!asset-helper" },
+}) do
+    local missing = fixture(true, { missing_asset = item[2] })
+    assert(missing.backend[item[1]]() == item[3])
+    assert(#missing.launches == 0)
+end
+for _, method in ipairs({ "mpris_endpoint", "mpv_endpoint", "unblock_endpoint" }) do
+    local failed = fixture(true, { failed_write = "/token" })
+    assert(failed.backend[method]() == "!write-token")
+    assert(#failed.launches == 0 and #failed.removed == 1, "failed preparation leaked a runtime directory")
+    failed.unload()
+    assert(#failed.removed == 1)
+end
+print("PASS helper dependencies are deployed and preparation failures clean up")

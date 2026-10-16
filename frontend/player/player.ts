@@ -4,17 +4,20 @@ import { LIBRARY_ENTRY_FALLBACK_CLASSES, type LibraryEntryClasses } from "../wid
 import { NAV_SELECTED_CLASS } from "../widget/nav.ts";
 import { isPlayerDocument, PLAYER_URL, PLAYER_USER_AGENT } from "../constants.ts";
 import { DownloadBridge, type DownloadSnapshot } from "../download/download.ts";
+import { mprisHelper } from "../runtime/mpris-helper.ts";
+import { steamToast } from "../widget/toast.ts";
 import { sameBounds, type Bounds } from "../widget/layout.ts";
 import { MprisBridge } from "../mpris/mpris.ts";
-import { MpvBridge, MPV_MUTE_SCRIPT } from "../mpris/mpv.ts";
+import { MpvBridge, MPV_MUTE_SCRIPT } from "../playback/mpv.ts";
 import { commandScript } from "../mpris/mpris-player.ts";
 import { releasePlayerSession, preparePlayerTarget } from "./player-target.ts";
-import { tryEvaluateInPlayer } from "./player-target.ts";
+import { evaluateInPlayer, tryEvaluateInPlayer, PLAYER_TARGET_MISSING } from "./player-target.ts";
 import { retirePlayerTargets } from "./player-recovery.ts";
 import { PLAYER_READY_SCRIPT, PLAYER_RECOVERY_SCRIPT, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
 import { uiScaleScript } from "./ui-scale.ts";
 import { RecognitionBridge } from "../recognition/recognition.ts";
 import { FullscreenButtonBridge } from "../fullscreen/fullscreen.ts";
+import { ViewBridges } from "./view-bridges.ts";
 import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
 import { TogetherBridge, type TogetherSnapshot } from "../together/together.ts";
 import { UnblockBridge } from "../unblock/unblock.ts";
@@ -108,7 +111,12 @@ export class PlayerController {
     holdWebDuringResolution: () => this.settings.unblockEnabled,
     commandWeb: async command => Boolean(await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true })),
   });
-  private readonly recognition = new RecognitionBridge();
+  private readonly recognition = new RecognitionBridge({
+    helper: mprisHelper,
+    evaluate: expression => evaluateInPlayer(expression),
+    supported: () => /Linux/i.test(navigator.platform),
+    targetMissing: error => error instanceof Error && error.message === PLAYER_TARGET_MISSING,
+  });
   private readonly fullscreenButton = new FullscreenButtonBridge();
   private readonly quality = new QualityBridge();
   private readonly together = new TogetherBridge();
@@ -117,7 +125,14 @@ export class PlayerController {
     directory: this.settings.downloadDirectory,
     nameTemplate: this.settings.downloadNameTemplate,
     notificationMode: this.settings.notificationMode,
-  }), (quality, song) => this.unblock.resolve(quality, song));
+  }), {
+    helper: mprisHelper,
+    evaluate: expression => evaluateInPlayer(expression, { awaitPromise: true }),
+    notify: steamToast,
+  }, (quality, song) => this.unblock.resolve(quality, song));
+  private readonly viewBridges = new ViewBridges([
+    this.mpris, this.recognition, this.fullscreenButton, this.quality, this.together, this.download,
+  ]);
   private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
   private libraryClasses: LibraryEntryClasses = LIBRARY_ENTRY_FALLBACK_CLASSES;
   private selectedNavClass = NAV_SELECTED_CLASS;
@@ -212,13 +227,13 @@ export class PlayerController {
       quality: this.quality.snapshot(),
       together: this.together.snapshot(),
       download: this.download.snapshot(),
-      settings: { ...this.settings, launcher: { ...this.settings.launcher }, unblockSources: [...this.settings.unblockSources] },
+      settings: { ...this.settings, unblockSources: [...this.settings.unblockSources] },
     };
   }
 
   /** 返回刷新后的快照，调用方可以直接喂给 setState。 */
   updateSettings(patch: Partial<PlayerSettings>): PlayerSnapshot {
-    this.settings = sanitizeSettings({ ...this.settings, ...patch, launcher: patch.launcher ?? this.settings.launcher });
+    this.settings = sanitizeSettings({ ...this.settings, ...patch });
     writeSettings(browserStorage(), this.settings);
     if (patch.unblockEnabled != null || patch.unblockSources != null) this.unblock.reset();
     if (patch.unblockEnabled != null || patch.unblockSources != null) void this.unblock.installPageHook();
@@ -558,13 +573,8 @@ export class PlayerController {
   }
 
   private enableViewBridges(): void {
-    this.mpris.setEnabled(true);
+    this.viewBridges.setEnabled(true);
     this.applyPlaybackBackend();
-    this.recognition.setEnabled(true);
-    this.fullscreenButton.setEnabled(true);
-    this.quality.setEnabled(true);
-    this.together.setEnabled(true);
-    this.download.setEnabled(true);
     this.applyUiScale();
   }
 
@@ -683,13 +693,8 @@ export class PlayerController {
     this.unbindPopup();
     this.view = null;
     if (this.desktopFullscreen || this.windowFullscreen) this.setFullscreen(false);
-    this.mpris.setEnabled(false);
+    this.viewBridges.setEnabled(false);
     if (!parentClosed) this.stopExternalPlayback();
-    this.recognition.setEnabled(false);
-    this.fullscreenButton.setEnabled(false);
-    this.quality.setEnabled(false);
-    this.together.setEnabled(false);
-    this.download.setEnabled(false);
     releasePlayerSession();
     this.parentId = null;
     this.client = null;
@@ -874,12 +879,7 @@ export class PlayerController {
     this.destroying = true;
     this.unbindPopup();
     this.view = null;
-    this.mpris.setEnabled(false);
-    this.recognition.setEnabled(false);
-    this.fullscreenButton.setEnabled(false);
-    this.quality.setEnabled(false);
-    this.together.setEnabled(false);
-    this.download.setEnabled(false);
+    this.viewBridges.setEnabled(false);
     releasePlayerSession();
     this.parentId = null;
     this.client = null;
