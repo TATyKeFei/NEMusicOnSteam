@@ -101,13 +101,13 @@ class PlaybackHttpService:
                     except (RuntimeError, OSError, ValueError) as error:
                         self.reply(400, {"error": str(error)})
                     return
-                if self.path == "/load":
+                if self.path == "/load" or (self.path == "/prepare" and hasattr(service, "prepare")):
                     payload = self.read_payload()
                     if payload is None:
                         self.reply(400, {"error": "无效请求"})
                         return
                     try:
-                        self.reply(200, service.load(payload))
+                        self.reply(200, service.prepare(payload) if self.path == "/prepare" else service.load(payload))
                     except (RuntimeError, OSError, ValueError) as error:
                         self.reply(400, {"error": str(error)})
                     return

@@ -42,6 +42,7 @@
 | 歌词       | 仅 Linux       | 依赖 MPRIS 连接，做法见[#歌词](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E6%AD%8C%E8%AF%8D)            |
 | 全局快捷键 | 仅 Linux       | 依赖 MPRIS 连接，做法见[#全局快捷键](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E5%85%A8%E5%B1%80%E5%BF%AB%E6%8D%B7%E9%94%AE)       |
 | 多播放后端支持 | 仅 Linux   | 可选 mpv、mpd 作为音频播放器引擎                      |
+| 歌曲智能过渡 | 仅 Linux     | 需要使用 MPV 播放后端; 普通模式按首尾音量淡入淡出，智能模式分析鼓点对齐拍点/小节并变速混音(需要ffmpeg); 一起听、漫游模式下不可用   |
 | 界面Ui缩放 | 支持           | 网易云很多样式都是根据固定像素而不是分辨率百分比，导致ui在高分辨率大尺寸的显示器显得很小。缩放可以解决这些问题  |
 | 全屏与窗口铺满 | 支持       | 点击搜索框右侧全屏按钮进入桌面全屏；按住 Shift 点击只铺满当前 Steam 窗口，不改变窗口大小。再次点击或按 Esc 退出 |
 | UnblockNeteaseMusic | 支持  | 支持下载播放灰色无声源歌曲，在官方无地址或仅有试听时尝试其他音源 |

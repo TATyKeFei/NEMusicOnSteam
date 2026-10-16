@@ -1,6 +1,7 @@
 import { tryEvaluateInPlayer } from "../player/player-target.ts";
 import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
-import { downloadScript, type DownloadTrack } from "../download/download-player.ts";
+import { downloadScript, type DownloadSong, type DownloadTrack } from "../download/download-player.ts";
+import { TRANSITION_CANDIDATE_SCRIPT, transitionClockScript, transitionCommitScript, type TransitionCandidate } from "./transition-player.ts";
 import type { Command } from "../mpris/mpris-player.ts";
 import type { ExternalPlayback, TrackState } from "../mpris/mpris.ts";
 
@@ -231,9 +232,18 @@ export type ExternalAudioOptions = {
   commandWeb: (command: Command) => Promise<boolean>;
   resolveTrack?: (quality: number, signal?: AbortSignal) => Promise<DownloadTrack>;
   holdWebDuringResolution?: () => boolean;
+  transition?: () => { mode: "off" | "normal" | "smart"; seconds: number };
+  resolveNextTrack?: (quality: number, song: DownloadSong, signal?: AbortSignal) => Promise<DownloadTrack>;
 };
 
-type ExternalAudioPayload = Partial<TrackState> & { url?: string; autoplay?: boolean; position?: number };
+type ExternalAudioPayload = Partial<TrackState> & {
+  url?: string; autoplay?: boolean; position?: number;
+  transition?: { from: string; trackId: string; ready: boolean; seconds: number; trim: number; startAt?: number; mode?: string; reason?: string };
+  transitioning?: boolean;
+  transportRevision?: number;
+  transitionCancelled?: boolean;
+  transitioned?: boolean;
+};
 
 // 切歌（MPRIS 的上一首/下一首、播完自动切歌）到新歌真的喂进 外部播放器 之间有一段窗口，
 // 窗口里 外部播放器 还是 Stopped、页面也可能正 Paused；这个标记让 loadFromWeb 一定要 autoplay、
@@ -271,10 +281,18 @@ export class ExternalAudioBridge implements ExternalPlayback {
   private stopRequested = false;
   /** 用户要求过 play：外部播放器 手里没歌时用来把它重新拉起来。 */
   private playRequested = false;
+  private pauseRequested = false;
   private lastWebTrackId = "";
   private pendingAutoplay = 0;
   private alternateTrack = false;
   private transportEpoch = 0;
+  private transitionKey = "";
+  private transitionPrepared: { track: DownloadTrack } | null = null;
+  private transitionPreparing: Promise<void> | null = null;
+  private transitionNeedsClear = false;
+  private transitionRetryAt = 0;
+  private transitionClockTrack = "";
+  private transitionClockUntil = 0;
   private readonly options: ExternalAudioOptions;
 
   constructor(options: ExternalAudioOptions) {
@@ -297,6 +315,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
       const resume = !this.stopRequested && this.state.playbackStatus !== "Paused";
       this.stopRequested = false;
       this.playRequested = false;
+      this.pauseRequested = false;
       this.pendingAutoplay = 0;
       window.clearInterval(this.timer);
       this.timer = 0;
@@ -313,6 +332,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
     }
     this.stopRequested = false;
     this.playRequested = false;
+    this.pauseRequested = false;
     this.pendingAutoplay = 0;
     if (!/Linux/i.test(navigator.platform)) {
       this.status = `仅 Linux 支持 ${this.options.name} 后端`;
@@ -359,7 +379,11 @@ export class ExternalAudioBridge implements ExternalPlayback {
 
   private async executeCommand(command: Command, generation: number): Promise<boolean> {
     if (command.action === "rate" && this.options.supportsRate === false) return false;
-    if (["play", "pause", "playpause", "stop"].includes(command.action)) this.transportEpoch++;
+    if (["play", "pause", "playpause", "stop", "next", "previous", "seek", "setposition", "loop", "shuffle"].includes(command.action)) this.transportEpoch++;
+    if (["next", "previous", "stop", "seek", "setposition", "loop", "shuffle"].includes(command.action)) {
+      this.invalidateTransition();
+      this.transitionClockTrack = "";
+    }
     if (command.action === "next" || command.action === "previous") {
       const autoplay = this.state.playbackStatus === "Playing" || this.pendingAutoplay > 0;
       await tryEvaluateInPlayer(allowWebActionScript(command.action));
@@ -386,17 +410,21 @@ export class ExternalAudioBridge implements ExternalPlayback {
     if (command.action === "stop") {
       this.stopRequested = true;
       this.playRequested = false;
+      this.pauseRequested = false;
       this.pendingAutoplay = 0;
     } else if (command.action === "pause") {
       this.playRequested = false;
+      this.pauseRequested = true;
     } else if (command.action === "play") {
       this.stopRequested = false;
       this.playRequested = true;
+      this.pauseRequested = false;
     } else if (command.action === "playpause") {
-      if (this.state.playbackStatus === "Playing") this.playRequested = false;
+      if (this.state.playbackStatus === "Playing") { this.playRequested = false; this.pauseRequested = true; }
       else {
         this.stopRequested = false;
         this.playRequested = true;
+        this.pauseRequested = false;
       }
     }
     const response = await this.request("/command", generation, command);
@@ -479,7 +507,27 @@ export class ExternalAudioBridge implements ExternalPlayback {
       }
       const payload = (await response.json()) as ExternalAudioPayload;
       if (!this.isCurrent(generation)) return;
+      if (await this.updateTransition(web, payload, generation)) return;
+      if (!this.isCurrent(generation)) return;
       const next = this.normalize(payload, web);
+      let protectClock = this.transitionClockTrack === next.trackId
+        && (payload.transitioning || Date.now() < this.transitionClockUntil);
+      if (protectClock) {
+        const drift = Math.abs((web?.position ?? 0) - next.position);
+        const clock = await tryEvaluateInPlayer(transitionClockScript(next.trackId, next.position, drift > SEEK_EPSILON), { awaitPromise: true }) as { seek?: number | null } | null;
+        if (!this.isCurrent(generation)) return;
+        if (typeof clock?.seek === "number" && Number.isFinite(clock.seek)) {
+          this.invalidateTransition();
+          await this.request("/command", generation, { action: "setposition", value: Math.round(clock.seek * 1_000_000) });
+          if (!this.isCurrent(generation)) return;
+          next.position = clock.seek;
+          this.transitionClockTrack = "";
+        } else if (!payload.transitioning && web?.position > 0 && drift <= SEEK_EPSILON) {
+          this.transitionClockTrack = "";
+        }
+        // 本轮快照在对齐前读取，不能再拿它反向改回真实音频时钟。
+        protectClock = true;
+      }
       // 网页 store 是音量的唯一来源（网页滑块和媒体键最后都落到它），外部播放器 只跟着走：
       // 拖滑块时网页那边的 div[role=slider] 不派发事件，只能靠这里的对账把音量送过去。
       if (next.active && next.volume != null && web?.volume != null && Math.abs(web.volume - next.volume) > VOLUME_EPSILON) {
@@ -490,9 +538,10 @@ export class ExternalAudioBridge implements ExternalPlayback {
       // 进度同理：网页的进度条也是 div[role=slider]，拖完没有事件可听，只能靠快照发现。
       // 只在两边同一首且都在播时对账——暂停中 seek 会把刚按住的 外部播放器 拽走；
       // position 为 0 视作读不到进度（页面还没量出来），否则会把 外部播放器 甩回开头。
-      if (!this.alternateTrack && next.active && web?.canSeek && web.trackId && web.trackId === next.trackId
+      if (!protectClock && !this.alternateTrack && next.active && web?.canSeek && web.trackId && web.trackId === next.trackId
         && next.playbackStatus === "Playing" && web.playbackStatus === "Playing"
         && web.position > 0 && Math.abs(web.position - next.position) > SEEK_EPSILON) {
+        this.invalidateTransition();
         await this.request("/command", generation, { action: "setposition", value: Math.round(web.position * 1_000_000) });
         if (!this.isCurrent(generation)) return;
         next.position = web.position;
@@ -532,12 +581,137 @@ export class ExternalAudioBridge implements ExternalPlayback {
 
   /** 页面状态自己会撒谎（切歌的瞬间可能还挂着旧的 Paused），外部播放器 的状态才是准的。 */
   private shouldAutoplay(web: TrackState): boolean {
-    return this.pendingAutoplay > 0
+    return !this.pauseRequested && (this.pendingAutoplay > 0
       || this.playRequested
-      || (web.playbackStatus === "Playing" && this.state.playbackStatus !== "Paused");
+      || (web.playbackStatus === "Playing" && this.state.playbackStatus !== "Paused"));
+  }
+
+  private invalidateTransition(): void {
+    if (this.transitionKey || this.transitionPrepared || this.transitionPreparing) this.transitionNeedsClear = true;
+    this.transitionKey = "";
+    this.transitionPrepared = null;
+  }
+
+  /** 解析和网络缓冲放在独立任务里，暂停/切歌不必等预加载结束。 */
+  private async updateTransition(web: TrackState | null, payload: ExternalAudioPayload, generation: number): Promise<boolean> {
+    if (!this.options.transition) return false;
+    const settings = this.options.transition();
+    const context = settings.mode !== "off" && !this.stopRequested
+      ? await tryEvaluateInPlayer(TRANSITION_CANDIDATE_SCRIPT) as (TransitionCandidate & { blocked?: boolean }) | null : null;
+    const candidate = context?.blocked ? null : context;
+    if (!this.isCurrent(generation)) return false;
+    const valid = candidate?.song?.id && candidate.from === web?.trackId && payload.trackId === web?.trackId
+      && payload.active && web.loopStatus !== "Track" && !web.shuffle;
+    const key = valid ? `${candidate.from}:${candidate.song.id}:${settings.mode}:${settings.seconds}:${this.options.quality()}` : "";
+    if (key !== this.transitionKey) {
+      this.invalidateTransition();
+      this.transitionKey = key;
+      this.transitionRetryAt = 0;
+    }
+    const cancelFade = settings.mode === "off" || context?.blocked === true || this.stopRequested;
+    if (!this.transitionPreparing && (this.transitionNeedsClear || (cancelFade && payload.transitioning))) {
+      const cleared = await this.request("/prepare", generation, { cancelFade });
+      if (!this.isCurrent(generation)) return false;
+      if (!cleared.ok) return false;
+      this.transitionNeedsClear = false;
+    }
+    if (!valid || !candidate || !web) return false;
+    const remaining = Math.max(0, numberOr(payload.duration, 0) - numberOr(payload.position, 0));
+    if (this.transitionPrepared && !payload.transition) this.transitionPrepared = null;
+    const prepared = this.transitionPrepared;
+    const planned = payload.transition;
+    if (!this.pauseRequested && prepared && planned?.ready && planned.from === candidate.from && planned.trackId === String(candidate.song.id)
+      && payload.playbackStatus === "Playing" && web.playbackStatus === "Playing"
+      && (this.alternateTrack || Math.abs(web.position - numberOr(payload.position, web.position)) <= SEEK_EPSILON)
+      && remaining > 0 && (planned.mode === "smart" && planned.startAt != null
+        // 智能混音在拍点前就可交给后端：接管后会等真正的拍点再放声。
+        ? numberOr(payload.position, 0) >= planned.startAt - 1.2 : remaining <= planned.seconds + planned.trim + 0.5)) {
+      // 先让 mpv 的两路音频交接，再等待网页切歌。官网解析/渲染可能耗时数秒，
+      // 等它完成才淡化会让旧歌先播完，实际听起来只剩提前硬切。
+      const response = await this.request("/load", generation, {
+        url: prepared.track.url, ...this.transitionMetadata(candidate, prepared.track),
+        from: candidate.from, transition: true, position: 0, autoplay: true, volume: web.volume,
+        transportRevision: payload.transportRevision,
+      });
+      if (!this.isCurrent(generation)) return true;
+      if (!response.ok) { this.invalidateTransition(); return true; }
+      const state = await response.json() as ExternalAudioPayload;
+      if (!this.isCurrent(generation)) return true;
+      if (state.transitionCancelled) { this.invalidateTransition(); return true; }
+      if (!state.transitioned) { this.invalidateTransition(); return true; }
+      if (this.transitionKey !== key || this.options.transition().mode === "off") {
+        this.invalidateTransition();
+        if (!this.stopRequested) this.lastWebTrackId = "";
+        return true;
+      }
+      const committed = await tryEvaluateInPlayer(transitionCommitScript(candidate), { userGesture: true, awaitPromise: true });
+      if (!this.isCurrent(generation)) return true;
+      const current = await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true }) as TrackState | null;
+      if (!this.isCurrent(generation)) return true;
+      if (committed !== true || current?.trackId !== String(candidate.song.id)) {
+        this.invalidateTransition();
+        if (!this.stopRequested) this.lastWebTrackId = "";
+        return true;
+      }
+      // 等网页期间可能已暂停或停止，不能用接管那一刻的 Playing 覆盖新状态。
+      const latestResponse = await this.request("/state", generation);
+      if (!this.isCurrent(generation)) return true;
+      if (!latestResponse.ok) throw new Error(`${this.options.name} state failed: ${latestResponse.status}`);
+      const latest = await latestResponse.json() as ExternalAudioPayload;
+      if (!this.isCurrent(generation)) return true;
+      this.state = this.normalize(latest, current);
+      this.lastWebTrackId = current.trackId;
+      this.previousStatus = this.state.playbackStatus;
+      this.alternateTrack = prepared.track.source === "unblock";
+      this.pendingAutoplay = 0;
+      this.status = `${this.options.name} 已连接（${planned.mode === "smart" ? "节拍混音" : "普通过渡"}中）`;
+      this.transitionKey = "";
+      this.transitionPrepared = null;
+      this.transitionClockTrack = current.trackId;
+      this.transitionClockUntil = Date.now() + 40000;
+      return true;
+    }
+    if (!prepared && !this.transitionPreparing && !this.transitionNeedsClear && Date.now() >= this.transitionRetryAt
+      && remaining > settings.seconds + 2 && remaining / numberOr(payload.rate, 1) <= (settings.mode === "smart" ? 90 : 45) && payload.playbackStatus === "Playing") {
+      const task = this.prepareTransition(candidate, key, settings.seconds, settings.mode, generation);
+      this.transitionPreparing = task;
+      void task.finally(() => { if (this.transitionPreparing === task) this.transitionPreparing = null; });
+    }
+    return false;
+  }
+
+  private transitionMetadata(candidate: TransitionCandidate, track: DownloadTrack): Record<string, string> {
+    return { trackId: String(candidate.song.id), title: track.name || candidate.song.name,
+      artist: track.artist || candidate.song.artist, album: track.album || candidate.song.album || "",
+      artUrl: track.cover || candidate.song.cover || "" };
+  }
+
+  private async prepareTransition(candidate: TransitionCandidate, key: string, seconds: number, mode: "off" | "normal" | "smart", generation: number): Promise<void> {
+    try {
+      const track = this.options.resolveNextTrack
+        ? await this.options.resolveNextTrack(this.options.quality(), candidate.song, this.requests?.signal)
+        : await tryEvaluateInPlayer(downloadScript(this.options.quality(), candidate.song), { awaitPromise: true }) as DownloadTrack;
+      if (!this.isCurrent(generation) || this.transitionKey !== key) return;
+      if (!track?.url || track.trial) { this.transitionRetryAt = Date.now() + 10000; return; }
+      const response = await this.request("/prepare", generation, {
+        url: track.url, ...this.transitionMetadata(candidate, track), from: candidate.from, seconds, mode,
+      });
+      if (!this.isCurrent(generation) || this.transitionKey !== key) return;
+      const result = await response.json() as { prepared?: boolean };
+      if (!this.isCurrent(generation) || this.transitionKey !== key) return;
+      if (response.ok && result.prepared === true) this.transitionPrepared = { track };
+      else this.transitionRetryAt = Date.now() + 10000;
+    } catch (error) {
+      if (this.isCurrent(generation) && this.transitionKey === key) {
+        this.transitionRetryAt = Date.now() + 10000;
+        console.warn("[NEMusic] mpv transition preparation", error);
+      }
+    }
   }
 
   private async loadFromWeb(web: TrackState, autoplay: boolean, generation: number): Promise<void> {
+    this.invalidateTransition();
+    this.transitionClockTrack = "";
     const transportEpoch = this.transportEpoch;
     if (this.options.holdWebDuringResolution?.()) {
       await tryEvaluateInPlayer(externalSyncScript(false, true), { userGesture: true });
@@ -586,6 +760,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
     this.lastWebTrackId = web.trackId;
     this.pendingAutoplay = 0;
     this.playRequested = false;
+    this.pauseRequested = false;
     this.stopRequested = false;
   }
 
@@ -624,10 +799,14 @@ export class ExternalAudioBridge implements ExternalPlayback {
     this.token = null;
     this.lastWebTrackId = "";
     this.alternateTrack = false;
+    this.invalidateTransition();
+    this.transitionNeedsClear = false;
+    this.transitionClockTrack = "";
     this.pendingAutoplay = 0;
     this.stopRequested = false;
     this.playRequested = false;
     this.previousStatus = "Stopped";
+    this.pauseRequested = false;
     this.state = { ...EMPTY_STATE };
     if (restoreWeb) {
       try {

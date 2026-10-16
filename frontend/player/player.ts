@@ -110,6 +110,8 @@ export class PlayerController {
   private readonly unblock = new UnblockBridge(() => ({ enabled: this.settings.unblockEnabled, sources: this.settings.unblockSources }));
   private readonly mpv = new MpvBridge({
     quality: () => this.settings.downloadQuality,
+    transition: () => ({ mode: this.together.snapshot().inRoom ? "off" : this.settings.mpvTransitionMode, seconds: this.settings.mpvTransitionSeconds }),
+    resolveNextTrack: (quality, song, signal) => this.unblock.resolve(quality, song, signal),
     resolveTrack: (quality, signal) => this.unblock.resolve(quality, undefined, signal),
     holdWebDuringResolution: () => this.settings.unblockEnabled,
     commandWeb: async command => Boolean(await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true })),

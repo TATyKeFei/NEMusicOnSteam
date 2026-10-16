@@ -1,7 +1,7 @@
 [plugin]
 id = "icu.tatyrealms.nemos"
 name = "NEMusicOnSteam"
-version = "0.1.6"
+version = "0.1.7"
 author = "TATyKeFei"
 description = "把网易云官方网页播放器嵌进 Steam 里，并实现一些Web版没有的功能"
 
@@ -10,7 +10,7 @@ entry = "backend/main.lua"
 sources = ["backend/**/*.lua"]
 
 [assets]
-resources = ["backend/mpris_helper.py", "backend/mpv_helper.py", "backend/mpd_helper.py", "backend/playback_http.py", "backend/recognition.py", "backend/audio_source.py", "backend/download_files.py", "backend/audio_tags.py", "dist/unblock_helper.cjs", "dist/UnblockNeteaseMusic-COPYING", "dist/UnblockNeteaseMusic-COPYING.LESSER", "dist/UnblockNeteaseMusic-NOTICES.txt", "THIRD_PARTY_NOTICES.md"]
+resources = ["backend/mpris_helper.py", "backend/mpv_helper.py", "backend/transition_analysis.py", "backend/mpd_helper.py", "backend/playback_http.py", "backend/recognition.py", "backend/audio_source.py", "backend/download_files.py", "backend/audio_tags.py", "dist/unblock_helper.cjs", "dist/UnblockNeteaseMusic-COPYING", "dist/UnblockNeteaseMusic-COPYING.LESSER", "dist/UnblockNeteaseMusic-NOTICES.txt", "THIRD_PARTY_NOTICES.md"]
 
 [frontend]
 entry = "frontend/index.tsx"
@@ -18,7 +18,6 @@ entry = "frontend/index.tsx"
 [frontend.globals]
 
 [compiler]
-# output_path = "auto"
 output_path = "dist/icu.tatyrealms.nemos.star"
 
 [dev]

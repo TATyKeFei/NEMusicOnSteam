@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { PlayerController, PlayerSnapshot } from "./player/player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
 import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
-import { sanitizeMpdSettings, type NotificationMode, type PlaybackBackend } from "./settings.ts";
+import { sanitizeMpdSettings, type NotificationMode, type PlaybackBackend, type TransitionMode } from "./settings.ts";
 import { sanitizeUnblockSources } from "./unblock/sources.ts";
 
 const NOTIFICATION_OPTIONS = [
@@ -16,6 +16,12 @@ const PLAYBACK_BACKEND_OPTIONS: { data: PlaybackBackend; label: string }[] = [
   { data: "web", label: "内嵌网页播放器" },
   { data: "mpv", label: "mpv（外部音频）" },
   { data: "mpd", label: "MPD（本机 / 远程）" },
+];
+
+const TRANSITION_MODE_OPTIONS: { data: TransitionMode; label: string }[] = [
+  { data: "off", label: "关闭" },
+  { data: "normal", label: "普通（淡入淡出）" },
+  { data: "smart", label: "智能（节拍混音）" },
 ];
 
 const UI_SCALE_OPTIONS = [
@@ -143,6 +149,19 @@ export function SettingsContent({ player }: { player: PlayerController }) {
           onChange={option => setSnapshot(player.updateSettings({ playbackBackend: option.data }))}
         />
       </Field>
+      {settings.playbackBackend === "mpv" && <>
+        <Field label="歌曲过渡模式" description={settings.mpvTransitionMode === "smart"
+          ? "分析鼓点与节奏，对齐拍点并保留音高调整速度，自动选择 8–30 秒混音；需要 ffmpeg，不适合混音时回退普通模式。支持顺序播放和列表循环。"
+          : "普通模式提前准备下一首并淡入淡出，安装 ffmpeg 后按首尾音量调整衔接。一起听、单曲循环、随机和 FM 模式下停用过渡。"} bottomSeparator="standard">
+          <Dropdown rgOptions={TRANSITION_MODE_OPTIONS} selectedOption={settings.mpvTransitionMode}
+            onChange={option => setSnapshot(player.updateSettings({ mpvTransitionMode: option.data }))} />
+        </Field>
+        {settings.mpvTransitionMode !== "off" && <Field label={settings.mpvTransitionMode === "smart" ? "普通模式回退时长" : "最长过渡时间"} description="普通淡入淡出的最长时长；智能混音的时长由节拍自动决定。" bottomSeparator="standard">
+          <Dropdown rgOptions={[1, 2, 3, 4, 6, 8, 10, 12].map(data => ({ data, label: `${data} 秒` }))}
+            selectedOption={settings.mpvTransitionSeconds}
+            onChange={option => setSnapshot(player.updateSettings({ mpvTransitionSeconds: option.data }))} />
+        </Field>}
+      </>}
       {settings.playbackBackend === "mpd" && <>
         <Field label="MPD 地址" description="本机默认为 127.0.0.1；也可填写局域网 / 远程主机名或 IPv6 地址。" bottomSeparator="standard">
           <TextField value={mpd.host} onChange={event => setMpd({ ...mpd, host: event.target.value })} />

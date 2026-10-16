@@ -59,9 +59,16 @@ const webPlaying: TrackState = {
   rate: 1,
 };
 
-function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string } = {}) {
+function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; transition?: boolean; transitionMode?: "normal" | "smart" } = {}) {
   const evaluations: string[] = [];
   const loads: Payload[] = [];
+  const prepares: Payload[] = [];
+  let transitionEnabled = options.transition === true;
+  let transitionMode: "normal" | "smart" = options.transitionMode ?? "normal";
+  let clockSeek: number | null = null;
+  let clockAlignments = 0;
+  let transitionAccepted = true;
+  let candidate: unknown = { from: "t1", song: { id: 2, name: "Next", artist: "Artist" } };
   const webCommands: string[] = [];
   const posts: string[] = [];
   const volumeCommands: number[] = [];
@@ -81,6 +88,14 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     if (evaluationGate?.expression === expression) await evaluationGate.promise;
     if (isSnapshot(expression)) return web;
     if (expression === "download") return downloadTrack;
+    if (expression === "candidate") return candidate;
+    if (expression === "commit") { web = { ...web!, trackId: "2", position: 0 }; return true; }
+    if (expression === "clock" || expression === "clock:align") {
+      if (expression === "clock:align") clockAlignments++;
+      const seek = clockSeek;
+      clockSeek = null;
+      return { seek };
+    }
     if (expression.includes("splice")) return { actions: [] };
     return true;
   };
@@ -93,8 +108,19 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     }
     if (url.endsWith("/state")) return { ok: true, json: async () => mpv };
     if (url.endsWith("/load")) {
-      loads.push(JSON.parse(init!.body!));
+      const body = JSON.parse(init!.body!);
+      loads.push(body);
+      if (body.transition) {
+        if (!transitionAccepted) return { ok: true, json: async () => ({ ...mpv, transitionCancelled: true }) };
+        mpv = { ...mpv, ...body, active: true, playbackStatus: "Playing", position: 0, transitioning: true };
+        return { ok: true, json: async () => ({ ...mpv, transitioned: true }) };
+      }
       return { ok: true, json: async () => ({}) };
+    }
+    if (url.endsWith("/prepare")) {
+      const body = JSON.parse(init!.body!);
+      prepares.push(body);
+      return { ok: true, json: async () => ({ prepared: Boolean(body.url) }) };
     }
     if (url.endsWith("/command")) {
       const body = JSON.parse(init!.body!);
@@ -129,6 +155,9 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
         return "http://localhost|test-token";
       },
       SNAPSHOT_SCRIPT: "snapshot",
+      TRANSITION_CANDIDATE_SCRIPT: "candidate",
+      transitionCommitScript: () => "commit",
+      transitionClockScript: (_id: string, _position: number, align: boolean) => align ? "clock:align" : "clock",
       downloadScript: () => "download",
       tryEvaluateInPlayer: evaluate,
       fetch,
@@ -140,6 +169,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     ...(options.mpd ? { configuration: () => ({ host: "music.local", port: 6600, password: "", socket: "" }), supportsRate: false } : {}),
     endpoint: async () => { await endpointGate; return "http://localhost|test-token"; },
     quality: () => 1,
+    ...(options.transition ? { transition: () => ({ mode: transitionEnabled ? transitionMode : "off" as const, seconds: 6 }) } : {}),
     ...(options.resolver ? {
       holdWebDuringResolution: () => true,
       resolveTrack: async () => {
@@ -160,6 +190,13 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     scripts: api.scripts,
     evaluations,
     loads,
+    prepares,
+    setCandidate: (value: unknown) => { candidate = value; },
+    setTransitionEnabled: (value: boolean) => { transitionEnabled = value; },
+    setTransitionMode: (value: "normal" | "smart") => { transitionMode = value; },
+    setClockSeek: (value: number) => { clockSeek = value; },
+    clockAlignments: () => clockAlignments,
+    setTransitionAccepted: (value: boolean) => { transitionAccepted = value; },
     webCommands,
     posts,
     volumeCommands,
@@ -205,6 +242,187 @@ function pageScripts(): PageScripts {
 }
 
 const scripts = pageScripts();
+
+describe("mpv automatic transitions", () => {
+  const current = (position: number): Payload => ({ ...webPlaying, position, transportRevision: 0 });
+  const plan = { from: "t1", trackId: "2", ready: true, seconds: 6, trim: 0 };
+
+  it("preloads ahead and adopts the next decoder before the song ends", async () => {
+    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.equal(player.prepares.filter(item => item.url).length, 1);
+    player.setWeb({ ...webPlaying, position: 95 });
+    player.setMpv({ ...current(95), transition: plan });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.at(-1)?.transition, true);
+    assert.equal(player.loads.at(-1)?.trackId, "2");
+    assert.equal(player.bridge.snapshot().trackId, "2");
+    assert.equal(player.webCommands.includes("next"), false);
+    assert.equal(player.posts.includes("setposition"), false);
+  });
+
+  it("clears a stale preload after a queue change or entering a room", async () => {
+    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setCandidate(null);
+    player.tick();
+    await flush();
+    assert.equal(player.prepares.at(-1)?.url, undefined);
+    player.setMpv({ ...current(95), transition: plan });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.some(item => item.transition), false);
+  });
+
+  it("keeps pause responsive while the next audio address is resolving", async () => {
+    const gate = deferred();
+    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setCandidate({ from: "t1", song: { id: 3, name: "Third", artist: "Artist" } });
+    player.holdEvaluation("download", gate.promise);
+    player.tick();
+    await flush();
+    await player.bridge.command({ action: "pause" });
+    assert.equal(player.posts.at(-1), "pause");
+    player.bridge.setEnabled(false);
+    gate.resolve();
+    await flush();
+    assert.equal(player.prepares.filter(item => item.url).length, 1);
+  });
+
+  it("keeps pause effective while the webpage catches up with the audio handoff", async () => {
+    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    const gate = deferred();
+    player.holdEvaluation("commit", gate.promise);
+    player.setWeb({ ...webPlaying, position: 95 });
+    player.setMpv({ ...current(95), transition: plan });
+    player.tick();
+    await flush();
+    await player.bridge.command({ action: "pause" });
+    player.setMpv({ ...current(0), trackId: "2", playbackStatus: "Paused", transitioning: true });
+    gate.resolve();
+    await flush();
+    assert.equal(player.loads.filter(item => item.transition).length, 1);
+    assert.equal(player.posts.at(-1), "pause");
+    assert.equal(player.bridge.snapshot().playbackStatus, "Paused");
+    player.tick();
+    await flush();
+    assert.equal(player.loads.length, 2); // 初次装载和过渡接管，没有重新 loadfile 恢复播放。
+    assert.equal(player.bridge.snapshot().playbackStatus, "Paused");
+  });
+
+  it("starts mixing before waiting for the webpage to resolve the next song", async () => {
+    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    const gate = deferred();
+    player.holdEvaluation("commit", gate.promise);
+    player.setWeb({ ...webPlaying, position: 95 });
+    player.setMpv({ ...current(95), transition: plan });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.at(-1)?.transition, true);
+    gate.resolve();
+    await flush();
+  });
+
+  it("does not switch the webpage when the prepared decoder cannot be adopted", async () => {
+    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setTransitionAccepted(false);
+    player.setWeb({ ...webPlaying, position: 95 });
+    player.setMpv({ ...current(95), transition: plan });
+    player.tick();
+    await flush();
+    assert.equal(player.evaluations.includes("commit"), false);
+  });
+
+  it("aligns stale webpage progress without seeking mpv or cutting off its tail", async () => {
+    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setWeb({ ...webPlaying, position: 95 });
+    player.setMpv({ ...current(95), transition: plan });
+    player.tick();
+    await flush();
+    player.setCandidate(null);
+    for (const position of [95, 96, 97]) {
+      player.setWeb({ ...webPlaying, trackId: "2", position });
+      player.setMpv({ ...current(1), trackId: "2", transitioning: true });
+      player.tick();
+      await flush();
+    }
+    assert.equal(player.clockAlignments(), 3);
+    assert.equal(player.posts.includes("setposition"), false);
+    assert.equal(player.loads.filter(item => item.transition).length, 1);
+    player.setClockSeek(30);
+    player.tick();
+    await flush();
+    assert.equal(player.positionCommands.at(-1), 30_000_000);
+  });
+
+  it("stops the outgoing tail when the feature is turned off", async () => {
+    const player = setup({ transition: true, mpv: current(10) });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setTransitionEnabled(false);
+    player.setMpv({ ...current(10), transitioning: true });
+    player.tick();
+    await flush();
+    assert.equal(player.prepares.at(-1)?.cancelFade, true);
+  });
+
+  it("asks the backend for beat mixing and adopts right before the planned beat", async () => {
+    const player = setup({ transition: true, transitionMode: "smart", web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.equal(player.prepares.at(-1)?.mode, "smart");
+    const smart = { from: "t1", trackId: "2", ready: true, seconds: 16, trim: 0, mode: "smart", startAt: 94.8 };
+    player.setWeb({ ...webPlaying, position: 93.7 });
+    player.setMpv({ ...current(93.7), transition: smart });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.at(-1)?.transition, true);
+    assert.equal(player.loads.at(-1)?.trackId, "2");
+    assert.equal(player.bridge.snapshot().trackId, "2");
+  });
+
+  it("keeps waiting for the planned beat until the smart preload is ready", async () => {
+    const player = setup({ transition: true, transitionMode: "smart", web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    const smart = { from: "t1", trackId: "2", ready: true, seconds: 16, trim: 0, mode: "smart", startAt: 97 };
+    // 距离拍点还有 3 秒以上时不该提前接管。
+    player.setWeb({ ...webPlaying, position: 93 });
+    player.setMpv({ ...current(93), transition: smart });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.some(item => item.transition), false);
+    player.setWeb({ ...webPlaying, position: 96.2 });
+    player.setMpv({ ...current(96.2), transition: smart });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.at(-1)?.transition, true);
+  });
+
+  it("keeps the tail fading when the new song is the last in the queue", async () => {
+    const player = setup({ transition: true, mpv: current(10) });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setCandidate(null);
+    player.setMpv({ ...current(10), transitioning: true });
+    player.tick();
+    await flush();
+    assert.equal(player.prepares.some(item => item.cancelFade), false);
+  });
+});
 
 function page() {
   class FakeControl {

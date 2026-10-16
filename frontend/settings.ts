@@ -3,6 +3,7 @@ import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } f
 
 export type NotificationMode = "system" | "steam" | "none";
 export type PlaybackBackend = "web" | "mpv" | "mpd";
+export type TransitionMode = "off" | "normal" | "smart";
 export type MpdSettings = { host: string; port: number; password: string; socket: string };
 export const DEFAULT_MPD_SETTINGS: MpdSettings = { host: "127.0.0.1", port: 6600, password: "", socket: "" };
 export const UI_SCALE_MIN = 0.8;
@@ -10,6 +11,8 @@ export const UI_SCALE_MAX = 1.5;
 
 export type PlayerSettings = {
   playbackBackend: PlaybackBackend;
+  mpvTransitionMode: TransitionMode;
+  mpvTransitionSeconds: number;
   mpd: MpdSettings;
   unblockEnabled: boolean;
   unblockSources: UnblockSource[];
@@ -27,6 +30,8 @@ export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
 
 export const defaultSettings: PlayerSettings = {
   playbackBackend: "web",
+  mpvTransitionMode: "off",
+  mpvTransitionSeconds: 6,
   mpd: DEFAULT_MPD_SETTINGS,
   unblockEnabled: false,
   unblockSources: DEFAULT_UNBLOCK_SOURCES,
@@ -94,6 +99,10 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
   );
   return {
     playbackBackend: playbackBackendOr(record.playbackBackend, defaultSettings.playbackBackend),
+    mpvTransitionMode: ["off", "normal", "smart"].includes(String(record.mpvTransitionMode))
+      ? record.mpvTransitionMode as TransitionMode : record.mpvTransition === true ? "normal" : "off",
+    mpvTransitionSeconds: finiteNumber(record.mpvTransitionSeconds)
+      ? Math.round(Math.max(1, Math.min(12, record.mpvTransitionSeconds))) : defaultSettings.mpvTransitionSeconds,
     mpd: sanitizeMpdSettings(record.mpd),
     unblockEnabled: booleanOr(record.unblockEnabled, defaultSettings.unblockEnabled),
     unblockSources: sanitizeUnblockSources(record.unblockSources),

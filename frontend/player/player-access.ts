@@ -175,5 +175,5 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const playbackStatus = media ? (media.ended ? 'Stopped' : media.paused ? 'Paused' : 'Playing') : playControl ? (isPlayingButton ? 'Playing' : 'Paused') : sessionState === 'playing' ? 'Playing' : sessionState === 'paused' ? 'Paused' : title ? 'Playing' : 'Stopped';
   const nextControl = findControl(NEXT_LABELS);
   const previousControl = findControl(PREV_LABELS);
-  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(nextControl) && !isDisabled(nextControl), canGoPrevious: Boolean(previousControl) && !isDisabled(previousControl), volume, loopStatus, shuffle, rate };
+  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: String(playing?.resourceTrackId || [title, artist, album].join('|')), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(nextControl) && !isDisabled(nextControl), canGoPrevious: Boolean(previousControl) && !isDisabled(previousControl), volume, loopStatus, shuffle, rate };
 })()`;

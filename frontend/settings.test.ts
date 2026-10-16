@@ -3,6 +3,15 @@ import { describe, it } from "node:test";
 import { defaultSettings, readSettings, sanitizeSettings, SETTINGS_KEY, uiScaleOr, writeSettings } from "./settings.ts";
 
 describe("settings", () => {
+  it("keeps mpv transitions opt-in and bounds their duration", () => {
+    assert.equal(sanitizeSettings({}).mpvTransitionMode, "off");
+    assert.equal(sanitizeSettings({ mpvTransition: true }).mpvTransitionMode, "normal");
+    assert.equal(sanitizeSettings({ mpvTransitionMode: "smart" }).mpvTransitionMode, "smart");
+    assert.equal(sanitizeSettings({ mpvTransitionMode: "banana" }).mpvTransitionMode, "off");
+    assert.equal(sanitizeSettings({ mpvTransitionSeconds: 99 }).mpvTransitionSeconds, 12);
+    assert.equal(sanitizeSettings({ mpvTransitionSeconds: -2 }).mpvTransitionSeconds, 1);
+    assert.equal(sanitizeSettings({ mpvTransitionSeconds: NaN }).mpvTransitionSeconds, 6);
+  });
   it("drops garbage and keeps defaults", () => {
     const settings = sanitizeSettings({ openOnStart: "yes", launcher: { left: "12" } });
     assert.equal(settings.openOnStart, false);
