@@ -75,21 +75,23 @@ end
 local active = fixture(true)
 assert(active.backend.mpris_endpoint():match("^http://"))
 assert(active.backend.mpv_endpoint():match("^http://"))
+assert(active.backend.mpd_endpoint():match("^http://"))
 assert(active.backend.unblock_endpoint():match("^http://"))
 active.during_stop(function(backend)
     assert(backend.mpris_endpoint() == "!shutdown")
     assert(backend.mpris_reconnect() == "!shutdown")
     assert(backend.mpv_endpoint() == "!shutdown")
+    assert(backend.mpd_endpoint() == "!shutdown")
     assert(backend.unblock_endpoint() == "!shutdown")
 end)
 active.unload()
-assert(#active.launches == 3 and #active.removed == 3)
+assert(#active.launches == 4 and #active.removed == 4)
 for _, launch in ipairs(active.launches) do assert_stopped(active, launch) end
 local command_count = #active.commands
 active.unload()
 assert(#active.commands == command_count)
 
-for _, method in ipairs({ "mpris_endpoint", "mpv_endpoint", "unblock_endpoint" }) do
+for _, method in ipairs({ "mpris_endpoint", "mpv_endpoint", "mpd_endpoint", "unblock_endpoint" }) do
     local retry_result = method == "mpris_endpoint" and "!retry" or "!spawn"
     local pending = fixture(false)
     assert(pending.backend[method]() == "!spawn")
@@ -132,9 +134,10 @@ print("PASS helper shutdown, startup timeouts, delayed readiness, retries, and r
 local shutdown = fixture(true)
 assert(shutdown.backend.mpris_endpoint():match("^http://"))
 assert(shutdown.backend.mpv_endpoint():match("^http://"))
+assert(shutdown.backend.mpd_endpoint():match("^http://"))
 assert(shutdown.backend.unblock_endpoint():match("^http://"))
 assert(shutdown.backend.shutdown_backend() == "ok")
-assert(#shutdown.removed == 3)
+assert(#shutdown.removed == 4)
 for _, launch in ipairs(shutdown.launches) do assert_stopped(shutdown, launch) end
 assert(shutdown.backend.mpris_endpoint() == "!shutdown")
 print("PASS Steam exit cleans helper processes before backend unload")
@@ -163,13 +166,15 @@ for _, item in ipairs({
     { "mpris_endpoint", "backend/download_files.py", "!asset-download-files" },
     { "mpris_endpoint", "backend/audio_tags.py", "!asset-audio-tags" },
     { "mpv_endpoint", "backend/audio_source.py", "!asset-audio-source" },
+    { "mpv_endpoint", "backend/playback_http.py", "!asset-playback-http" },
+    { "mpd_endpoint", "backend/playback_http.py", "!asset-playback-http" },
     { "unblock_endpoint", "dist/unblock_helper.cjs", "!asset-helper" },
 }) do
     local missing = fixture(true, { missing_asset = item[2] })
     assert(missing.backend[item[1]]() == item[3])
     assert(#missing.launches == 0)
 end
-for _, method in ipairs({ "mpris_endpoint", "mpv_endpoint", "unblock_endpoint" }) do
+for _, method in ipairs({ "mpris_endpoint", "mpv_endpoint", "mpd_endpoint", "unblock_endpoint" }) do
     local failed = fixture(true, { failed_write = "/token" })
     assert(failed.backend[method]() == "!write-token")
     assert(#failed.launches == 0 and #failed.removed == 1, "failed preparation leaked a runtime directory")

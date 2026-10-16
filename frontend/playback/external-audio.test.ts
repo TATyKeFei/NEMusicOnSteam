@@ -3,10 +3,10 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { describe, it } from "node:test";
 import { createContext, runInContext, runInNewContext } from "node:vm";
-import type { TrackState } from "./mpris.ts";
+import type { TrackState } from "../mpris/mpris.ts";
 
 const source = stripTypeScriptTypes(
-  readFileSync(new URL("./mpv.ts", import.meta.url), "utf8")
+  readFileSync(new URL("./external-audio.ts", import.meta.url), "utf8")
     .replace(/^import .*;\n/gm, "")
     .replace(/^export /gm, ""),
 );
@@ -59,7 +59,7 @@ const webPlaying: TrackState = {
   rate: 1,
 };
 
-function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean } = {}) {
+function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string } = {}) {
   const evaluations: string[] = [];
   const loads: Payload[] = [];
   const webCommands: string[] = [];
@@ -87,6 +87,10 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
   const fetch = async (url: string, init?: { body?: string; signal?: AbortSignal; keepalive?: boolean }) => {
     requests.push({ url, signal: init?.signal, keepalive: init?.keepalive });
     if (requestGate && url.endsWith(requestGate.path)) await requestGate.promise;
+    if (url.endsWith("/configure")) {
+      order.push("configure");
+      return { ok: !options.configurationError, json: async () => ({ error: options.configurationError }) };
+    }
     if (url.endsWith("/state")) return { ok: true, json: async () => mpv };
     if (url.endsWith("/load")) {
       loads.push(JSON.parse(init!.body!));
@@ -108,7 +112,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
   };
 
   const api = runInNewContext(
-    `${source}; ({ Bridge: MpvBridge, scripts: { mute: MPV_MUTE_SCRIPT, sync: mpvSyncScript, unmute: mpvUnmuteScript, controls: MPV_CONTROL_INSTALL_SCRIPT } })`,
+    `${source}; ({ Bridge: ExternalAudioBridge, scripts: { mute: EXTERNAL_MUTE_SCRIPT, sync: externalSyncScript, unmute: externalUnmuteScript, controls: EXTERNAL_CONTROL_INSTALL_SCRIPT } })`,
     {
       navigator: { platform: "Linux" },
       window: {
@@ -132,6 +136,9 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
   ) as { Bridge: new (options: unknown) => TestBridge; scripts: PageScripts };
 
   const bridge = new api.Bridge({
+    name: options.mpd ? "MPD" : "mpv",
+    ...(options.mpd ? { configuration: () => ({ host: "music.local", port: 6600, password: "", socket: "" }), supportsRate: false } : {}),
+    endpoint: async () => { await endpointGate; return "http://localhost|test-token"; },
     quality: () => 1,
     ...(options.resolver ? {
       holdWebDuringResolution: () => true,
@@ -194,7 +201,7 @@ function pageScripts(): PageScripts {
     tryEvaluateInPlayer: async () => true,
     fetch: async () => ({ ok: true, json: async () => ({}) }),
   };
-  return runInNewContext(`${source}; ({ mute: MPV_MUTE_SCRIPT, sync: mpvSyncScript, unmute: mpvUnmuteScript, controls: MPV_CONTROL_INSTALL_SCRIPT })`, stub) as PageScripts;
+  return runInNewContext(`${source}; ({ mute: EXTERNAL_MUTE_SCRIPT, sync: externalSyncScript, unmute: externalUnmuteScript, controls: EXTERNAL_CONTROL_INSTALL_SCRIPT })`, stub) as PageScripts;
 }
 
 const scripts = pageScripts();
@@ -287,7 +294,7 @@ function fakeHowl(node: { paused: boolean }, ended = false) {
   };
 }
 
-describe("MPV backend page scripts", () => {
+describe("external audio page scripts", () => {
   it("restores native pause and track controls when switching back to web playback", () => {
     const web = page();
     const node = new web.FakeMedia();
@@ -403,7 +410,7 @@ describe("MPV backend page scripts", () => {
   });
 });
 
-describe("MPV bridge tick", () => {
+describe("external audio bridge tick", () => {
   it("discards a match when the webpage switches songs during resolution", async () => {
     const player = setup({ resolver: true });
     const pending = deferred();
@@ -828,5 +835,29 @@ describe("MPV bridge tick", () => {
     player.bridge.setEnabled(false);
     await flush();
     assert.match(player.lastUnmute(), /if \(false\)/);
+  });
+});
+
+
+describe("MPD playback adapter", () => {
+  it("configures MPD before loading audio and leaves a missing mixer alone", async () => {
+    const player = setup({ mpd: true, mpv: { active: true, playbackStatus: "Playing", trackId: "t1", volume: null } });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.equal(player.order[0], "configure");
+    assert.equal(player.loads.length, 1);
+    assert.deepEqual(player.volumeCommands, []);
+    assert.equal(player.bridge.snapshot().volume, null);
+    assert.equal(await player.bridge.command({ action: "rate", value: 2 }), false);
+    assert.deepEqual(player.webCommands, []);
+  });
+
+  it("reports MPD authentication failures before muting the webpage", async () => {
+    const player = setup({ mpd: true, configurationError: "MPD 密码认证失败" });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.match(player.bridge.getStatus(), /MPD 密码认证失败/);
+    assert.equal(player.loads.length, 0);
+    assert.equal(player.evaluations.some(isMute), false);
   });
 });

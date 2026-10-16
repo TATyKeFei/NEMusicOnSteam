@@ -5,6 +5,7 @@ local fs = require("fs")
 
 local unloading = false
 local helper_pids = {}
+local helper_grace = {}
 
 -- 宿主的 time_ms 在 32 位 Lua 下可能溢出，因此按调用次数退避。
 -- 给冷启动留出余量，避免尚未写端口文件时重复启动进程争抢 D-Bus 名称。
@@ -25,6 +26,14 @@ local helpers = {
         assets = {
             { "backend/mpv_helper.py", "helper.py", "helper" },
             { "backend/audio_source.py", "audio_source.py", "audio-source" },
+            { "backend/playback_http.py", "playback_http.py", "playback-http" },
+        },
+    },
+    mpd = {
+        name = "mpd", entry = "helper.py", polls = 20, shutdown_grace = 1500,
+        assets = {
+            { "backend/mpd_helper.py", "helper.py", "helper" },
+            { "backend/playback_http.py", "playback_http.py", "playback-http" },
         },
     },
     unblock = {
@@ -62,12 +71,13 @@ local function stop_helper(dir)
             -- 先杀进程组，确保 mpv/parec 等子进程不会脱离；再补一次单 PID，兼容
             -- 某些系统没有 setsid 或旧实例没有建立进程组的情况。
             utils.exec("kill -TERM -- -" .. pid .. " 2>/dev/null; kill -TERM " .. pid .. " 2>/dev/null")
-            utils.sleep(100)
+            utils.sleep(helper_grace[dir] or 100)
             utils.exec("kill -KILL -- -" .. pid .. " 2>/dev/null; kill -KILL " .. pid .. " 2>/dev/null")
         end
     end
     fs.remove_all(dir)
     helper_pids[dir] = nil
+    helper_grace[dir] = nil
 end
 
 -- 过去任何失败都只返回 ""，前端把它一律变成「请检查 Python/PyGObject/D-Bus」，导致用户
@@ -135,6 +145,7 @@ local function helper_endpoint(helper)
     local dir = base .. "/nemusic-" .. helper.name .. "-" .. utils.uuid()
     if not fs.create_directories(dir) then return failure("!mkdir:" .. base) end
     helper.dir = dir
+    helper_grace[dir] = helper.shutdown_grace
     helper.token = utils.uuid()
     utils.exec("chmod 700 " .. shell_quote(dir))
     for _, asset in ipairs(assets) do
@@ -180,6 +191,12 @@ end
 
 ---@ffi
 ---@return string
+function mpd_endpoint()
+    return helper_endpoint(helpers.mpd)
+end
+
+---@ffi
+---@return string
 function unblock_stop()
     reset_helper(helpers.unblock)
     return "ok"
@@ -208,6 +225,7 @@ local function on_unload()
     -- 把 Steam 留在后台。
     reset_helper(helpers.mpris)
     reset_helper(helpers.mpv)
+    reset_helper(helpers.mpd)
     reset_helper(helpers.unblock)
     -- Steam 退出期间同步等 WebKit 返回会造成后端和前端相互等候。辅助进程已在上面
     -- 回收；视图和前端计时器由 Steam 自己的销毁流程处理，因此这里绝不跨进程等待。

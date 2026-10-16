@@ -8,7 +8,9 @@ import { mprisHelper } from "../runtime/mpris-helper.ts";
 import { steamToast } from "../widget/toast.ts";
 import { sameBounds, type Bounds } from "../widget/layout.ts";
 import { MprisBridge } from "../mpris/mpris.ts";
-import { MpvBridge, MPV_MUTE_SCRIPT } from "../playback/mpv.ts";
+import { MpvBridge } from "../playback/mpv.ts";
+import { MpdBridge } from "../playback/mpd.ts";
+import { EXTERNAL_MUTE_SCRIPT } from "../playback/external-audio.ts";
 import { commandScript } from "../mpris/mpris-player.ts";
 import { releasePlayerSession, preparePlayerTarget } from "./player-target.ts";
 import { evaluateInPlayer, tryEvaluateInPlayer, PLAYER_TARGET_MISSING } from "./player-target.ts";
@@ -92,6 +94,7 @@ export type PlayerSnapshot = {
   mprisStatus: string;
   mprisCanReconnect: boolean;
   mpvStatus: string;
+  mpdStatus: string;
   unblockStatus: string;
   recognitionStatus: string;
   settingsEntry: "native" | "injected" | "waiting";
@@ -106,6 +109,13 @@ export class PlayerController {
   private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); }, () => this.settings.notificationMode);
   private readonly unblock = new UnblockBridge(() => ({ enabled: this.settings.unblockEnabled, sources: this.settings.unblockSources }));
   private readonly mpv = new MpvBridge({
+    quality: () => this.settings.downloadQuality,
+    resolveTrack: (quality, signal) => this.unblock.resolve(quality, undefined, signal),
+    holdWebDuringResolution: () => this.settings.unblockEnabled,
+    commandWeb: async command => Boolean(await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true })),
+  });
+  private readonly mpd = new MpdBridge({
+    settings: () => this.settings.mpd,
     quality: () => this.settings.downloadQuality,
     resolveTrack: (quality, signal) => this.unblock.resolve(quality, undefined, signal),
     holdWebDuringResolution: () => this.settings.unblockEnabled,
@@ -173,6 +183,7 @@ export class PlayerController {
   private recoveryFailed = false;
   private lastRecoveryAt = 0;
   private readonly steamSettings: SteamSettingsStatus | null;
+  private playbackEpoch = 0;
 
   constructor(steamSettings?: SteamSettingsStatus) {
     this.steamSettings = steamSettings ?? null;
@@ -190,6 +201,7 @@ export class PlayerController {
     this.timer = window.setInterval(this.tick, TICK_MS);
     this.mpris.start();
     this.mpv.start();
+    this.mpd.start();
     this.tick();
   }
 
@@ -221,13 +233,14 @@ export class PlayerController {
       mprisStatus: this.mpris.getStatus(),
       mprisCanReconnect: this.mpris.canReconnect(),
       mpvStatus: this.mpv.getStatus(),
+      mpdStatus: this.mpd.getStatus(),
       unblockStatus: this.unblock.getStatus(),
       recognitionStatus: this.recognition.getStatus(),
       settingsEntry: this.steamSettings?.entryStatus() ?? "waiting",
       quality: this.quality.snapshot(),
       together: this.together.snapshot(),
       download: this.download.snapshot(),
-      settings: { ...this.settings, unblockSources: [...this.settings.unblockSources] },
+      settings: { ...this.settings, mpd: { ...this.settings.mpd }, unblockSources: [...this.settings.unblockSources] },
     };
   }
 
@@ -238,6 +251,7 @@ export class PlayerController {
     if (patch.unblockEnabled != null || patch.unblockSources != null) this.unblock.reset();
     if (patch.unblockEnabled != null || patch.unblockSources != null) void this.unblock.installPageHook();
     if (patch.playbackBackend != null) this.applyPlaybackBackend();
+    if (patch.mpd != null) this.mpd.reconnect();
     if (patch.uiScale != null) this.applyUiScale();
     this.syncView(true, this.render());
     return this.snapshot();
@@ -245,6 +259,10 @@ export class PlayerController {
 
   reconnectMpris(): void {
     this.mpris.reconnect();
+  }
+
+  reconnectMpd(): void {
+    this.mpd.reconnect();
   }
 
   checkUnblock(): void {
@@ -328,7 +346,7 @@ export class PlayerController {
     this.pendingOpen = false;
     this.mode = "closed";
     this.status = "已关闭";
-    // 关掉播放器要连 mpv 一起停：destroyView 只在换父窗口时也会走，那里音乐得继续。
+    // 关掉播放器要连外部音频一起停：换父窗口时音乐仍需继续。
     this.stopExternalPlayback();
     this.destroyView();
     this.recoverySnapshot = null;
@@ -652,10 +670,10 @@ export class PlayerController {
       if (snapshot != null) {
         this.restorePending = snapshot;
         this.recoverySnapshot = snapshot;
-        if (this.settings.playbackBackend === "mpv") {
-          const muted = await tryEvaluateInPlayer(MPV_MUTE_SCRIPT);
+        if (this.settings.playbackBackend !== "web") {
+          const muted = await tryEvaluateInPlayer(EXTERNAL_MUTE_SCRIPT);
           if (this.view !== view) return;
-          if (muted == null) throw new Error("无法静音新网页，未恢复播放以免与 mpv 重叠");
+          if (muted == null) throw new Error("无法静音新网页，未恢复播放以免与外部播放器重叠");
         }
         const restored = await tryEvaluateInPlayer(playerRestoreScript(snapshot), { userGesture: true, awaitPromise: true });
         if (this.view !== view) return;
@@ -723,10 +741,19 @@ export class PlayerController {
   }
 
   private applyPlaybackBackend(): void {
+    const epoch = ++this.playbackEpoch;
     if (this.restorePending != null) return;
-    if (this.view != null && this.settings.playbackBackend === "mpv") {
-      this.mpris.setExternalPlayback(this.mpv);
-      this.mpv.setEnabled(true);
+    if (this.view != null && this.settings.playbackBackend !== "web") {
+      const selected = this.settings.playbackBackend === "mpd" ? this.mpd : this.mpv;
+      const previous = this.settings.playbackBackend === "mpd" ? this.mpv : this.mpd;
+      // 先结束旧后端的页面清理，避免它把新后端的静音和按键钩子撤掉。
+      previous.setEnabled(false);
+      void previous.whenStopped().then(() => {
+        if (epoch !== this.playbackEpoch || this.view == null || (this.settings.playbackBackend === "mpd" ? this.mpd : this.mpv) !== selected
+          || this.settings.playbackBackend === "web") return;
+        this.mpris.setExternalPlayback(selected);
+        selected.setEnabled(true);
+      });
       return;
     }
     this.stopExternalPlayback();
@@ -740,8 +767,10 @@ export class PlayerController {
 
   /** 播放器没了就得把音频还给页面，并让 MPRIS 回到直接读页面状态。 */
   private stopExternalPlayback(restoreWeb = true): void {
+    this.playbackEpoch++;
     this.mpris.setExternalPlayback(null);
     this.mpv.setEnabled(false, restoreWeb);
+    this.mpd.setEnabled(false, restoreWeb);
   }
 
   // 直接复用 render() 已经算好的 bounds：排一次界面要对整个客户端文档做一次遍历，

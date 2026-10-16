@@ -41,6 +41,8 @@ type Controller = {
   reload(): string;
   close(): string;
   shutdown(): void;
+  settings: { playbackBackend: string };
+  applyPlaybackBackend(): void;
 };
 
 function setup(options: { desktopSupported?: boolean; failToggle?: boolean; playbackBackend?: string; keepAliveWhenCollapsed?: boolean; ready?: () => Promise<boolean>; retire?: (destroyNative?: () => void) => Promise<PlayerRecoverySnapshot | null>; steamSettings?: SteamSettingsStatus } = {}) {
@@ -54,6 +56,8 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
   let registrations = 0;
   let unregistrations = 0;
   let sessionReleases = 0;
+  const backendChanges: string[] = [];
+  let releaseMpvStop: Promise<void> | null = null;
   const bridgeDisables: { enabled: boolean; restoreWeb?: boolean }[] = [];
   let onFullscreenRequest: ((active: boolean, fillWindow: boolean) => void) | null = null;
   let chromeHandlers: ChromeHandlers | null = null;
@@ -86,6 +90,8 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     setEnabled(enabled: boolean, restoreWeb?: boolean) { bridgeDisables.push({ enabled, restoreWeb }); }
     setExternalPlayback() {}
     async stop() {}
+    reconnect() {}
+    async whenStopped() {}
   }
   const ControllerClass = runInNewContext(`${source}; PlayerController`, {
     PlayerChrome: class {
@@ -108,8 +114,14 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
       installPageHook() {}
       getStatus() { return "已关闭"; }
     },
-    MpvBridge: FakeBridge,
-    MPV_MUTE_SCRIPT: "mpv-mute",
+    MpvBridge: class extends FakeBridge {
+      setEnabled(enabled: boolean, restoreWeb?: boolean) { super.setEnabled(enabled, restoreWeb); backendChanges.push(`mpv:${enabled}`); }
+      whenStopped() { return releaseMpvStop ?? Promise.resolve(); }
+    },
+    MpdBridge: class extends FakeBridge {
+      setEnabled(enabled: boolean, restoreWeb?: boolean) { super.setEnabled(enabled, restoreWeb); backendChanges.push(`mpd:${enabled}`); }
+    },
+    EXTERNAL_MUTE_SCRIPT: "mpv-mute",
     RecognitionBridge: FakeBridge,
     QualityBridge: FakeBridge,
     TogetherBridge: FakeBridge,
@@ -164,6 +176,8 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     unregistrations: () => unregistrations,
     sessionReleases: () => sessionReleases,
     bridgeDisables,
+    backendChanges,
+    holdMpvStop(promise: Promise<void> | null) { releaseMpvStop = promise; },
     get chromeHandlers() { return chromeHandlers; },
     async settle() { await player.viewCreation; },
     createPopup(id: number): SteamPopup & { window: SteamWindow } {
@@ -276,7 +290,7 @@ describe("player shutdown", () => {
     assert.equal(runtime.player.booted, false);
     assert.equal(runtime.player.pendingOpen, false);
     assert.equal(runtime.models.length, renders);
-    assert.equal(runtime.bridgeDisables.filter(change => change.restoreWeb === false).length, 1);
+    assert.equal(runtime.bridgeDisables.filter(change => change.restoreWeb === false).length, 2);
   });
 
   it("does not create a view when shutdown interrupts pending recovery", async () => {
@@ -708,7 +722,7 @@ describe("player view reuse after Big Picture", () => {
     assert.ok(runtime.player.view);
   });
 
-  it("mutes the replacement before restoring playback with the mpv backend", async () => {
+  for (const backend of ["mpv", "mpd"]) it(`mutes the replacement before restoring playback with ${backend}`, async () => {
     const snapshot: PlayerRecoverySnapshot = {
       href: PLAYER_URL,
       current: { resourceId: "123" },
@@ -718,7 +732,7 @@ describe("player view reuse after Big Picture", () => {
       volume: 0.4,
       mode: "playOrder",
     };
-    const runtime = setup({ playbackBackend: "mpv", retire: async () => snapshot });
+    const runtime = setup({ playbackBackend: backend, retire: async () => snapshot });
     runtime.setPopup(runtime.createPopup(7));
     runtime.player.open();
     await runtime.settle();
@@ -728,5 +742,32 @@ describe("player view reuse after Big Picture", () => {
     const restored = runtime.evaluations.findIndex(expression => expression.includes("const snapshot ="));
     assert.ok(muted >= 0 && muted < restored);
     assert.match(runtime.player.status, /已接回/);
+  });
+});
+
+
+describe("MPD backend switching", () => {
+  it("waits for the previous backend to finish before enabling MPD", async () => {
+    const runtime = setup({ playbackBackend: "mpd" });
+    runtime.player.view = {} as BrowserView;
+    let release!: () => void;
+    runtime.holdMpvStop(new Promise<void>(resolve => { release = resolve; }));
+    runtime.player.applyPlaybackBackend();
+    assert.deepEqual(runtime.backendChanges, ["mpv:false"]);
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(runtime.backendChanges, ["mpv:false", "mpd:true"]);
+  });
+
+  it("does not start MPD if the player closes while the old backend stops", async () => {
+    const runtime = setup({ playbackBackend: "mpd" });
+    runtime.player.view = {} as BrowserView;
+    let release!: () => void;
+    runtime.holdMpvStop(new Promise<void>(resolve => { release = resolve; }));
+    runtime.player.applyPlaybackBackend();
+    runtime.player.shutdown();
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(runtime.backendChanges.includes("mpd:true"), false);
   });
 });

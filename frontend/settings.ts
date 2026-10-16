@@ -2,12 +2,15 @@ import { DEFAULT_DOWNLOAD_NAME_TEMPLATE, DEFAULT_DOWNLOAD_QUALITY, isDownloadQua
 import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } from "./unblock/sources.ts";
 
 export type NotificationMode = "system" | "steam" | "none";
-export type PlaybackBackend = "web" | "mpv";
+export type PlaybackBackend = "web" | "mpv" | "mpd";
+export type MpdSettings = { host: string; port: number; password: string; socket: string };
+export const DEFAULT_MPD_SETTINGS: MpdSettings = { host: "127.0.0.1", port: 6600, password: "", socket: "" };
 export const UI_SCALE_MIN = 0.8;
 export const UI_SCALE_MAX = 1.5;
 
 export type PlayerSettings = {
   playbackBackend: PlaybackBackend;
+  mpd: MpdSettings;
   unblockEnabled: boolean;
   unblockSources: UnblockSource[];
   uiScale: number;
@@ -24,6 +27,7 @@ export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
 
 export const defaultSettings: PlayerSettings = {
   playbackBackend: "web",
+  mpd: DEFAULT_MPD_SETTINGS,
   unblockEnabled: false,
   unblockSources: DEFAULT_UNBLOCK_SOURCES,
   uiScale: 1,
@@ -54,7 +58,20 @@ function notificationModeOr(value: unknown, fallback: NotificationMode): Notific
 }
 
 function playbackBackendOr(value: unknown, fallback: PlaybackBackend): PlaybackBackend {
-  return value === "web" || value === "mpv" ? value : fallback;
+  return value === "web" || value === "mpv" || value === "mpd" ? value : fallback;
+}
+
+export function sanitizeMpdSettings(value: unknown): MpdSettings {
+  const record = value != null && typeof value === "object" ? value as Record<string, unknown> : {};
+  const text = (value: unknown, fallback: string) => typeof value === "string"
+    ? value.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 4096) : fallback;
+  return {
+    host: text(record.host, DEFAULT_MPD_SETTINGS.host) || DEFAULT_MPD_SETTINGS.host,
+    port: typeof record.port === "number" && Number.isInteger(record.port) && record.port > 0 && record.port <= 65535
+      ? record.port : DEFAULT_MPD_SETTINGS.port,
+    password: typeof record.password === "string" ? record.password.replace(/[\r\n\x00]/g, "").slice(0, 4096) : "",
+    socket: text(record.socket, ""),
+  };
 }
 
 export function uiScaleOr(value: unknown, fallback: number): number {
@@ -77,6 +94,7 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
   );
   return {
     playbackBackend: playbackBackendOr(record.playbackBackend, defaultSettings.playbackBackend),
+    mpd: sanitizeMpdSettings(record.mpd),
     unblockEnabled: booleanOr(record.unblockEnabled, defaultSettings.unblockEnabled),
     unblockSources: sanitizeUnblockSources(record.unblockSources),
     uiScale: uiScaleOr(record.uiScale, defaultSettings.uiScale),

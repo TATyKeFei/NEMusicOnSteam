@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { PlayerController, PlayerSnapshot } from "./player/player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
 import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
-import type { NotificationMode, PlaybackBackend } from "./settings.ts";
+import { sanitizeMpdSettings, type NotificationMode, type PlaybackBackend } from "./settings.ts";
 import { sanitizeUnblockSources } from "./unblock/sources.ts";
 
 const NOTIFICATION_OPTIONS = [
@@ -15,6 +15,7 @@ const NOTIFICATION_OPTIONS = [
 const PLAYBACK_BACKEND_OPTIONS: { data: PlaybackBackend; label: string }[] = [
   { data: "web", label: "内嵌网页播放器" },
   { data: "mpv", label: "mpv（外部音频）" },
+  { data: "mpd", label: "MPD（本机 / 远程）" },
 ];
 
 const UI_SCALE_OPTIONS = [
@@ -36,6 +37,7 @@ function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
     && a.mprisStatus === b.mprisStatus
     && a.mprisCanReconnect === b.mprisCanReconnect
     && a.mpvStatus === b.mpvStatus
+    && a.mpdStatus === b.mpdStatus
     && a.unblockStatus === b.unblockStatus
     && a.recognitionStatus === b.recognitionStatus
     && a.settingsEntry === b.settingsEntry
@@ -73,6 +75,7 @@ export function SettingsContent({ player }: { player: PlayerController }) {
   const [directory, setDirectory] = useState(() => snapshot.settings.downloadDirectory);
   const [nameTemplate, setNameTemplate] = useState(() => snapshot.settings.downloadNameTemplate);
   const [unblockSources, setUnblockSources] = useState(() => snapshot.settings.unblockSources.join(", "));
+  const [mpd, setMpd] = useState(() => ({ ...snapshot.settings.mpd, port: String(snapshot.settings.mpd.port) }));
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -97,6 +100,11 @@ export function SettingsContent({ player }: { player: PlayerController }) {
   };
 
   const settings = snapshot.settings;
+  const commitMpd = () => {
+    const next = sanitizeMpdSettings({ ...mpd, port: Number(mpd.port) });
+    setMpd({ ...next, port: String(next.port) });
+    setSnapshot(player.updateSettings({ mpd: next }));
+  };
   const commitUnblockSources = () => {
     const sources = sanitizeUnblockSources(unblockSources.split(/[,，\s]+/).filter(Boolean));
     setUnblockSources(sources.join(", "));
@@ -124,7 +132,9 @@ export function SettingsContent({ player }: { player: PlayerController }) {
         label="播放后端"
         description={settings.playbackBackend === "mpv"
           ? `使用 mpv 输出音频，网易云网页仍用于登录、选歌和一起听。${snapshot.mpvStatus}`
-          : "使用网易云网页内嵌播放器；切换到 mpv 前请先安装 mpv。"}
+          : settings.playbackBackend === "mpd"
+            ? `由 MPD 所在设备输出音频，网易云网页用于登录和选歌。不支持倍速。${snapshot.mpdStatus}`
+            : "使用网易云网页内嵌播放器；外部播放可选已安装的 mpv 或已运行的 MPD。"}
         bottomSeparator="standard"
       >
         <Dropdown
@@ -133,9 +143,27 @@ export function SettingsContent({ player }: { player: PlayerController }) {
           onChange={option => setSnapshot(player.updateSettings({ playbackBackend: option.data }))}
         />
       </Field>
+      {settings.playbackBackend === "mpd" && <>
+        <Field label="MPD 地址" description="本机默认为 127.0.0.1；也可填写局域网 / 远程主机名或 IPv6 地址。" bottomSeparator="standard">
+          <TextField value={mpd.host} onChange={event => setMpd({ ...mpd, host: event.target.value })} />
+        </Field>
+        <Field label="MPD 端口" bottomSeparator="standard">
+          <TextField mustBeNumeric value={mpd.port} onChange={event => setMpd({ ...mpd, port: event.target.value })} />
+        </Field>
+        <Field label="MPD Unix socket" description="可选，本机 socket 的绝对路径，支持 ~/。填写后优先使用 socket，忽略地址和端口。" bottomSeparator="standard">
+          <TextField value={mpd.socket} onChange={event => setMpd({ ...mpd, socket: event.target.value })} />
+        </Field>
+        <Field label="MPD 密码" description="可选；保存在本机插件设置中。" bottomSeparator="standard">
+          <TextField bIsPassword value={mpd.password} onChange={event => setMpd({ ...mpd, password: event.target.value })} />
+        </Field>
+        <Field label="MPD 连接" description="先启动 MPD 并启用 HTTP/HTTPS 输入和音频输出。远程设备需要能直接访问歌曲地址。插件只清理自己添加的歌曲，不清空原队列。" bottomSeparator="standard">
+          <DialogButton onClick={commitMpd}>保存并连接</DialogButton>
+          <DialogButton onClick={() => player.reconnectMpd()}>重新连接</DialogButton>
+        </Field>
+      </>}
       <Field
         label="UnblockNeteaseMusic（实验性）"
-        description="仅 Linux：网页点击灰歌、mpv 播放和下载在官方无地址或仅有试听时尝试其他音源。需要 Node.js 22+。"
+        description="仅 Linux：网页点击灰歌、外部播放和下载在官方无地址或仅有试听时尝试其他音源。需要 Node.js 22+。"
         bottomSeparator="standard"
       >
         <Toggle value={settings.unblockEnabled} onChange={unblockEnabled => setSnapshot(player.updateSettings({ unblockEnabled }))} />

@@ -6,22 +6,12 @@ import subprocess
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from playback_http import PlaybackHttpService
 from audio_source import audio_headers
 
 
 SOCKET_NAME = "mpv.sock"
 STARTUP_TIMEOUT = 10
-IDLE_TIMEOUT = 60
-CLIENT_GONE_ERRORS = (BrokenPipeError, ConnectionResetError)
-
-
-class MpvHttpServer(ThreadingHTTPServer):
-    def handle_error(self, request, client_address):
-        error = sys.exc_info()[1]
-        if isinstance(error, CLIENT_GONE_ERRORS):
-            return
-        super().handle_error(request, client_address)
 
 
 class MpvProcess:
@@ -183,102 +173,20 @@ class MpvProcess:
             log_handle.close()
 
 
-class MpvService:
+class MpvService(PlaybackHttpService):
     def __init__(self, runtime_dir, token):
         self.runtime_dir = runtime_dir
         self.token = token
         self.lock = threading.Lock()
-        self.loop = None
-        self.last_seen = time.monotonic()
-        self.stopping = False
         self.track = {}
         self.mpv = MpvProcess(runtime_dir)
-        self.server = MpvHttpServer(("127.0.0.1", 0), self.make_handler())
-        self.server.daemon_threads = True
+        self.start_http()
 
-    def make_handler(self):
-        service = self
+    def alive(self):
+        return self.mpv.process.poll() is None
 
-        class Handler(BaseHTTPRequestHandler):
-            def log_message(self, *_args):
-                pass
-
-            def reply(self, code, payload):
-                body = b"" if code == 204 else json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                self.send_response(code)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.send_header("Access-Control-Allow-Origin", "*")
-                self.send_header("Access-Control-Allow-Headers", "X-NEMusic-Token, Content-Type")
-                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                self.end_headers()
-                if body:
-                    self.wfile.write(body)
-
-            def do_OPTIONS(self):
-                self.reply(204, {})
-
-            def authorized(self):
-                if self.headers.get("X-NEMusic-Token") != service.token:
-                    self.reply(403, {"error": "forbidden"})
-                    return False
-                with service.lock:
-                    service.last_seen = time.monotonic()
-                return True
-
-            def read_payload(self):
-                try:
-                    length = int(self.headers.get("Content-Length", "0"))
-                    if length < 0 or length > 65536:
-                        raise ValueError("invalid length")
-                    payload = json.loads(self.rfile.read(length))
-                    if not isinstance(payload, dict):
-                        raise ValueError("invalid payload")
-                    return payload
-                except (ValueError, json.JSONDecodeError):
-                    return None
-
-            def do_GET(self):
-                if not self.authorized():
-                    return
-                if self.path == "/state":
-                    try:
-                        self.reply(200, service.snapshot())
-                    except RuntimeError as error:
-                        self.reply(502, {"error": str(error)})
-                    return
-                self.reply(404, {})
-
-            def do_POST(self):
-                if not self.authorized():
-                    return
-                if self.path == "/load":
-                    payload = self.read_payload()
-                    if payload is None:
-                        self.reply(400, {"error": "无效请求"})
-                        return
-                    try:
-                        self.reply(200, service.load(payload))
-                    except (RuntimeError, ValueError) as error:
-                        self.reply(400, {"error": str(error)})
-                    return
-                if self.path == "/command":
-                    payload = self.read_payload()
-                    if payload is None:
-                        self.reply(400, {"error": "无效请求"})
-                        return
-                    try:
-                        self.reply(200, {"handled": service.command(payload)})
-                    except (RuntimeError, ValueError) as error:
-                        self.reply(400, {"error": str(error)})
-                    return
-                if self.path == "/shutdown":
-                    self.reply(200, {})
-                    service.request_shutdown()
-                    return
-                self.reply(404, {})
-
-        return Handler
+    def close(self):
+        self.mpv.close()
 
     def load(self, payload):
         url = str(payload.get("url") or "")
@@ -381,37 +289,6 @@ class MpvService:
             "rate": max(0.1, min(4.0, float(speed))),
         }
 
-    def request_shutdown(self):
-        with self.lock:
-            self.stopping = True
-        if self.loop is not None:
-            self.loop()
-
-    def run(self):
-        self.loop = self.server.shutdown
-        with open(os.path.join(self.runtime_dir, "port"), "w", encoding="ascii") as port_file:
-            port_file.write(str(self.server.server_port))
-        threading.Thread(target=self.server.serve_forever, daemon=True).start()
-        try:
-            while True:
-                time.sleep(2)
-                with self.lock:
-                    if self.stopping:
-                        break
-                    expired = time.monotonic() - self.last_seen > IDLE_TIMEOUT
-                if expired:
-                    break
-                if self.mpv.process.poll() is not None:
-                    break
-        finally:
-            self.server.shutdown()
-            self.server.server_close()
-            self.mpv.close()
-            try:
-                os.unlink(os.path.join(self.runtime_dir, "port"))
-            except FileNotFoundError:
-                pass
-            shutil.rmtree(self.runtime_dir, ignore_errors=True)
 
 
 def main():

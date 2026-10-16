@@ -21,6 +21,18 @@ describe("settings", () => {
     assert.equal(uiScaleOr("125%", 1), 1);
   });
 
+  it("supports MPD TCP, password and Unix socket settings without sharing mutable defaults", () => {
+    const settings = sanitizeSettings({ playbackBackend: "mpd", mpd: { host: " music.local ", port: 6601, password: " secret ", socket: " ~/mpd/socket " } });
+    assert.equal(settings.playbackBackend, "mpd");
+    assert.deepEqual(settings.mpd, { host: "music.local", port: 6601, password: " secret ", socket: "~/mpd/socket" });
+    settings.mpd.host = "changed";
+    assert.equal(sanitizeSettings({}).mpd.host, "127.0.0.1");
+    for (const port of [-1, 0, 65536, 6600.1, "6600", NaN]) {
+      assert.equal(sanitizeSettings({ mpd: { port } }).mpd.port, 6600);
+    }
+    assert.equal(sanitizeSettings({ mpd: { password: "a\nclear\x00" } }).mpd.password, "aclear");
+  });
+
   it("defaults to disabled and filters duplicate or unsupported unblock sources in order", () => {
     assert.equal(sanitizeSettings({}).unblockEnabled, false);
     assert.equal(sanitizeSettings({ unblockEnabled: "true" }).unblockEnabled, false);
