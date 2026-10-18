@@ -1,6 +1,7 @@
 """显式启用的真实 mpv/ffmpeg 检查，使用空音频输出，不向扬声器播放。"""
 import contextlib
 import functools
+import json
 import math
 import os
 import random
@@ -11,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.request
 import wave
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -178,7 +180,18 @@ class RealMpvTransitionTests(unittest.TestCase):
             # 120 / 115.2：新歌要被加快约 4%，并且先从拍点等待再出声。
             self.assertAlmostEqual(fading["stretch"], 120 / 115.21, delta=0.01)
             self.assertGreater(fading["stretch"], 1.0)
+            # 接管一刻两张渐变图就已挂好：权重从 0 起步，等拍点期间两首歌频段完整。
+            armed = str(old.property("af", ""))
+            self.assertIn("asetnsamples=n=256", armed)
+            self.assertIn("highshelf=f=6500:g=-7", armed)
+            self.assertIn("equalizer=f=1000:width_type=h:width=3800:g=-2", armed)
+            self.assertIn("highpass=f=120", armed)
+            incoming = str(service.mpv.property("af", ""))
+            self.assertIn("equalizer=f=1000:width_type=h:width=3800:g=-2", incoming)
+            self.assertNotIn("highpass", incoming)
             self.assertTrue(wait_for(lambda: not service.mpv.property("pause", True), timeout=6))
+            # 放开新歌后不再改滤镜：各频段交给时间轴上的渐变窗口，在混音中段交接。
+            self.assertEqual(str(old.property("af", "")), armed)
             time.sleep(1.0)
             first_old, first_new = old.property("time-pos"), service.mpv.property("time-pos")
             time.sleep(1.5)
@@ -191,6 +204,47 @@ class RealMpvTransitionTests(unittest.TestCase):
             self.assertTrue(wait_for(lambda: service.fading is None))
             self.assertEqual(service.snapshot()["playbackStatus"], "Playing")
             self.assertEqual(service.mpv.property("speed"), 1.0)
+            # 混音收场：新歌的渐入图被摘掉，回到无滤镜直通。
+            remaining = service.mpv.property("af", None)
+            self.assertIsNotNone(remaining)
+            self.assertFalse(remaining)
+
+    def test_analyze_route_reports_features_of_served_tracks(self):
+        tracks = {
+            "groove.wav": lambda path: write_groove(path, 18, 120, seed=1),
+            "tone.wav": lambda path: write_tone(path, 8, 440),
+        }
+        with transition_harness(tracks) as (service, base):
+            # 夹具只绑定了端口；生产入口在 run() 里跑服务循环，这里照做才能用 HTTP 路由。
+            threading.Thread(target=service.server.serve_forever, daemon=True).start()
+            body = json.dumps({"tracks": [
+                {"trackId": "1", "url": base + "/groove.wav"},
+                {"trackId": "2", "url": base + "/tone.wav"},
+                {"trackId": "3", "url": "http://127.0.0.1:1/missing.wav"},
+            ]}).encode()
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{service.server.server_address[1]}/analyze", data=body,
+                headers={"Content-Type": "application/json", "X-NEMusic-Token": "test-token"}, method="POST")
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = json.loads(response.read())
+            features = {item["trackId"]: item for item in payload["tracks"]}
+            # 鼓点文件：真实 ffmpeg 解码后能算出 BPM、能量和有效的 Camelot 调性。
+            self.assertAlmostEqual(features["1"]["bpm"], 120.0, delta=1.0)
+            self.assertGreater(features["1"]["energy"], 0.05)
+            self.assertRegex(features["1"]["key"], r"^\d{1,2}[AB]$")
+            # 纯音没有鼓点，BPM 应为空；A4 的音高落在 A 小调/大调附近。
+            self.assertIsNone(features["2"]["bpm"])
+            self.assertIn(features["2"]["key"], ("8A", "11B"))
+            # 解不出来的 URL 直接跳过，不报错整批。
+            self.assertNotIn("3", features)
+            # 第二次请求命中缓存，结果保持稳定。
+            again = urllib.request.Request(
+                f"http://127.0.0.1:{service.server.server_address[1]}/analyze",
+                data=json.dumps({"tracks": [{"trackId": "1", "url": base + "/groove.wav"}]}).encode(),
+                headers={"Content-Type": "application/json", "X-NEMusic-Token": "test-token"}, method="POST")
+            with urllib.request.urlopen(again, timeout=60) as response:
+                cached = json.loads(response.read())
+            self.assertEqual(cached["tracks"], [features["1"]])
 
 
 if __name__ == "__main__":

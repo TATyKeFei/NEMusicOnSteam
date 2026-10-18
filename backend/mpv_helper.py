@@ -9,11 +9,92 @@ import threading
 import time
 from playback_http import PlaybackHttpService
 from audio_source import audio_headers
-from transition_analysis import TransitionAnalysis, fade_timing
+from transition_analysis import ANALYZE_WINDOW, TransitionAnalysis, fade_timing, sample_track, track_features
 
 
 SOCKET_NAME = "mpv.sock"
 STARTUP_TIMEOUT = 10
+# 混音结束后把响度匹配增益缓慢放回 1，避免结束时音量突变。
+LEVEL_RELEASE_SECONDS = 8.0
+# 智能混音在重叠中段把旧歌低频渐交给新歌（DJ 的低音交换）；普通淡化不动滤镜。
+SMART_BASS_CUT_HZ = 120
+# 低频交接时长范围（秒）：短重叠快速交、长重叠从容交，中心对齐 S 形进度交叉点。
+SMART_BASS_RAMP_SECONDS = (0.6, 2.0)
+# volume 表达式按帧求值，mpv 喂进来的帧较大，先把帧细切成小段再进渐变图，消掉台阶声。
+SMART_FILTER_FRAME_SAMPLES = 256
+# 旧歌高频提前退场：中段前把齿音/镲片压下去，减少两首歌高频打架（虚构窗按进度比例）。
+SMART_TONE_HZ = 6500
+SMART_TONE_DB = -7
+SMART_TONE_MAX = 0.6
+SMART_TONE_WINDOW = (0.2, 0.45)
+# 重叠中段的人声频段轻降：两首歌的“嗓子”各让一点，减少人声互撞。
+SMART_DUCK_HZ = 1000
+SMART_DUCK_WIDTH_HZ = 3800
+SMART_DUCK_DB = -2
+SMART_DUCK_WINDOW = (0.3, 0.7)
+# 歌单智能排序：单次请求最多分析几首、按 trackId 缓存多少个结果。
+ANALYZE_MAX_TRACKS = 8
+ANALYZE_CACHE_LIMIT = 512
+
+
+def fade_shape(progress):
+    """五次平滑阶，参考 SongMix 的 invisible S 曲线：两端各留一段平台，交接集中在中段。
+
+    只是对进度做重映射，sin²+cos²=1 恒成立，等功率混音性质不变；
+    听感上两首歌各自的音量在淡入淡出的头尾更稳，中段干脆地完成交换。
+    """
+    return progress * progress * progress * (progress * (progress * 6 - 15) + 10)
+
+
+def _wet_dry(label, out, spec, weight):
+    """一段湿/干混合支路：干权重 1-w、湿权重 w，amix 相加；weight 是 t 的表达式。
+
+    权重从 0 起步时湿支路被完全旁通（滤波器启动瞬态听不到），湿支路也能在
+    挂图后很晚才起作用，因此整张图可以在接管一刻就挂好。
+    """
+    tail = f"[{out}]" if out else ""
+    return (f"[{label}]asplit=2[{label}a][{label}b];"
+            f"[{label}b]{spec}[w_{label}];"
+            f"[{label}a]volume=volume='1-({weight})':eval=frame[d_{label}];"
+            f"[w_{label}]volume=volume='{weight}':eval=frame[v_{label}];"
+            f"[d_{label}][v_{label}]amix=inputs=2:normalize=0{tail};")
+
+
+def outgoing_graph(start, duration):
+    """旧歌的渐出图：高频提前退场 → 中段人声频段轻降 → 低频在正中间渐交给新歌。
+
+    全部按媒体时间 t 自动演化：挂图时各支路权重是 0，等于原声直通；暂停、
+    倍速天然一致；mpv 拒绝滤镜时由调用方静默退化。
+    """
+    def progress(low, high):
+        return f"min(max(((t-{start:.3f})/{duration:.3f}-{low})/{high - low:.3f},0),1)"
+
+    tone = f"{SMART_TONE_MAX}*(0.5-0.5*cos(3.14159265*{progress(*SMART_TONE_WINDOW)}))"
+    duck = f"0.5-0.5*cos(6.28318531*{progress(*SMART_DUCK_WINDOW)})"
+    ramp = min(SMART_BASS_RAMP_SECONDS[1], max(SMART_BASS_RAMP_SECONDS[0], duration * 0.15))
+    begin = start + duration * 0.5 - ramp / 2.0
+    bass = f"0.5-0.5*cos(3.14159265*min(max((t-{begin:.3f})/{ramp:.3f},0),1))"
+    return (f"lavfi=[asetnsamples=n={SMART_FILTER_FRAME_SAMPLES}[head];"
+            + _wet_dry("head", "tone", f"highshelf=f={SMART_TONE_HZ}:g={SMART_TONE_DB}", tone)
+            + _wet_dry("tone", "duck", f"equalizer=f={SMART_DUCK_HZ}:width_type=h:width="
+                                        f"{SMART_DUCK_WIDTH_HZ}:g={SMART_DUCK_DB}", duck)
+            + _wet_dry("duck", "", f"highpass=f={SMART_BASS_CUT_HZ}", bass)
+            + "]")
+
+
+def incoming_graph(skip, duration, ratio):
+    """新歌的渐入图：只在重叠中段做一次人声频段轻降，窗口与旧歌那张对齐。
+
+    新歌变速播放，按自己的媒体时间走表：从 skip 起，重叠长度乘上 stretch 系数。
+    """
+    length = max(0.1, duration * ratio)
+    span = f"min(max(((t-{skip:.3f})/{length:.3f}-{SMART_DUCK_WINDOW[0]})/" \
+           f"{SMART_DUCK_WINDOW[1] - SMART_DUCK_WINDOW[0]:.3f},0),1)"
+    duck = f"0.5-0.5*cos(6.28318531*{span})"
+    return (f"lavfi=[asetnsamples=n={SMART_FILTER_FRAME_SAMPLES}[head];"
+            + _wet_dry("head", "", f"equalizer=f={SMART_DUCK_HZ}:width_type=h:width="
+                                     f"{SMART_DUCK_WIDTH_HZ}:g={SMART_DUCK_DB}", duck)
+            + "]")
 
 
 class MpvProcess:
@@ -188,6 +269,7 @@ class MpvService(PlaybackHttpService):
         self.url = ""
         self.prepared = None
         self.fading = None
+        self.settle = None
         self.master_volume = None
         # 用户倍速与智能混音的变速是分开的：snapshot 回报的永远是用户的那一档。
         self.rate = 1.0
@@ -195,6 +277,8 @@ class MpvService(PlaybackHttpService):
         self.worker = None
         self.serial = 0
         self.transport_revision = 0
+        # 歌单排序的分析结果缓存在进程里：按键是 trackId，换 URL 也能命中。
+        self.features = {}
         self.mpv = MpvProcess(runtime_dir)
         self.start_http()
 
@@ -237,14 +321,46 @@ class MpvService(PlaybackHttpService):
 
     def finish_fade(self):
         fading, self.fading = self.fading, None
+        gain = 1.0
         if fading:
             # 等拍点接入的新歌可能还按着，旧歌一走就得把声音接上；这个判断要在关进程之前做。
             resume = fading.get("waiting") and not fading["player"].property("pause", False)
+            gain = max(0.5, min(2.0, self.number(fading.get("gain"), 1.0)))
+            # 先静音再关，避免半途终止 mpv 时音频输出截断出响声。
+            fading["player"].command("set_property", "volume", 0)
             fading["player"].close()
+            if fading.get("filtered"):
+                # 混音收场后把渐入图摘掉，新歌余下部分回到无滤镜直通。
+                try:
+                    self.mpv.command("set_property", "af", "")
+                except (RuntimeError, OSError, socket.timeout):
+                    pass
             if resume:
                 self.mpv.command("set_property", "pause", False)
             self.mpv.command("set_property", "speed", self.rate)
-            self.mpv.command("set_property", "volume", self.master_volume)
+        # 响度匹配增益缓慢放回用户音量：混音结束时音量不跳变。
+        if self.master_volume is not None:
+            if abs(gain - 1.0) > 0.01:
+                self.settle = {"gain": gain, "start": time.monotonic()}
+                self.mpv.command("set_property", "volume", self.master_volume * gain)
+            else:
+                self.settle = None
+                self.mpv.command("set_property", "volume", self.master_volume)
+
+    def settle_levels(self):
+        """把响度匹配增益在 LEVEL_RELEASE_SECONDS 内平滑放回 1。"""
+        settle = self.settle
+        if not settle or self.fading or self.master_volume is None:
+            return
+        ratio = min(1.0, (time.monotonic() - settle["start"]) / LEVEL_RELEASE_SECONDS)
+        if ratio >= 1.0:
+            volume = self.master_volume
+            self.settle = None
+            self.master_volume = None
+            self.mpv.command("set_property", "volume", volume)
+            return
+        gain = settle["gain"] + (1.0 - settle["gain"]) * ratio
+        self.mpv.command("set_property", "volume", self.master_volume * gain)
 
     def set_pause(self, paused):
         self.mpv.command("set_property", "pause", paused)
@@ -288,7 +404,8 @@ class MpvService(PlaybackHttpService):
                     return {}
                 maximum = max(1, min(12, self.number(payload.get("seconds"), 6)))
                 mode = "smart" if payload.get("mode") == "smart" else "normal"
-                analysis = TransitionAnalysis(current_url, duration, url, maximum, MpvProcess.clean_environment(), mode)
+                fallback = payload.get("fallback") if payload.get("fallback") in ("none", "force") else "normal"
+                analysis = TransitionAnalysis(current_url, duration, url, maximum, MpvProcess.clean_environment(), mode, fallback)
                 self.prepared = {"player": player, "from": self.track["trackId"],
                                  "track": self.metadata(payload), "analysis": analysis}
                 if self.worker is None:
@@ -298,6 +415,43 @@ class MpvService(PlaybackHttpService):
         except Exception:
             player.close()
             raise
+
+    def analyze(self, payload):
+        """按请求离线分析几首歌的开头（BPM/能量/调性），供歌单智能排序使用。
+
+        不持操作锁：分析期间暂停、停止、切歌都要照常生效；结果按 trackId 缓存。
+        """
+        if self.closed.is_set():
+            raise RuntimeError("mpv 后端已关闭")
+        tracks = payload.get("tracks")
+        if not isinstance(tracks, list) or not tracks:
+            raise ValueError("缺少要分析的歌曲")
+        if len(tracks) > ANALYZE_MAX_TRACKS:
+            raise ValueError(f"一次最多分析 {ANALYZE_MAX_TRACKS} 首")
+        environment = MpvProcess.clean_environment()
+        results = []
+        seen = set()
+        for item in tracks:
+            if not isinstance(item, dict):
+                continue
+            track_id = str(item.get("trackId") or "").strip()
+            url = str(item.get("url") or "")
+            if not track_id or track_id in seen or not url.startswith(("http://", "https://")):
+                continue
+            seen.add(track_id)
+            # 逐首刷新活跃时间：长批次也不会被空闲回收掐断。
+            with self.lock:
+                self.last_seen = time.monotonic()
+            feature = self.features.get(track_id)
+            if feature is None:
+                feature = track_features(sample_track(url, environment, ANALYZE_WINDOW))
+                if feature is not None:
+                    if len(self.features) >= ANALYZE_CACHE_LIMIT:
+                        self.features.pop(next(iter(self.features)))
+                    self.features[track_id] = feature
+            if feature is not None:
+                results.append({"trackId": track_id, **feature})
+        return {"tracks": results}
 
     def fade_loop(self):
         while not self.closed.wait(0.04):
@@ -311,25 +465,69 @@ class MpvService(PlaybackHttpService):
                             self.finish_fade()
                         except (RuntimeError, OSError):
                             pass
+                if self.settle:
+                    try:
+                        self.settle_levels()
+                    except (RuntimeError, OSError):
+                        self.settle = None
+
+    def locked_onto_beat(self, player, target):
+        """旧歌走到拍点的那一刻再放开新歌；距拍点 60 ms 内改用 4 ms 细轮询，消除主循环的错拍。"""
+        deadline = time.monotonic() + 0.12
+        while time.monotonic() < deadline:
+            position = self.number(player.property("time-pos"), -1.0)
+            if position < 0:
+                return False
+            if position >= target:
+                return not player.property("pause", False)
+            if player.property("pause", False) or player.property("eof-reached", False):
+                return False
+            speed = max(0.25, self.number(player.property("speed"), 1.0)) or 1.0
+            if (target - position) / speed > 0.06:
+                return False
+            time.sleep(0.004)
+        return False
+
+    @staticmethod
+    def arm_filters(outgoing, incoming, start, duration, skip, ratio):
+        """接管时把两张渐变图一次挂好；个别 mpv 版本拒绝滤镜时静默退化成纯音量混音。
+
+        实测运行时整体替换 af 链不爆音（无样本跳变、相位偏差 ≤2 采样），
+        scaletempo 不受影响，且所有支路权重从 0 起步，挂图这一刻就是原声直通。
+        """
+        armed = False
+        for player, graph in ((outgoing, outgoing_graph(start, duration)),
+                              (incoming, incoming_graph(skip, duration, ratio))):
+            try:
+                player.command("set_property", "af", graph)
+                armed = True
+            except (RuntimeError, OSError, socket.timeout):
+                pass
+        return armed
 
     def update_fade(self):
         fading = self.fading
         if not fading:
             return
         player = fading["player"]
-        # 用音频时钟而非墙上时间，暂停/缓冲期间不会悄悄走完淡化。
-        elapsed = max(0.0, self.number(player.property("time-pos"), fading["start"]) - fading["start"])
         if fading.get("waiting"):
             # 智能混音：到拍点才放开新歌，两边从这一刻同步走表。
-            if elapsed > 0 and not player.property("pause", False):
+            if self.locked_onto_beat(player, fading["start"]):
                 fading["waiting"] = False
+                # 低频交接图在接管时就挂好了，到重叠中段会自动让出低频。
                 self.mpv.command("set_property", "pause", False)
+                elapsed = max(0.0, self.number(player.property("time-pos"), fading["start"]) - fading["start"])
             else:
                 elapsed = 0.0
+        else:
+            # 用音频时钟而非墙上时间，暂停/缓冲期间不会悄悄走完淡化。
+            elapsed = max(0.0, self.number(player.property("time-pos"), fading["start"]) - fading["start"])
         if player.property("eof-reached", False):
             # 旧歌先到结尾时不必再等表走完，否则新歌会被压着不放声。
             elapsed = fading["duration"]
         progress = min(1.0, elapsed / fading["duration"])
+        # 智能混音走 S 形进度（两头稳、中段交接）；普通淡化与回退保持原来的线性曲线。
+        shape = fade_shape(progress) if fading.get("smart") else progress
         ramp = fading.get("ramp", 0.0)
         if ramp and elapsed > fading["duration"] - ramp:
             # 旧歌已经压到听不清之后，把新歌的变速平滑拉回用户倍速，避免收尾突然变速。
@@ -338,8 +536,9 @@ class MpvService(PlaybackHttpService):
             if abs(speed - fading.get("speed", 1.0)) > 0.002:
                 fading["speed"] = speed
                 self.mpv.command("set_property", "speed", self.rate * speed)
-        self.mpv.command("set_property", "volume", self.master_volume * math.sin(progress * math.pi / 2))
-        player.command("set_property", "volume", self.master_volume * math.cos(progress * math.pi / 2))
+        gain = max(0.5, min(2.0, self.number(fading.get("gain"), 1.0)))
+        self.mpv.command("set_property", "volume", self.master_volume * gain * math.sin(shape * math.pi / 2))
+        player.command("set_property", "volume", self.master_volume * math.cos(shape * math.pi / 2))
         if progress >= 1:
             self.finish_fade()
 
@@ -354,6 +553,8 @@ class MpvService(PlaybackHttpService):
             return False
         plan = dict(prepared["analysis"].result)
         self.finish_fade()
+        # 上一段混音留下的响度补偿交给这段混音接管，不叠加。
+        self.settle = None
         volume = self.master_volume if self.master_volume is not None else self.number(self.mpv.property("volume"), 100)
         if payload.get("volume") is not None:
             volume = max(0, min(100, self.number(payload["volume"]) * 100))
@@ -380,7 +581,14 @@ class MpvService(PlaybackHttpService):
         if remaining > 0.15 and not old.property("eof-reached", False):
             self.fading = {"player": old, "start": timing["start"], "duration": timing["duration"],
                            "stretch": timing["stretch"], "ramp": timing["ramp"], "waiting": timing["waiting"],
-                           "speed": timing["stretch"]}
+                           "gain": timing["gain"], "speed": timing["stretch"],
+                           "smart": bool(timing.get("smart"))}
+            if self.fading["smart"]:
+                # 两张渐变图随接管一次挂好：权重从 0 起步，等拍点期间都是原声直通，
+                # 各频段到重叠中段（新歌已起量）自动交接，不再需要掐着拍点切。
+                self.fading["filtered"] = self.arm_filters(
+                    old, player, timing["start"], timing["duration"],
+                    max(0.0, self.number(plan.get("skip"))), timing["stretch"])
             self.update_fade()
         else:
             old.close()
@@ -444,9 +652,12 @@ class MpvService(PlaybackHttpService):
             self.mpv.command("stop")
         elif action == "volume":
             volume = max(0, min(100, self.number(payload.get("value"), 1) * 100))
-            if self.fading:
+            if self.fading or self.settle:
                 self.master_volume = volume
-                self.update_fade()
+                if self.fading:
+                    self.update_fade()
+                else:
+                    self.settle_levels()
             else:
                 self.master_volume = None
                 self.mpv.command("set_property", "volume", volume)

@@ -121,6 +121,16 @@ class PlaybackHttpService:
                     except (RuntimeError, OSError, ValueError) as error:
                         self.reply(400, {"error": str(error)})
                     return
+                if self.path == "/analyze" and hasattr(service, "analyze"):
+                    payload = self.read_payload()
+                    if payload is None:
+                        self.reply(400, {"error": "无效请求"})
+                        return
+                    try:
+                        self.reply(200, service.analyze(payload))
+                    except (RuntimeError, OSError, ValueError) as error:
+                        self.reply(400, {"error": str(error)})
+                    return
                 if self.path == "/shutdown":
                     service.close()
                     self.reply(200, {})

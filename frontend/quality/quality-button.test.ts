@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
 import { qualityButtonScript, qualityButtonUpdateScript, qualityButtonResultScript } from "./quality-button.ts";
 import { QUALITY_OPTIONS, qualityCommandScript } from "./quality-player.ts";
+import { queueSortButtonScript } from "../queue/queue-sort-player.ts";
 import { togetherButtonScript } from "../together/together-button.ts";
 
 type TestEvent = { target: TestNode; key: string; preventDefault: () => void; stopPropagation: () => void };
@@ -253,6 +254,25 @@ describe("playback quality button", () => {
     assert.equal(button.nextElementSibling, player.volume);
     assert.ok(player.bar.querySelector("[data-nemusic-together-button]"));
     assert.equal(player.body.querySelectorAll("[data-nemusic-quality-button]").length, 1);
+  });
+
+  it("stays put next to the queue sort button instead of fighting over the volume slot", () => {
+    const player = fixture();
+    player.install();
+    player.run(queueSortButtonScript(true));
+    const sorted = player.body.querySelector("[data-nemusic-queue-sort-button]")!;
+    const quality = player.button();
+    // 排序按钮站在音质按钮正左边，两个按钮紧挨音量键。
+    assert.equal(sorted.nextElementSibling, quality);
+    assert.equal(quality.nextElementSibling, player.volume);
+    const before = [...player.bar.children];
+    // 页面每次抖动都会触发双方补挂。回归：两条脚本都要求「紧贴音量键左边」时，
+    // 每帧互相把对方挤开，两个按钮的点击全部落空。
+    for (let round = 0; round < 3; round++) {
+      player.mutate(player.bar);
+      player.flush();
+    }
+    assert.deepEqual([...player.bar.children], before);
   });
 
   it("dismisses with outside clicks and Escape, and cleans up listeners and observers", () => {

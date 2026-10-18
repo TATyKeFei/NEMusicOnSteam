@@ -4,6 +4,8 @@ import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } f
 export type NotificationMode = "system" | "steam" | "none";
 export type PlaybackBackend = "web" | "mpv" | "mpd";
 export type TransitionMode = "off" | "normal" | "smart";
+/** 智能分析不可靠时的回退方式：普通过渡 / 不做混音 / 尽力拍点混音（放宽判定再试）。 */
+export type TransitionFallback = "normal" | "none" | "force";
 export type MpdSettings = { host: string; port: number; password: string; socket: string };
 export const DEFAULT_MPD_SETTINGS: MpdSettings = { host: "127.0.0.1", port: 6600, password: "", socket: "" };
 export const UI_SCALE_MIN = 0.8;
@@ -13,6 +15,7 @@ export type PlayerSettings = {
   playbackBackend: PlaybackBackend;
   mpvTransitionMode: TransitionMode;
   mpvTransitionSeconds: number;
+  mpvTransitionFallback: TransitionFallback;
   mpd: MpdSettings;
   unblockEnabled: boolean;
   unblockSources: UnblockSource[];
@@ -32,6 +35,7 @@ export const defaultSettings: PlayerSettings = {
   playbackBackend: "web",
   mpvTransitionMode: "off",
   mpvTransitionSeconds: 6,
+  mpvTransitionFallback: "normal",
   mpd: DEFAULT_MPD_SETTINGS,
   unblockEnabled: false,
   unblockSources: DEFAULT_UNBLOCK_SOURCES,
@@ -103,6 +107,8 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
       ? record.mpvTransitionMode as TransitionMode : record.mpvTransition === true ? "normal" : "off",
     mpvTransitionSeconds: finiteNumber(record.mpvTransitionSeconds)
       ? Math.round(Math.max(1, Math.min(12, record.mpvTransitionSeconds))) : defaultSettings.mpvTransitionSeconds,
+    mpvTransitionFallback: record.mpvTransitionFallback === "none" || record.mpvTransitionFallback === "force"
+      ? record.mpvTransitionFallback : defaultSettings.mpvTransitionFallback,
     mpd: sanitizeMpdSettings(record.mpd),
     unblockEnabled: booleanOr(record.unblockEnabled, defaultSettings.unblockEnabled),
     unblockSources: sanitizeUnblockSources(record.unblockSources),

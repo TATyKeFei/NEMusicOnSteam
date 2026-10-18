@@ -59,12 +59,14 @@ const webPlaying: TrackState = {
   rate: 1,
 };
 
-function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; transition?: boolean; transitionMode?: "normal" | "smart" } = {}) {
+function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; transition?: boolean; transitionMode?: "normal" | "smart"; transitionFallback?: "normal" | "none" | "force" } = {}) {
   const evaluations: string[] = [];
   const loads: Payload[] = [];
   const prepares: Payload[] = [];
   let transitionEnabled = options.transition === true;
   let transitionMode: "normal" | "smart" = options.transitionMode ?? "normal";
+  let transitionFallback: "normal" | "none" | "force" = options.transitionFallback ?? "normal";
+  let commitSlow = false;
   let clockSeek: number | null = null;
   let clockAlignments = 0;
   let transitionAccepted = true;
@@ -89,7 +91,11 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     if (isSnapshot(expression)) return web;
     if (expression === "download") return downloadTrack;
     if (expression === "candidate") return candidate;
-    if (expression === "commit") { web = { ...web!, trackId: "2", position: 0 }; return true; }
+    if (expression === "commit") {
+      if (commitSlow) return false; // 网页点了下一首但 store 迟迟不更新
+      web = { ...web!, trackId: "2", position: 0 };
+      return true;
+    }
     if (expression === "clock" || expression === "clock:align") {
       if (expression === "clock:align") clockAlignments++;
       const seek = clockSeek;
@@ -169,7 +175,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     ...(options.mpd ? { configuration: () => ({ host: "music.local", port: 6600, password: "", socket: "" }), supportsRate: false } : {}),
     endpoint: async () => { await endpointGate; return "http://localhost|test-token"; },
     quality: () => 1,
-    ...(options.transition ? { transition: () => ({ mode: transitionEnabled ? transitionMode : "off" as const, seconds: 6 }) } : {}),
+    ...(options.transition ? { transition: () => ({ mode: transitionEnabled ? transitionMode : "off" as const, seconds: 6, fallback: transitionFallback }) } : {}),
     ...(options.resolver ? {
       holdWebDuringResolution: () => true,
       resolveTrack: async () => {
@@ -194,6 +200,8 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     setCandidate: (value: unknown) => { candidate = value; },
     setTransitionEnabled: (value: boolean) => { transitionEnabled = value; },
     setTransitionMode: (value: "normal" | "smart") => { transitionMode = value; },
+    setTransitionFallback: (value: "normal" | "none" | "force") => { transitionFallback = value; },
+    setCommitSlow: (value: boolean) => { commitSlow = value; },
     setClockSeek: (value: number) => { clockSeek = value; },
     clockAlignments: () => clockAlignments,
     setTransitionAccepted: (value: boolean) => { transitionAccepted = value; },
@@ -332,6 +340,35 @@ describe("mpv automatic transitions", () => {
     await flush();
   });
 
+  it("keeps the fade alive when the webpage is slow to switch songs", async () => {
+    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setCommitSlow(true);
+    player.setWeb({ ...webPlaying, position: 95 });
+    player.setMpv({ ...current(95), transition: plan });
+    player.tick();
+    await flush();
+    // 后端已经接管：旧歌还在淡出、新歌已经进场，网页却迟迟没反应。
+    assert.equal(player.loads.at(-1)?.transition, true);
+    assert.equal(player.loads.at(-1)?.trackId, "2");
+    const loaded = player.loads.length;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      player.tick();
+      await flush();
+    }
+    // 等网页的期间绝不撤销：不 cancelFade，也不把页面上的旧歌重新 loadfile 回来。
+    assert.equal(player.prepares.some(item => item.cancelFade), false);
+    assert.equal(player.loads.length, loaded);
+    // 网页终于切到目标歌：只对账，不重新换源、不从头重放。
+    player.setWeb({ ...webPlaying, trackId: "2", position: 1.2 });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.length, loaded);
+    assert.equal(player.prepares.some(item => item.cancelFade), false);
+    assert.equal(player.bridge.snapshot().trackId, "2");
+  });
+
   it("does not switch the webpage when the prepared decoder cannot be adopted", async () => {
     const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
     player.bridge.setEnabled(true);
@@ -410,6 +447,45 @@ describe("mpv automatic transitions", () => {
     player.tick();
     await flush();
     assert.equal(player.loads.at(-1)?.transition, true);
+  });
+
+  it("re-prepares the analysis when the fallback policy changes", async () => {
+    const player = setup({ transition: true, transitionMode: "smart", transitionFallback: "normal", web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.equal(player.prepares.at(-1)?.fallback, "normal");
+    player.setTransitionFallback("force");
+    player.tick();
+    await flush();
+    assert.equal(player.prepares.at(-1)?.mode, "smart");
+    assert.equal(player.prepares.at(-1)?.fallback, "force");
+    assert.equal(player.prepares.filter(item => item.url).length, 2);
+  });
+
+  it("never takes over when the plan says no mixing", async () => {
+    const player = setup({ transition: true, transitionMode: "smart", web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    const silent = { from: "t1", trackId: "2", ready: true, seconds: 6, trim: 0, mode: "none", reason: "unstable-beats" };
+    player.setWeb({ ...webPlaying, position: 95 });
+    player.setMpv({ ...current(95), transition: silent });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.some(item => item.transition), false);
+    assert.equal(player.bridge.getStatus(), "mpv 已连接（拍点不稳，不做混音）");
+  });
+
+  it("labels a plain fallback fade with the analysis reason", async () => {
+    const player = setup({ transition: true, transitionMode: "smart", web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    player.bridge.setEnabled(true);
+    await flush();
+    const fallback = { from: "t1", trackId: "2", ready: true, seconds: 6, trim: 0, mode: "normal", reason: "unstable-beats" };
+    player.setWeb({ ...webPlaying, position: 95 });
+    player.setMpv({ ...current(95), transition: fallback });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.at(-1)?.transition, true);
+    assert.equal(player.bridge.getStatus(), "mpv 已连接（拍点不稳，普通过渡中）");
   });
 
   it("keeps the tail fading when the new song is the last in the queue", async () => {

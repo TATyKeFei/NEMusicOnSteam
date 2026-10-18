@@ -21,6 +21,7 @@ import { RecognitionBridge } from "../recognition/recognition.ts";
 import { FullscreenButtonBridge } from "../fullscreen/fullscreen.ts";
 import { ViewBridges } from "./view-bridges.ts";
 import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
+import { QueueSortBridge } from "../queue/queue-sort.ts";
 import { TogetherBridge, type TogetherSnapshot } from "../together/together.ts";
 import { UnblockBridge } from "../unblock/unblock.ts";
 import type { IdentityVariant } from "../together/identity-player.ts";
@@ -110,7 +111,7 @@ export class PlayerController {
   private readonly unblock = new UnblockBridge(() => ({ enabled: this.settings.unblockEnabled, sources: this.settings.unblockSources }));
   private readonly mpv = new MpvBridge({
     quality: () => this.settings.downloadQuality,
-    transition: () => ({ mode: this.together.snapshot().inRoom ? "off" : this.settings.mpvTransitionMode, seconds: this.settings.mpvTransitionSeconds }),
+    transition: () => ({ mode: this.together.snapshot().inRoom ? "off" : this.settings.mpvTransitionMode, seconds: this.settings.mpvTransitionSeconds, fallback: this.settings.mpvTransitionFallback }),
     resolveNextTrack: (quality, song, signal) => this.unblock.resolve(quality, song, signal),
     resolveTrack: (quality, signal) => this.unblock.resolve(quality, undefined, signal),
     holdWebDuringResolution: () => this.settings.unblockEnabled,
@@ -131,6 +132,11 @@ export class PlayerController {
   });
   private readonly fullscreenButton = new FullscreenButtonBridge();
   private readonly quality = new QualityBridge();
+  private readonly queueSort = new QueueSortBridge({
+    available: () => this.settings.playbackBackend === "mpv",
+    analyze: tracks => this.mpv.analyze(tracks),
+    evaluate: (script, options) => evaluateInPlayer(script, options),
+  });
   private readonly together = new TogetherBridge();
   private readonly download = new DownloadBridge(() => ({
     quality: this.settings.downloadQuality,
@@ -143,7 +149,7 @@ export class PlayerController {
     notify: steamToast,
   }, (quality, song) => this.unblock.resolve(quality, song));
   private readonly viewBridges = new ViewBridges([
-    this.mpris, this.recognition, this.fullscreenButton, this.quality, this.together, this.download,
+    this.mpris, this.recognition, this.fullscreenButton, this.quality, this.queueSort, this.together, this.download,
   ]);
   private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
   private libraryClasses: LibraryEntryClasses = LIBRARY_ENTRY_FALLBACK_CLASSES;

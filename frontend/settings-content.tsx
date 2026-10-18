@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { PlayerController, PlayerSnapshot } from "./player/player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
 import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
-import { sanitizeMpdSettings, type NotificationMode, type PlaybackBackend, type TransitionMode } from "./settings.ts";
+import { sanitizeMpdSettings, type NotificationMode, type PlaybackBackend, type TransitionFallback, type TransitionMode } from "./settings.ts";
 import { sanitizeUnblockSources } from "./unblock/sources.ts";
 
 const NOTIFICATION_OPTIONS = [
@@ -22,6 +22,12 @@ const TRANSITION_MODE_OPTIONS: { data: TransitionMode; label: string }[] = [
   { data: "off", label: "关闭" },
   { data: "normal", label: "普通（淡入淡出）" },
   { data: "smart", label: "智能（节拍混音）" },
+];
+
+const TRANSITION_FALLBACK_OPTIONS: { data: TransitionFallback; label: string }[] = [
+  { data: "normal", label: "普通过渡（默认）" },
+  { data: "none", label: "不做混音" },
+  { data: "force", label: "尽力拍点混音" },
 ];
 
 const UI_SCALE_OPTIONS = [
@@ -151,11 +157,15 @@ export function SettingsContent({ player }: { player: PlayerController }) {
       </Field>
       {settings.playbackBackend === "mpv" && <>
         <Field label="歌曲过渡模式" description={settings.mpvTransitionMode === "smart"
-          ? "分析鼓点与节奏，对齐拍点并保留音高调整速度，自动选择 8–30 秒混音；需要 ffmpeg，不适合混音时回退普通模式。支持顺序播放和列表循环。"
+          ? "分析鼓点与节奏，对齐拍点并保留音高调整速度，按结尾自动选择 8–30 秒混音，匹配两首歌响度；重叠中段让旧歌高频提前退场、人声轻降，并把低频渐交给新歌，淡出点还会避开唱到一半的乐句；需要 ffmpeg，不适合混音时按「回退方式」处理。支持顺序播放和列表循环。"
           : "普通模式提前准备下一首并淡入淡出，安装 ffmpeg 后按首尾音量调整衔接。一起听、单曲循环、随机和 FM 模式下停用过渡。"} bottomSeparator="standard">
           <Dropdown rgOptions={TRANSITION_MODE_OPTIONS} selectedOption={settings.mpvTransitionMode}
             onChange={option => setSnapshot(player.updateSettings({ mpvTransitionMode: option.data }))} />
         </Field>
+        {settings.mpvTransitionMode === "smart" && <Field label="回退方式" description="智能分析不可靠时（拍点不稳、速度差太大、前奏太静等）怎么办：普通过渡=改用普通淡入淡出；不做混音=等旧歌自然播完、新歌从头开始；尽力拍点混音=放宽鼓点判定再试一次，仍不行才回退普通过渡。" bottomSeparator="standard">
+          <Dropdown rgOptions={TRANSITION_FALLBACK_OPTIONS} selectedOption={settings.mpvTransitionFallback}
+            onChange={option => setSnapshot(player.updateSettings({ mpvTransitionFallback: option.data }))} />
+        </Field>}
         {settings.mpvTransitionMode !== "off" && <Field label={settings.mpvTransitionMode === "smart" ? "普通模式回退时长" : "最长过渡时间"} description="普通淡入淡出的最长时长；智能混音的时长由节拍自动决定。" bottomSeparator="standard">
           <Dropdown rgOptions={[1, 2, 3, 4, 6, 8, 10, 12].map(data => ({ data, label: `${data} 秒` }))}
             selectedOption={settings.mpvTransitionSeconds}

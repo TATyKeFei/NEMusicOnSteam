@@ -11,6 +11,10 @@ describe("settings", () => {
     assert.equal(sanitizeSettings({ mpvTransitionSeconds: 99 }).mpvTransitionSeconds, 12);
     assert.equal(sanitizeSettings({ mpvTransitionSeconds: -2 }).mpvTransitionSeconds, 1);
     assert.equal(sanitizeSettings({ mpvTransitionSeconds: NaN }).mpvTransitionSeconds, 6);
+    assert.equal(sanitizeSettings({}).mpvTransitionFallback, "normal");
+    assert.equal(sanitizeSettings({ mpvTransitionFallback: "none" }).mpvTransitionFallback, "none");
+    assert.equal(sanitizeSettings({ mpvTransitionFallback: "force" }).mpvTransitionFallback, "force");
+    assert.equal(sanitizeSettings({ mpvTransitionFallback: "banana" }).mpvTransitionFallback, "normal");
   });
   it("drops garbage and keeps defaults", () => {
     const settings = sanitizeSettings({ openOnStart: "yes", launcher: { left: "12" } });
