@@ -166,6 +166,8 @@ for _, item in ipairs({
     { "mpris_endpoint", "backend/download_files.py", "!asset-download-files" },
     { "mpris_endpoint", "backend/audio_tags.py", "!asset-audio-tags" },
     { "mpv_endpoint", "backend/audio_source.py", "!asset-audio-source" },
+    { "mpv_endpoint", "backend/track_analysis.py", "!asset-track-analysis" },
+    { "mpv_endpoint", "backend/pcm_mixer.py", "!asset-pcm-mixer" },
     { "mpv_endpoint", "backend/playback_http.py", "!asset-playback-http" },
     { "mpd_endpoint", "backend/playback_http.py", "!asset-playback-http" },
     { "unblock_endpoint", "dist/unblock_helper.cjs", "!asset-helper" },

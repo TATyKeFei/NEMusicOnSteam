@@ -25,7 +25,8 @@ local helpers = {
         name = "mpv", entry = "helper.py", polls = 200,
         assets = {
             { "backend/mpv_helper.py", "helper.py", "helper" },
-            { "backend/transition_analysis.py", "transition_analysis.py", "transition-analysis" },
+            { "backend/pcm_mixer.py", "pcm_mixer.py", "pcm-mixer" },
+            { "backend/track_analysis.py", "track_analysis.py", "track-analysis" },
             { "backend/audio_source.py", "audio_source.py", "audio-source" },
             { "backend/playback_http.py", "playback_http.py", "playback-http" },
         },

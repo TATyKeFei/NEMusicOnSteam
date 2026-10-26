@@ -25,7 +25,7 @@ function deferred() {
 
 type PageScripts = {
   mute: string;
-  sync: (playing: boolean, allowPause: boolean) => string;
+  sync: (playing: boolean, allowPause: boolean, holdWeb?: boolean) => string;
   unmute: (resume: boolean) => string;
   controls: string;
 };
@@ -59,18 +59,10 @@ const webPlaying: TrackState = {
   rate: 1,
 };
 
-function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; transition?: boolean; transitionMode?: "normal" | "smart"; transitionFallback?: "normal" | "none" | "force" } = {}) {
+function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; crossfade?: boolean } = {}) {
   const evaluations: string[] = [];
   const loads: Payload[] = [];
-  const prepares: Payload[] = [];
-  let transitionEnabled = options.transition === true;
-  let transitionMode: "normal" | "smart" = options.transitionMode ?? "normal";
-  let transitionFallback: "normal" | "none" | "force" = options.transitionFallback ?? "normal";
-  let commitSlow = false;
-  let clockSeek: number | null = null;
-  let clockAlignments = 0;
-  let transitionAccepted = true;
-  let candidate: unknown = { from: "t1", song: { id: 2, name: "Next", artist: "Artist" } };
+  const preparations: Payload[] = [];
   const webCommands: string[] = [];
   const posts: string[] = [];
   const volumeCommands: number[] = [];
@@ -82,6 +74,8 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
   let evaluationGate: { expression: string; promise: Promise<void> } | null = null;
   let requestGate: { path: string; promise: Promise<void> } | null = null;
   let commandGate: Promise<void> | null = null;
+  let nextGate: Promise<void> | null = null;
+  let candidate = { eligible: true, from: "t1", song: { id: 2, name: "next", artist: "artist", duration: 100 } };
   let web: TrackState | null = options.web === undefined ? { ...webPlaying } : options.web;
   let mpv: Payload = { active: false, playbackStatus: "Stopped", ...(options.mpv ?? {}) };
 
@@ -89,19 +83,14 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     evaluations.push(expression);
     if (evaluationGate?.expression === expression) await evaluationGate.promise;
     if (isSnapshot(expression)) return web;
-    if (expression === "download") return downloadTrack;
-    if (expression === "candidate") return candidate;
-    if (expression === "commit") {
-      if (commitSlow) return false; // 网页点了下一首但 store 迟迟不更新
-      web = { ...web!, trackId: "2", position: 0 };
+    if (expression === "crossfade-queue") return candidate;
+    if (expression.startsWith("adopt:")) return true;
+    if (expression.startsWith("clock:")) {
+      const [, , position, isPlaying] = expression.split(":");
+      if (web) web = { ...web, position: Number(position), playbackStatus: isPlaying === "true" ? "Playing" : "Paused" };
       return true;
     }
-    if (expression === "clock" || expression === "clock:align") {
-      if (expression === "clock:align") clockAlignments++;
-      const seek = clockSeek;
-      clockSeek = null;
-      return { seek };
-    }
+    if (expression === "download") return downloadTrack;
     if (expression.includes("splice")) return { actions: [] };
     return true;
   };
@@ -116,17 +105,12 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     if (url.endsWith("/load")) {
       const body = JSON.parse(init!.body!);
       loads.push(body);
-      if (body.transition) {
-        if (!transitionAccepted) return { ok: true, json: async () => ({ ...mpv, transitionCancelled: true }) };
-        mpv = { ...mpv, ...body, active: true, playbackStatus: "Playing", position: 0, transitioning: true };
-        return { ok: true, json: async () => ({ ...mpv, transitioned: true }) };
-      }
+      if (options.crossfade) mpv = { ...body, active: true, playbackStatus: body.autoplay ? "Playing" : "Paused", pcm: body.crossfade !== "off" };
       return { ok: true, json: async () => ({}) };
     }
     if (url.endsWith("/prepare")) {
-      const body = JSON.parse(init!.body!);
-      prepares.push(body);
-      return { ok: true, json: async () => ({ prepared: Boolean(body.url) }) };
+      preparations.push(JSON.parse(init!.body!));
+      return { ok: true, json: async () => ({ accepted: true }) };
     }
     if (url.endsWith("/command")) {
       const body = JSON.parse(init!.body!);
@@ -161,9 +145,9 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
         return "http://localhost|test-token";
       },
       SNAPSHOT_SCRIPT: "snapshot",
-      TRANSITION_CANDIDATE_SCRIPT: "candidate",
-      transitionCommitScript: () => "commit",
-      transitionClockScript: (_id: string, _position: number, align: boolean) => align ? "clock:align" : "clock",
+      CROSSFADE_QUEUE_SCRIPT: "crossfade-queue",
+      crossfadeAdoptScript: (from: string, to: string) => `adopt:${from}:${to}`,
+      crossfadeClockScript: (id: string, position: number, isPlaying: boolean) => `clock:${id}:${position}:${isPlaying}`,
       downloadScript: () => "download",
       tryEvaluateInPlayer: evaluate,
       fetch,
@@ -175,7 +159,13 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     ...(options.mpd ? { configuration: () => ({ host: "music.local", port: 6600, password: "", socket: "" }), supportsRate: false } : {}),
     endpoint: async () => { await endpointGate; return "http://localhost|test-token"; },
     quality: () => 1,
-    ...(options.transition ? { transition: () => ({ mode: transitionEnabled ? transitionMode : "off" as const, seconds: 6, fallback: transitionFallback }) } : {}),
+    ...(options.crossfade ? {
+      crossfade: () => "standard",
+      resolveNextTrack: async () => {
+        await nextGate;
+        return { ...downloadTrack, source: "api" };
+      },
+    } : {}),
     ...(options.resolver ? {
       holdWebDuringResolution: () => true,
       resolveTrack: async () => {
@@ -196,15 +186,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     scripts: api.scripts,
     evaluations,
     loads,
-    prepares,
-    setCandidate: (value: unknown) => { candidate = value; },
-    setTransitionEnabled: (value: boolean) => { transitionEnabled = value; },
-    setTransitionMode: (value: "normal" | "smart") => { transitionMode = value; },
-    setTransitionFallback: (value: "normal" | "none" | "force") => { transitionFallback = value; },
-    setCommitSlow: (value: boolean) => { commitSlow = value; },
-    setClockSeek: (value: number) => { clockSeek = value; },
-    clockAlignments: () => clockAlignments,
-    setTransitionAccepted: (value: boolean) => { transitionAccepted = value; },
+    preparations,
     webCommands,
     posts,
     volumeCommands,
@@ -220,6 +202,8 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
       requestGate = promise ? { path, promise } : null;
     },
     holdWebCommand: (promise: Promise<void> | null) => { commandGate = promise; },
+    holdNext: (promise: Promise<void> | null) => { nextGate = promise; },
+    setCandidate: (next: typeof candidate) => { candidate = next; },
     setWeb: (next: TrackState | null) => { web = next; },
     setMpv: (next: Payload) => { mpv = next; },
     lastSync: () => evaluations.filter(isSync).at(-1) ?? "",
@@ -251,252 +235,128 @@ function pageScripts(): PageScripts {
 
 const scripts = pageScripts();
 
-describe("mpv automatic transitions", () => {
-  const current = (position: number): Payload => ({ ...webPlaying, position, transportRevision: 0 });
-  const plan = { from: "t1", trackId: "2", ready: true, seconds: 6, trim: 0 };
-
-  it("preloads ahead and adopts the next decoder before the song ends", async () => {
-    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+describe("single stream crossfade", () => {
+  it("synchronizes progress and the play icon after holding native audio paused on every tick", async () => {
+    const player = setup({ crossfade: true });
     player.bridge.setEnabled(true);
     await flush();
-    assert.equal(player.prepares.filter(item => item.url).length, 1);
-    player.setWeb({ ...webPlaying, position: 95 });
-    player.setMpv({ ...current(95), transition: plan });
+    for (const [position, playbackStatus] of [[11, "Playing"], [11.5, "Playing"], [11.5, "Paused"], [11.5, "Playing"]] as const) {
+      const start = player.evaluations.length;
+      player.setMpv({ ...webPlaying, pcm: true, position, playbackStatus });
+      player.tick();
+      await flush();
+      const evaluations = player.evaluations.slice(start);
+      const clock = `clock:t1:${position}:${playbackStatus === "Playing"}`;
+      assert.ok(evaluations.indexOf(clock) > evaluations.findIndex(isSync));
+      assert.match(player.lastSync(), /if \(false\)/);
+      assert.match(player.lastSync(), /else if \(true\)/);
+      assert.equal(player.bridge.snapshot().position, position);
+      assert.equal(player.bridge.snapshot().playbackStatus, playbackStatus);
+    }
+    assert.deepEqual(player.positionCommands, []);
+    player.bridge.setEnabled(false);
+    await flush();
+  });
+
+  it("preloads near the tail and adopts the next track without loading it again", async () => {
+    const player = setup({ crossfade: true, web: { ...webPlaying, position: 80 } });
+    player.bridge.setEnabled(true);
+    await flush();
+    await flush();
+    assert.equal(player.loads.length, 1);
+    assert.equal(player.loads[0].crossfade, "standard");
+    assert.equal(player.loads[0].duration, 100);
+    assert.equal(player.preparations.filter(item => item.url).length, 1);
+    player.setMpv({ ...webPlaying, pcm: true, trackId: "2", position: 3.7, handoffId: "h1", handoffFrom: "t1" });
     player.tick();
     await flush();
-    assert.equal(player.loads.at(-1)?.transition, true);
-    assert.equal(player.loads.at(-1)?.trackId, "2");
+    assert.equal(player.evaluations.filter(item => item === "adopt:t1:2").length, 1);
+    assert.equal(player.loads.length, 1);
+    player.tick();
+    await flush();
+    assert.equal(player.evaluations.filter(item => item === "adopt:t1:2").length, 1);
+    player.setWeb({ ...webPlaying, trackId: "2", position: 0, playbackStatus: "Paused" });
+    player.setCandidate({ eligible: true, from: "2", song: { id: 3, name: "third", artist: "artist", duration: 100 } });
+    player.tick();
+    await flush();
+    assert.equal(player.loads.length, 1);
     assert.equal(player.bridge.snapshot().trackId, "2");
-    assert.equal(player.webCommands.includes("next"), false);
-    assert.equal(player.posts.includes("setposition"), false);
+    assert.equal(player.positionCommands.length, 0);
+    assert.ok(player.evaluations.includes("clock:2:3.7:true"));
+    player.bridge.setEnabled(false);
+    await flush();
   });
 
-  it("clears a stale preload after a queue change or entering a room", async () => {
-    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
-    player.bridge.setEnabled(true);
-    await flush();
-    player.setCandidate(null);
-    player.tick();
-    await flush();
-    assert.equal(player.prepares.at(-1)?.url, undefined);
-    player.setMpv({ ...current(95), transition: plan });
-    player.tick();
-    await flush();
-    assert.equal(player.loads.some(item => item.transition), false);
-  });
-
-  it("keeps pause responsive while the next audio address is resolving", async () => {
+  it("cancels a slow next-track resolver when the queue changes", async () => {
     const gate = deferred();
-    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+    const player = setup({ crossfade: true, web: { ...webPlaying, position: 80 } });
+    player.holdNext(gate.promise);
     player.bridge.setEnabled(true);
     await flush();
-    player.setCandidate({ from: "t1", song: { id: 3, name: "Third", artist: "Artist" } });
-    player.holdEvaluation("download", gate.promise);
+    player.setCandidate({ eligible: true, from: "t1", song: { id: 3, name: "replacement", artist: "artist", duration: 100 } });
     player.tick();
     await flush();
-    await player.bridge.command({ action: "pause" });
-    assert.equal(player.posts.at(-1), "pause");
+    gate.resolve();
+    await flush();
+    await flush();
+    assert.deepEqual(player.preparations.filter(item => item.url).map(item => item.trackId), ["3"]);
+    player.bridge.setEnabled(false);
+    await flush();
+  });
+
+  it("keeps pause responsive while the next URL is still resolving", async () => {
+    const gate = deferred();
+    const player = setup({ crossfade: true, web: { ...webPlaying, position: 80 } });
+    player.holdNext(gate.promise);
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.equal(await player.bridge.command({ action: "pause" }), true);
+    assert.ok(player.posts.includes("pause"));
     player.bridge.setEnabled(false);
     gate.resolve();
     await flush();
-    assert.equal(player.prepares.filter(item => item.url).length, 1);
+    assert.equal(player.preparations.filter(item => item.url).length, 0);
   });
 
-  it("keeps pause effective while the webpage catches up with the audio handoff", async () => {
-    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+  it("treats a user seek separately from clock alignment", async () => {
+    const player = setup({ crossfade: true, web: { ...webPlaying, position: 80 } });
     player.bridge.setEnabled(true);
     await flush();
-    const gate = deferred();
-    player.holdEvaluation("commit", gate.promise);
-    player.setWeb({ ...webPlaying, position: 95 });
-    player.setMpv({ ...current(95), transition: plan });
+    player.setWeb({ ...webPlaying, position: 20, playbackStatus: "Paused" });
     player.tick();
     await flush();
-    await player.bridge.command({ action: "pause" });
-    player.setMpv({ ...current(0), trackId: "2", playbackStatus: "Paused", transitioning: true });
-    gate.resolve();
-    await flush();
-    assert.equal(player.loads.filter(item => item.transition).length, 1);
-    assert.equal(player.posts.at(-1), "pause");
-    assert.equal(player.bridge.snapshot().playbackStatus, "Paused");
-    player.tick();
-    await flush();
-    assert.equal(player.loads.length, 2); // 初次装载和过渡接管，没有重新 loadfile 恢复播放。
-    assert.equal(player.bridge.snapshot().playbackStatus, "Paused");
-  });
-
-  it("starts mixing before waiting for the webpage to resolve the next song", async () => {
-    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
-    player.bridge.setEnabled(true);
-    await flush();
-    const gate = deferred();
-    player.holdEvaluation("commit", gate.promise);
-    player.setWeb({ ...webPlaying, position: 95 });
-    player.setMpv({ ...current(95), transition: plan });
-    player.tick();
-    await flush();
-    assert.equal(player.loads.at(-1)?.transition, true);
-    gate.resolve();
+    assert.deepEqual(player.positionCommands, [20_000_000]);
+    player.bridge.setEnabled(false);
     await flush();
   });
 
-  it("keeps the fade alive when the webpage is slow to switch songs", async () => {
-    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+  it("disables the PCM path for unsupported queue modes", async () => {
+    const player = setup({ crossfade: true });
+    player.setCandidate({ eligible: false, from: "t1", song: { id: 2, name: "next", artist: "artist", duration: 100 } });
     player.bridge.setEnabled(true);
     await flush();
-    player.setCommitSlow(true);
-    player.setWeb({ ...webPlaying, position: 95 });
-    player.setMpv({ ...current(95), transition: plan });
-    player.tick();
+    assert.equal(player.loads[0].crossfade, "off");
+    assert.equal(player.preparations.length, 0);
+    player.bridge.setEnabled(false);
     await flush();
-    // 后端已经接管：旧歌还在淡出、新歌已经进场，网页却迟迟没反应。
-    assert.equal(player.loads.at(-1)?.transition, true);
-    assert.equal(player.loads.at(-1)?.trackId, "2");
-    const loaded = player.loads.length;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      player.tick();
-      await flush();
-    }
-    // 等网页的期间绝不撤销：不 cancelFade，也不把页面上的旧歌重新 loadfile 回来。
-    assert.equal(player.prepares.some(item => item.cancelFade), false);
-    assert.equal(player.loads.length, loaded);
-    // 网页终于切到目标歌：只对账，不重新换源、不从头重放。
-    player.setWeb({ ...webPlaying, trackId: "2", position: 1.2 });
-    player.tick();
-    await flush();
-    assert.equal(player.loads.length, loaded);
-    assert.equal(player.prepares.some(item => item.cancelFade), false);
-    assert.equal(player.bridge.snapshot().trackId, "2");
   });
 
-  it("does not switch the webpage when the prepared decoder cannot be adopted", async () => {
-    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
+  it("cancels a prepared candidate when the user seeks away from the tail", async () => {
+    const player = setup({ crossfade: true, web: { ...webPlaying, position: 80 } });
     player.bridge.setEnabled(true);
     await flush();
-    player.setTransitionAccepted(false);
-    player.setWeb({ ...webPlaying, position: 95 });
-    player.setMpv({ ...current(95), transition: plan });
+    await flush();
+    assert.equal(player.preparations.filter(item => item.url).length, 1);
+    await player.bridge.command({ action: "setposition", value: 10_000_000 });
+    player.setMpv({ ...webPlaying, position: 10, pcm: true, streamId: "after-seek" });
+    player.setWeb({ ...webPlaying, position: 10, playbackStatus: "Paused" });
     player.tick();
     await flush();
-    assert.equal(player.evaluations.includes("commit"), false);
-  });
-
-  it("aligns stale webpage progress without seeking mpv or cutting off its tail", async () => {
-    const player = setup({ transition: true, web: { ...webPlaying, position: 60 }, mpv: current(60) });
-    player.bridge.setEnabled(true);
+    const cancellation = player.preparations.at(-1)!;
+    assert.equal(cancellation.url, undefined);
+    assert.equal(cancellation.streamId, "after-seek");
+    player.bridge.setEnabled(false);
     await flush();
-    player.setWeb({ ...webPlaying, position: 95 });
-    player.setMpv({ ...current(95), transition: plan });
-    player.tick();
-    await flush();
-    player.setCandidate(null);
-    for (const position of [95, 96, 97]) {
-      player.setWeb({ ...webPlaying, trackId: "2", position });
-      player.setMpv({ ...current(1), trackId: "2", transitioning: true });
-      player.tick();
-      await flush();
-    }
-    assert.equal(player.clockAlignments(), 3);
-    assert.equal(player.posts.includes("setposition"), false);
-    assert.equal(player.loads.filter(item => item.transition).length, 1);
-    player.setClockSeek(30);
-    player.tick();
-    await flush();
-    assert.equal(player.positionCommands.at(-1), 30_000_000);
-  });
-
-  it("stops the outgoing tail when the feature is turned off", async () => {
-    const player = setup({ transition: true, mpv: current(10) });
-    player.bridge.setEnabled(true);
-    await flush();
-    player.setTransitionEnabled(false);
-    player.setMpv({ ...current(10), transitioning: true });
-    player.tick();
-    await flush();
-    assert.equal(player.prepares.at(-1)?.cancelFade, true);
-  });
-
-  it("asks the backend for beat mixing and adopts right before the planned beat", async () => {
-    const player = setup({ transition: true, transitionMode: "smart", web: { ...webPlaying, position: 60 }, mpv: current(60) });
-    player.bridge.setEnabled(true);
-    await flush();
-    assert.equal(player.prepares.at(-1)?.mode, "smart");
-    const smart = { from: "t1", trackId: "2", ready: true, seconds: 16, trim: 0, mode: "smart", startAt: 94.8 };
-    player.setWeb({ ...webPlaying, position: 93.7 });
-    player.setMpv({ ...current(93.7), transition: smart });
-    player.tick();
-    await flush();
-    assert.equal(player.loads.at(-1)?.transition, true);
-    assert.equal(player.loads.at(-1)?.trackId, "2");
-    assert.equal(player.bridge.snapshot().trackId, "2");
-  });
-
-  it("keeps waiting for the planned beat until the smart preload is ready", async () => {
-    const player = setup({ transition: true, transitionMode: "smart", web: { ...webPlaying, position: 60 }, mpv: current(60) });
-    player.bridge.setEnabled(true);
-    await flush();
-    const smart = { from: "t1", trackId: "2", ready: true, seconds: 16, trim: 0, mode: "smart", startAt: 97 };
-    // 距离拍点还有 3 秒以上时不该提前接管。
-    player.setWeb({ ...webPlaying, position: 93 });
-    player.setMpv({ ...current(93), transition: smart });
-    player.tick();
-    await flush();
-    assert.equal(player.loads.some(item => item.transition), false);
-    player.setWeb({ ...webPlaying, position: 96.2 });
-    player.setMpv({ ...current(96.2), transition: smart });
-    player.tick();
-    await flush();
-    assert.equal(player.loads.at(-1)?.transition, true);
-  });
-
-  it("re-prepares the analysis when the fallback policy changes", async () => {
-    const player = setup({ transition: true, transitionMode: "smart", transitionFallback: "normal", web: { ...webPlaying, position: 60 }, mpv: current(60) });
-    player.bridge.setEnabled(true);
-    await flush();
-    assert.equal(player.prepares.at(-1)?.fallback, "normal");
-    player.setTransitionFallback("force");
-    player.tick();
-    await flush();
-    assert.equal(player.prepares.at(-1)?.mode, "smart");
-    assert.equal(player.prepares.at(-1)?.fallback, "force");
-    assert.equal(player.prepares.filter(item => item.url).length, 2);
-  });
-
-  it("never takes over when the plan says no mixing", async () => {
-    const player = setup({ transition: true, transitionMode: "smart", web: { ...webPlaying, position: 60 }, mpv: current(60) });
-    player.bridge.setEnabled(true);
-    await flush();
-    const silent = { from: "t1", trackId: "2", ready: true, seconds: 6, trim: 0, mode: "none", reason: "unstable-beats" };
-    player.setWeb({ ...webPlaying, position: 95 });
-    player.setMpv({ ...current(95), transition: silent });
-    player.tick();
-    await flush();
-    assert.equal(player.loads.some(item => item.transition), false);
-    assert.equal(player.bridge.getStatus(), "mpv 已连接（拍点不稳，不做混音）");
-  });
-
-  it("labels a plain fallback fade with the analysis reason", async () => {
-    const player = setup({ transition: true, transitionMode: "smart", web: { ...webPlaying, position: 60 }, mpv: current(60) });
-    player.bridge.setEnabled(true);
-    await flush();
-    const fallback = { from: "t1", trackId: "2", ready: true, seconds: 6, trim: 0, mode: "normal", reason: "unstable-beats" };
-    player.setWeb({ ...webPlaying, position: 95 });
-    player.setMpv({ ...current(95), transition: fallback });
-    player.tick();
-    await flush();
-    assert.equal(player.loads.at(-1)?.transition, true);
-    assert.equal(player.bridge.getStatus(), "mpv 已连接（拍点不稳，普通过渡中）");
-  });
-
-  it("keeps the tail fading when the new song is the last in the queue", async () => {
-    const player = setup({ transition: true, mpv: current(10) });
-    player.bridge.setEnabled(true);
-    await flush();
-    player.setCandidate(null);
-    player.setMpv({ ...current(10), transitioning: true });
-    player.tick();
-    await flush();
-    assert.equal(player.prepares.some(item => item.cancelFade), false);
   });
 });
 
@@ -563,6 +423,15 @@ function page() {
     withHowler(howls: unknown[]) {
       Object.assign(context, { Howler: { _howls: howls, _html5AudioPool: [] } });
     },
+    withPcmClock(trackId: string, position: number, trialStart = 0) {
+      const playing = { resourceTrackId: trackId, playingState: 2, freeTrialInfo: { start: trialStart } };
+      const store = { getState: () => ({ playing }), dispatch: (action: { payload: Record<string, unknown> }) => Object.assign(playing, action.payload) };
+      Object.assign(context, {
+        __NEMusicOnSteamPlayerStore: store,
+        __NEMusicOnSteamPcmUi: { store, trackId, position, trialStart },
+      });
+      return playing;
+    },
   };
 }
 
@@ -573,22 +442,96 @@ function fakeHowl(node: { paused: boolean }, ended = false) {
     _sounds: sounds,
     plays: 0,
     pauses: 0,
+    position: 0,
+    seeks: [] as number[],
+    playedPositions: [] as number[],
     playing() {
       return sounds.some((sound) => !sound._paused);
     },
     play() {
       this.plays++;
+      this.playedPositions.push(this.position);
       for (const sound of sounds) sound._paused = false;
+      node.paused = false;
     },
     pause() {
       this.pauses++;
       for (const sound of sounds) sound._paused = true;
       node.paused = true;
     },
+    seek(position: number) {
+      this.position = position;
+      this.seeks.push(position);
+      return this;
+    },
   };
 }
 
 describe("external audio page scripts", () => {
+  it("restores the PCM clock before resuming native playback when the backend is disabled", () => {
+    const web = page();
+    const node = new web.FakeMedia();
+    const howl = fakeHowl(node);
+    web.withHowler([howl]);
+    web.run(scripts.mute);
+    web.run(scripts.sync(true, true, true));
+    web.withPcmClock("1", 45);
+    assert.equal(howl.playing(), false);
+    web.run(scripts.unmute(true));
+    assert.deepEqual(howl.seeks, [45]);
+    assert.deepEqual(howl.playedPositions, [45]);
+    assert.equal(node.muted, false);
+    assert.equal(web.run("globalThis.__NEMusicOnSteamPcmUi"), undefined);
+  });
+
+  it("restores the PCM clock without resuming when playback is paused", () => {
+    const web = page();
+    const node = new web.FakeMedia();
+    const howl = fakeHowl(node);
+    web.withHowler([howl]);
+    web.run(scripts.mute);
+    web.run(scripts.sync(true, true, true));
+    const playing = web.withPcmClock("1", 45, 30);
+    web.run(scripts.unmute(false));
+    assert.deepEqual(howl.seeks, [15]);
+    assert.equal(howl.plays, 0);
+    assert.equal(howl.playing(), false);
+    assert.equal(playing.playingState, 1);
+    assert.equal(web.run("globalThis.__NEMusicOnSteamPcmUi"), undefined);
+  });
+
+  it("restores the native clock when crossfade is switched off while keeping mpv enabled", () => {
+    const web = page();
+    const node = new web.FakeMedia();
+    const howl = fakeHowl(node);
+    web.withHowler([howl]);
+    web.run(scripts.mute);
+    web.run(scripts.sync(true, true, true));
+    web.withPcmClock("1", 45);
+    web.run(scripts.sync(true, true));
+    assert.deepEqual(howl.seeks, [45]);
+    assert.deepEqual(howl.playedPositions, [45]);
+    assert.equal(node.muted, true);
+    assert.equal(web.run("globalThis.__NEMusicOnSteamPcmUi"), undefined);
+  });
+
+  it("does not restore a stale PCM clock to a different song or store", () => {
+    for (const stale of ["song", "store"]) {
+      const web = page();
+      const node = new web.FakeMedia();
+      const howl = fakeHowl(node);
+      web.withHowler([howl]);
+      web.run(scripts.mute);
+      web.run(scripts.sync(true, true, true));
+      const playing = web.withPcmClock("1", 45);
+      if (stale === "song") playing.resourceTrackId = "2";
+      else web.run("globalThis.__NEMusicOnSteamPlayerStore = {}");
+      web.run(scripts.unmute(true));
+      assert.deepEqual(howl.seeks, []);
+      assert.equal(web.run("globalThis.__NEMusicOnSteamPcmUi"), undefined);
+    }
+  });
+
   it("restores native pause and track controls when switching back to web playback", () => {
     const web = page();
     const node = new web.FakeMedia();

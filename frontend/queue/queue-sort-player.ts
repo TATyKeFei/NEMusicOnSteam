@@ -8,7 +8,7 @@ import { PLAYER_ACCESS_SCRIPT } from "../player/player-access.ts";
 const BUTTON_API_VERSION = 1;
 const ICON = '<svg width="25" height="25" viewBox="0 0 24 24" aria-hidden="true" fill="currentColor"><path d="M3 5h12v1.8H3V5zm0 6h9v1.8H3V11zm0 6h12v1.8H3V17zm14.6-7.4 3.4 3.4-3.4 3.4-1.27-1.27 1.23-1.23H13v-1.8h5.56l-1.23-1.23 1.27-1.27z"/></svg>';
 
-/** 排序的前提：顺序/列表循环、不在一起听；和智能过渡用同一套门禁。 */
+/** 排序的前提：顺序/列表循环、不在一起听。 */
 const QUEUE_GATE = `
   const readQueueGate = () => {
     const state = playerStore?.getState() || {};

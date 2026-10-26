@@ -111,7 +111,7 @@ export class PlayerController {
   private readonly unblock = new UnblockBridge(() => ({ enabled: this.settings.unblockEnabled, sources: this.settings.unblockSources }));
   private readonly mpv = new MpvBridge({
     quality: () => this.settings.downloadQuality,
-    transition: () => ({ mode: this.together.snapshot().inRoom ? "off" : this.settings.mpvTransitionMode, seconds: this.settings.mpvTransitionSeconds, fallback: this.settings.mpvTransitionFallback }),
+    crossfade: () => this.settings.mpvCrossfade,
     resolveNextTrack: (quality, song, signal) => this.unblock.resolve(quality, song, signal),
     resolveTrack: (quality, signal) => this.unblock.resolve(quality, undefined, signal),
     holdWebDuringResolution: () => this.settings.unblockEnabled,
@@ -202,6 +202,7 @@ export class PlayerController {
     this.shuttingDown = false;
     this.booted = true;
     this.settings = readSettings(browserStorage());
+    try { writeSettings(browserStorage(), this.settings); } catch {}
     this.steamPageSelectors = steamPageClasses();
     this.libraryClasses = libraryEntryClasses();
     this.selectedNavClass = navigationSelectedClass();
@@ -260,6 +261,7 @@ export class PlayerController {
     if (patch.unblockEnabled != null || patch.unblockSources != null) void this.unblock.installPageHook();
     if (patch.playbackBackend != null) this.applyPlaybackBackend();
     if (patch.mpd != null) this.mpd.reconnect();
+    if (patch.mpvCrossfade != null) this.mpv.reconnect();
     if (patch.uiScale != null) this.applyUiScale();
     this.syncView(true, this.render());
     return this.snapshot();

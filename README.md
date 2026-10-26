@@ -48,7 +48,7 @@
 | 歌词       | 仅 Linux       | 依赖 MPRIS 连接，做法见[#歌词](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E6%AD%8C%E8%AF%8D)            |
 | 全局快捷键 | 仅 Linux       | 依赖 MPRIS 连接，做法见[#全局快捷键](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E5%85%A8%E5%B1%80%E5%BF%AB%E6%8D%B7%E9%94%AE)       |
 | 多播放后端支持 | 仅 Linux   | 可选 mpv、mpd 作为音频播放器引擎                      |
-| 歌曲智能过渡 | 支持         | 需要使用 MPV 播放后端; 普通模式按首尾音量淡入淡出，智能模式分析鼓点对齐拍点/小节并变速混音(需要ffmpeg); 一起听、漫游模式下不可用   |
+| 歌曲自动衔接 | 仅 Linux     | 播放完后自动衔接过度下一首歌                          |
 | 界面Ui缩放 | 支持           | 网易云很多样式都是根据固定像素而不是分辨率百分比，导致ui在高分辨率大尺寸的显示器显得很小。缩放可以解决这些问题  |
 | 全屏与窗口铺满 | 支持       | 点击搜索框右侧全屏按钮进入桌面全屏；按住 Shift 点击只铺满当前 Steam 窗口，不改变窗口大小。再次点击或按 Esc 退出 |
 | UnblockNeteaseMusic | 支持  | 支持下载播放灰色无声源歌曲，在官方无地址或仅有试听时尝试其他音源 |
@@ -132,6 +132,8 @@ npm run build -- --no-install   # 只打包、不复制到millennium插件目录
 - Steam 更新可能改掉 `BrowserView` 或主窗口名字 `SP Desktop`可能导致打不开，需要时间适配
 - MPRIS 通过 DevTools 在网易云页面读取状态并调用现有播放器动作，依赖网页的 React/Redux 结构；网易云音乐Web版改版可能需要时间更新适配
 - mpv 后端依赖本机安装 `mpv`，启动时会避开 Steam Runtime 的动态库环境；目前由网易云网页提供歌曲地址和播放列表，网页登录失效或网易云改版时，mpv 也无法继续解析新歌曲
+- 歌曲自动衔接默认关闭，可在 mpv 设置中选择保守、标准或积极，淡化上限分别为 3、3.6、5 秒。另需安装 `ffmpeg`（Arch：`sudo pacman -S mpv ffmpeg`）；解码到有限 PCM 缓冲，在同一条 mpv 输出流内混合，跳过下一首最多 2 秒的近乎静音开头。暂停和拖动进度仍可用，歌词跟随已播放的下一首进度
+- 自动衔接只用于顺序播放和列表循环；随机、单曲循环、FM、一起听及试听片段保持普通切歌。下一首解析或解码失败时继续当前曲，播完再按普通方式切歌。此功能采用非 AI 的能量检测与淡化，不包含节拍补齐、BPM 对齐或生成音乐
 - 远程 MPD 必须能直接访问音频地址；需要特定 Referer 的部分解灰音源可能被拒绝。MPD 密码保存在本机插件设置中，采用 MPD 自身的认证协议
 - 后台播放依赖 Steam 的通话功能，会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`函数。如果正在通话时暂停播放音乐可能导致通话出问题
 
@@ -148,6 +150,8 @@ npm run build -- --no-install   # 只打包、不复制到millennium插件目录
 
 本仓库使用了以下项目的代码、参考了他们的实现思路
 
+- [SPlayer-Next](https://github.com/SPlayer-Dev/SPlayer-Next/tree/006c580628e7a006255dd0a1578de0226e9f12a7)：参考预加载、单输出流、能量检测及等功率衔接思路；本项目使用 Python / ffmpeg / mpv 独立实现
+
 非常感谢以下项目，没有他们我要摸打滚爬好久才能做出来，开源万岁!
 
 | 项目 | 链接 | 备注 |
@@ -156,9 +160,8 @@ npm run build -- --no-install   # 只打包、不复制到millennium插件目录
 | MusicFox   | [Github仓库](https://github.com/go-musicfox/go-musicfox)         | 好用的网易云终端工具，本项目的MPIRS功能参考了此项目 |
 | open orpheus | [Github仓库](https://github.com/YUCLing/open-orpheus)          | 能让Linux运行网易云客户端，听歌识曲功能参考了此项目 |
 | NeteaseCloudMusicApiEnhanced | [Github仓库](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | 听歌识曲api接口功能用了他 |
-| Qplayer    | [Github仓库](https://github.com/TIMER-err/qplayer)               | 第三方网易云音乐客户端，一起听功能参考了他          |
+| Qplayer    | [Github仓库](https://github.com/TIMER-err/qplayer)               | 第三方网易云音乐客户端，一起听、衔接功能参考了他          |
 | UnblockNeteaseMusic | [Github仓库](https://github.com/UnblockNeteaseMusic/server) | 支持播放无声源歌曲[上游库和许可证](THIRD_PARTY_NOTICES.md) |
-| SongMix    | [Github仓库](https://github.com/congnghetinhtu/SongMix)          | 歌曲混音脚本; 智能过渡功能参考了他                  |
 
 # 为什么有网易云客户端还要去写这个？
 
