@@ -46,11 +46,10 @@ export function isDownloadQuality(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && Object.prototype.hasOwnProperty.call(DOWNLOAD_LEVELS, value);
 }
 
-/** 无损及以上的档位向网易云指定 flac；有损档位让它自己挑。 */
-export function downloadLevel(value: number): { level: string; encodeType: string | null } | null {
+export function downloadLevel(value: number): { level: string; encodeType: string } | null {
   const level = DOWNLOAD_LEVELS[value];
   if (level == null) return null;
-  return { level, encodeType: value >= 999 ? "flac" : null };
+  return { level, encodeType: value >= 999 ? "flac" : "mp3" };
 }
 
 /**
@@ -104,7 +103,7 @@ export function downloadScript(value: number, song?: DownloadSong, allowUnavaila
     try {
       const query = 'ids=' + encodeURIComponent(JSON.stringify([id]))
         + '&level=' + encodeURIComponent(requested.level)
-        + (requested.encodeType ? '&encodeType=' + encodeURIComponent(requested.encodeType) : '');
+        + '&encodeType=' + encodeURIComponent(requested.encodeType);
       const response = await fetch('/api/song/enhance/player/url/v1?' + query, { credentials: 'include' });
       if (!response.ok) throw new Error('网易云接口返回 ' + response.status);
       const payload = await response.json();

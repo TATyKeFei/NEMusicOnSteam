@@ -10,10 +10,10 @@ import {
   type DownloadSong,
 } from "./download-player.ts";
 
-const LEVELS: Record<number, { level: string; encodeType: string | null }> = {
-  128: { level: "standard", encodeType: null },
-  192: { level: "higher", encodeType: null },
-  320: { level: "exhigh", encodeType: null },
+const LEVELS: Record<number, { level: string; encodeType: string }> = {
+  128: { level: "standard", encodeType: "mp3" },
+  192: { level: "higher", encodeType: "mp3" },
+  320: { level: "exhigh", encodeType: "mp3" },
   999: { level: "lossless", encodeType: "flac" },
   1999: { level: "hires", encodeType: "flac" },
   3999: { level: "jyeffect", encodeType: "flac" },
@@ -61,7 +61,9 @@ function downloadFixture(options: FixtureOptions = {}) {
       return {
         ok: true,
         status: 200,
-        json: async () => options.payload ?? { code: 200, data: [API_RESULT] },
+        json: async () => options.payload ?? (new URL(url, "https://music.163.com").searchParams.has("encodeType")
+          ? { code: 200, data: [API_RESULT] }
+          : { code: 400, msg: "参数错误" }),
       };
     },
   };
@@ -114,11 +116,15 @@ describe("NetEase download resolution", () => {
     assert.deepEqual(JSON.parse(JSON.stringify(init)), { credentials: "include" });
   });
 
-  it("does not ask for flac on lossy levels", async () => {
-    const player = downloadFixture();
-    await player.run(320);
-    assert.match(player.requests[0].url, /level=exhigh/);
-    assert.doesNotMatch(player.requests[0].url, /encodeType/);
+  it("resolves every lossy level with the required mp3 encoding parameter", async () => {
+    for (const quality of [128, 192, 320]) {
+      const player = downloadFixture();
+      const result = await player.run(quality);
+      const parameters = new URL(player.requests[0].url, "https://music.163.com").searchParams;
+      assert.equal(parameters.get("level"), LEVELS[quality].level);
+      assert.equal(parameters.get("encodeType"), "mp3");
+      assert.equal(result.url, API_RESULT.url);
+    }
   });
 
   it("returns the API address together with the granted level and tags", async () => {
