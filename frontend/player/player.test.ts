@@ -124,7 +124,6 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     EXTERNAL_MUTE_SCRIPT: "mpv-mute",
     RecognitionBridge: FakeBridge,
     QualityBridge: FakeBridge,
-    QueueSortBridge: FakeBridge,
     TogetherBridge: FakeBridge,
     DownloadBridge: FakeBridge,
     FullscreenButtonBridge: class extends FakeBridge {
