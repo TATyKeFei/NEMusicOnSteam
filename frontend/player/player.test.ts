@@ -121,6 +121,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     MpdBridge: class extends FakeBridge {
       setEnabled(enabled: boolean, restoreWeb?: boolean) { super.setEnabled(enabled, restoreWeb); backendChanges.push(`mpd:${enabled}`); }
     },
+    WebPreloadBridge: FakeBridge,
     EXTERNAL_MUTE_SCRIPT: "mpv-mute",
     RecognitionBridge: FakeBridge,
     QualityBridge: FakeBridge,

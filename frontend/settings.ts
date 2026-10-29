@@ -4,6 +4,7 @@ import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } f
 export type NotificationMode = "system" | "steam" | "none";
 export type PlaybackBackend = "web" | "mpv" | "mpd";
 export type CrossfadeMode = "off" | "conservative" | "standard" | "eager";
+export type TransitionMode = "none" | "auto" | "crossfade";
 export type MpdSettings = { host: string; port: number; password: string; socket: string };
 export const DEFAULT_MPD_SETTINGS: MpdSettings = { host: "127.0.0.1", port: 6600, password: "", socket: "" };
 export const UI_SCALE_MIN = 0.8;
@@ -12,6 +13,9 @@ export const UI_SCALE_MAX = 1.5;
 export type PlayerSettings = {
   playbackBackend: PlaybackBackend;
   mpvCrossfade: CrossfadeMode;
+  mpvTransitionMode: TransitionMode;
+  mpvCrossfadeSeconds: number;
+  preloadNext: boolean;
   mpd: MpdSettings;
   unblockEnabled: boolean;
   unblockSources: UnblockSource[];
@@ -30,6 +34,9 @@ export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
 export const defaultSettings: PlayerSettings = {
   playbackBackend: "web",
   mpvCrossfade: "off",
+  mpvTransitionMode: "none",
+  mpvCrossfadeSeconds: 4,
+  preloadNext: false,
   mpd: DEFAULT_MPD_SETTINGS,
   unblockEnabled: false,
   unblockSources: DEFAULT_UNBLOCK_SOURCES,
@@ -95,10 +102,20 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     record.notificationMode,
     notificationModeOr(record.downloadNotificationMode, defaultSettings.notificationMode),
   );
+  const crossfade = record.mpvCrossfade === "conservative" || record.mpvCrossfade === "standard" || record.mpvCrossfade === "eager"
+    ? record.mpvCrossfade : "off";
+  // 旧版用“关闭”档位控制启停；迁移后由过渡模式统一控制。
+  const transitionMode = record.mpvTransitionMode === "none" || record.mpvTransitionMode === "crossfade"
+    ? record.mpvTransitionMode
+    : record.mpvTransitionMode === "auto" && record.mpvCrossfade !== "off" ? "auto"
+      : crossfade !== "off" ? "auto" : "none";
   return {
     playbackBackend: playbackBackendOr(record.playbackBackend, defaultSettings.playbackBackend),
-    mpvCrossfade: record.mpvCrossfade === "conservative" || record.mpvCrossfade === "standard" || record.mpvCrossfade === "eager"
-      ? record.mpvCrossfade : "off",
+    mpvCrossfade: transitionMode === "auto" && crossfade === "off" ? "standard" : crossfade,
+    mpvTransitionMode: transitionMode,
+    mpvCrossfadeSeconds: finiteNumber(record.mpvCrossfadeSeconds)
+      ? Math.max(1, Math.min(12, Math.round(record.mpvCrossfadeSeconds))) : defaultSettings.mpvCrossfadeSeconds,
+    preloadNext: booleanOr(record.preloadNext, defaultSettings.preloadNext),
     mpd: sanitizeMpdSettings(record.mpd),
     unblockEnabled: booleanOr(record.unblockEnabled, defaultSettings.unblockEnabled),
     unblockSources: sanitizeUnblockSources(record.unblockSources),

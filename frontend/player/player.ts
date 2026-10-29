@@ -10,6 +10,7 @@ import { sameBounds, type Bounds } from "../widget/layout.ts";
 import { MprisBridge } from "../mpris/mpris.ts";
 import { MpvBridge } from "../playback/mpv.ts";
 import { MpdBridge } from "../playback/mpd.ts";
+import { WebPreloadBridge } from "../playback/web-preload.ts";
 import { EXTERNAL_MUTE_SCRIPT } from "../playback/external-audio.ts";
 import { commandScript } from "../mpris/mpris-player.ts";
 import { releasePlayerSession, preparePlayerTarget } from "./player-target.ts";
@@ -110,7 +111,11 @@ export class PlayerController {
   private readonly unblock = new UnblockBridge(() => ({ enabled: this.settings.unblockEnabled, sources: this.settings.unblockSources }));
   private readonly mpv = new MpvBridge({
     quality: () => this.settings.downloadQuality,
-    crossfade: () => this.settings.mpvCrossfade,
+    crossfade: () => this.settings.mpvTransitionMode === "none" ? "off"
+      : this.settings.mpvTransitionMode === "crossfade" ? "standard" : this.settings.mpvCrossfade,
+    transitionMode: () => this.settings.mpvTransitionMode,
+    crossfadeSeconds: () => this.settings.mpvCrossfadeSeconds,
+    preloadNext: () => this.settings.preloadNext,
     resolveNextTrack: (quality, song, signal) => this.unblock.resolve(quality, song, signal),
     resolveTrack: (quality, signal) => this.unblock.resolve(quality, undefined, signal),
     holdWebDuringResolution: () => this.settings.unblockEnabled,
@@ -130,6 +135,7 @@ export class PlayerController {
     targetMissing: error => error instanceof Error && error.message === PLAYER_TARGET_MISSING,
   });
   private readonly fullscreenButton = new FullscreenButtonBridge();
+  private readonly webPreload = new WebPreloadBridge(() => this.settings.playbackBackend === "web" && this.settings.preloadNext);
   private readonly quality = new QualityBridge();
   private readonly together = new TogetherBridge();
   private readonly download = new DownloadBridge(() => ({
@@ -143,7 +149,7 @@ export class PlayerController {
     notify: steamToast,
   }, (quality, song) => this.unblock.resolve(quality, song));
   private readonly viewBridges = new ViewBridges([
-    this.mpris, this.recognition, this.fullscreenButton, this.quality, this.together, this.download,
+    this.mpris, this.recognition, this.fullscreenButton, this.quality, this.together, this.download, this.webPreload,
   ]);
   private steamPageSelectors: SteamPageSelectors = STEAM_PAGE_FALLBACK_CLASSES;
   private libraryClasses: LibraryEntryClasses = LIBRARY_ENTRY_FALLBACK_CLASSES;
@@ -255,7 +261,8 @@ export class PlayerController {
     if (patch.unblockEnabled != null || patch.unblockSources != null) void this.unblock.installPageHook();
     if (patch.playbackBackend != null) this.applyPlaybackBackend();
     if (patch.mpd != null) this.mpd.reconnect();
-    if (patch.mpvCrossfade != null) this.mpv.reconnect();
+    if (patch.mpvCrossfade != null || patch.mpvTransitionMode != null || patch.mpvCrossfadeSeconds != null || patch.preloadNext != null) this.mpv.reconnect();
+    if (patch.preloadNext != null || patch.playbackBackend != null || patch.unblockEnabled != null || patch.unblockSources != null) this.webPreload.refresh();
     if (patch.uiScale != null) this.applyUiScale();
     this.syncView(true, this.render());
     return this.snapshot();

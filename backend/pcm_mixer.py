@@ -178,9 +178,17 @@ class PcmMixer:
         self.closed = threading.Event()
         self.clock = clock
         self.profile = PROFILES[profile]
+        self.transition_mode = payload.get("transitionMode") if payload.get("transitionMode") in ("none", "crossfade") else "auto"
+        try:
+            seconds = float(payload.get("crossfadeSeconds", self.profile[0]))
+            self.crossfade_seconds = max(1.0, min(12.0, seconds)) if math.isfinite(seconds) else self.profile[0]
+        except (TypeError, ValueError):
+            self.crossfade_seconds = self.profile[0]
+        self.stream_options = {"transitionMode": self.transition_mode, "crossfadeSeconds": self.crossfade_seconds,
+                               "crossfade": payload.get("crossfade", profile), "preloadNext": payload.get("preloadNext") is True}
         self.environment = environment
         self.rate = 1.0
-        self.current = Decoder(payload, environment)
+        self.current = Decoder({**payload, **self.stream_options}, environment)
         self.following = None
         self.revision = -1
         self.rendered = 0
@@ -212,7 +220,7 @@ class PcmMixer:
             if self.fade_progress is not None:
                 return False
             previous = self.following
-            self.following = Decoder(payload, self.environment) if payload.get("url") else None
+            self.following = Decoder({**payload, **self.stream_options}, self.environment) if payload.get("url") else None
             self.error = ""
             if previous:
                 previous.close()
@@ -245,19 +253,40 @@ class PcmMixer:
                 following.close()
                 self.following = following = None
                 self.fade_progress = None
+            if self.transition_mode == "none":
+                if data or not following:
+                    return data
+                incoming = following.take()
+                if not incoming:
+                    return incoming
+                # 无过渡时从下一首第一个采样开始，完整保留两首歌曲且不混音。
+                position = (following.consumed - len(incoming) // FRAME_BYTES) / SAMPLE_RATE
+                self.events.append((self.rendered, following.payload, position,
+                                    self.identifier + ":" + str(self.rendered), str(current.payload.get("trackId") or "")))
+                self.current = following
+                self.following = None
+                current.close()
+                return incoming
             if following and self.fade_progress is None:
                 ready = following.skip_intro()
                 duration = max(0.0, float(current.payload.get("duration") or 0))
                 position = float(current.payload.get("position") or 0) + current.consumed / SAMPLE_RATE
                 remaining = max(0.0, duration - position)
                 maximum, search, threshold, windows = self.profile
-                quiet = energy(data) < threshold if duration and remaining <= (maximum + search) * self.rate else False
+                if self.transition_mode == "crossfade":
+                    maximum = self.crossfade_seconds
+                quiet = (self.transition_mode == "auto" and duration > 0
+                         and remaining <= (maximum + search) * self.rate and energy(data) < threshold)
                 self.quiet_windows = self.quiet_windows + 1 if quiet else 0
                 next_duration = max(0, float(following.payload.get("duration") or 0) - following.consumed / SAMPLE_RATE)
                 fade = min(maximum * self.rate, remaining, next_duration / 2) if next_duration else 0
                 enough = following.buffered >= int(min(fade + 0.15, 5.5) * SAMPLE_RATE) or following.eof
-                if ready and enough and following.buffered and (not data or (fade > 0 and (
-                        self.quiet_windows >= windows or remaining <= maximum * self.rate))):
+                # 渐变过渡保留完整尾段，只在淡化窗口内启动；自动衔接仍可在安静尾段提前接入。
+                if self.transition_mode == "crossfade":
+                    due = remaining <= fade
+                else:
+                    due = self.quiet_windows >= windows or remaining <= maximum * self.rate
+                if ready and enough and following.buffered and (not data or (fade > 0 and due)):
                     self.fade_progress = 0.0
                     self.fade_seconds = max(0.05, fade / self.rate)
             if self.fade_progress is not None and following:

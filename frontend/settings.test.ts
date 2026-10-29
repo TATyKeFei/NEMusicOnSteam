@@ -8,6 +8,8 @@ describe("settings", () => {
     assert.equal(settings.openOnStart, false);
     assert.equal(settings.playbackBackend, "web");
     assert.equal(settings.mpvCrossfade, "off");
+    assert.equal(settings.mpvTransitionMode, "none");
+    assert.equal(settings.preloadNext, false);
     assert.equal(sanitizeSettings({ mpvCrossfade: "standard" }).mpvCrossfade, "standard");
     assert.equal(sanitizeSettings({ mpvCrossfade: "invalid" }).mpvCrossfade, "off");
     assert.equal(settings.uiScale, 1);
@@ -22,6 +24,32 @@ describe("settings", () => {
     assert.equal(uiScaleOr(9, 1), 1.5);
     assert.equal(uiScaleOr(0.1, 1), 0.8);
     assert.equal(uiScaleOr("125%", 1), 1);
+  });
+
+  it("preserves existing automatic transitions and accepts the new crossfade mode", () => {
+    const legacy = sanitizeSettings({ playbackBackend: "mpv", mpvCrossfade: "standard" });
+    assert.equal(legacy.mpvTransitionMode, "auto");
+    assert.equal(legacy.mpvCrossfade, "standard");
+    assert.equal(sanitizeSettings({ mpvTransitionMode: "crossfade" }).mpvTransitionMode, "crossfade");
+    for (const mpvTransitionMode of [undefined, null, "invalid", true, 1, "none"]) {
+      assert.equal(sanitizeSettings({ mpvTransitionMode }).mpvTransitionMode, "none");
+    }
+    assert.equal(sanitizeSettings({ mpvTransitionMode: "auto" }).mpvCrossfade, "standard");
+    assert.equal(sanitizeSettings({ mpvTransitionMode: "auto", mpvCrossfade: "off" }).mpvTransitionMode, "none");
+    assert.equal(sanitizeSettings({ mpvTransitionMode: "none", mpvCrossfade: "eager" }).mpvTransitionMode, "none");
+  });
+
+  it("bounds fade duration to 1–12 seconds and keeps preloading independent of transitions", () => {
+    assert.equal(sanitizeSettings({ mpvCrossfadeSeconds: 0 }).mpvCrossfadeSeconds, 1);
+    assert.equal(sanitizeSettings({ mpvCrossfadeSeconds: 99 }).mpvCrossfadeSeconds, 12);
+    assert.equal(sanitizeSettings({ mpvCrossfadeSeconds: 8.6 }).mpvCrossfadeSeconds, 9);
+    for (const value of ["12", null, NaN, Infinity]) {
+      assert.equal(sanitizeSettings({ mpvCrossfadeSeconds: value }).mpvCrossfadeSeconds, 4);
+    }
+    const settings = sanitizeSettings({ playbackBackend: "web", mpvTransitionMode: "none", preloadNext: true });
+    assert.equal(settings.preloadNext, true);
+    assert.equal(settings.mpvTransitionMode, "none");
+    assert.equal(sanitizeSettings({ preloadNext: "true" }).preloadNext, false);
   });
 
   it("supports MPD TCP, password and Unix socket settings without sharing mutable defaults", () => {
@@ -82,6 +110,10 @@ describe("settings", () => {
       ...defaultSettings,
       openOnStart: true,
       playbackBackend: "mpv",
+      mpvCrossfade: "eager",
+      mpvTransitionMode: "crossfade",
+      mpvCrossfadeSeconds: 12,
+      preloadNext: true,
       keepAliveWhenCollapsed: false,
       disableBackgroundThrottling: true,
       downloadDirectory: "~/Music/网易云音乐",
@@ -91,6 +123,10 @@ describe("settings", () => {
     assert.equal("launcher" in readSettings(storage), false);
     assert.equal(readSettings(storage).keepAliveWhenCollapsed, false);
     assert.equal(readSettings(storage).playbackBackend, "mpv");
+    assert.equal(readSettings(storage).mpvCrossfade, "eager");
+    assert.equal(readSettings(storage).mpvTransitionMode, "crossfade");
+    assert.equal(readSettings(storage).mpvCrossfadeSeconds, 12);
+    assert.equal(readSettings(storage).preloadNext, true);
     assert.equal(readSettings(storage).downloadDirectory, "~/Music/网易云音乐");
     assert.equal(readSettings(storage).downloadQuality, 999);
   });

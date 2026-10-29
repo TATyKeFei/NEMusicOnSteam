@@ -289,10 +289,11 @@ class MpvService(PlaybackHttpService):
         self.mpv.command("set_property", "pause", True)
         self.close_mixer()
         profile = payload.get("crossfade")
-        if profile in PROFILES:
+        preload = payload.get("preloadNext") is True and payload.get("transitionMode") == "none"
+        if (profile in PROFILES and payload.get("transitionMode") != "none") or preload:
             source = {**payload, **self.metadata(payload), "position": position,
                       "duration": max(0, self.number(payload.get("duration")))}
-            mixer = PcmMixer(self.runtime_dir, source, profile, MpvProcess.clean_environment(),
+            mixer = PcmMixer(self.runtime_dir, source, profile if profile in PROFILES else "standard", MpvProcess.clean_environment(),
                              lambda: self.mpv.property("time-pos", 0) if self.mpv.property("path") == mixer.fifo else 0)
             mixer.rate = self.rate
             self.mixer = mixer
@@ -379,7 +380,7 @@ class MpvService(PlaybackHttpService):
             value = payload.get("value")
             if value == "Track" and self.mixer:
                 view = self.mixer.view(self.mpv.property("time-pos", 0) or 0)
-                self.load_locked({**view["payload"], "crossfade": "off", "position": view["position"],
+                self.load_locked({**view["payload"], "crossfade": "off", "preloadNext": False, "position": view["position"],
                                   "autoplay": not self.mpv.property("pause", False),
                                   "volume": (self.mpv.property("volume", 100) or 0) / 100})
             self.mpv.command("set_property", "loop-file", "inf" if value == "Track" else "no")

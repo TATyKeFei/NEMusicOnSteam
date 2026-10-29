@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import type { PlayerController, PlayerSnapshot } from "./player/player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
 import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
-import { sanitizeMpdSettings, type NotificationMode, type PlaybackBackend, type CrossfadeMode } from "./settings.ts";
+import { sanitizeMpdSettings, type NotificationMode, type PlaybackBackend, type CrossfadeMode, type TransitionMode } from "./settings.ts";
 import { sanitizeUnblockSources } from "./unblock/sources.ts";
 
 const NOTIFICATION_OPTIONS = [
@@ -143,17 +143,48 @@ export function SettingsContent({ player }: { player: PlayerController }) {
           onChange={option => setSnapshot(player.updateSettings({ playbackBackend: option.data }))}
         />
       </Field>
-      {settings.playbackBackend === "mpv" && <Field label="歌曲自动衔接" description="需要 ffmpeg。提前解码下一首，在同一音频流里按尾段能量选择衔接点；仅用于顺序播放和列表循环。">
-        <Dropdown
-          selectedOption={settings.mpvCrossfade}
-          rgOptions={[
-            { data: "off", label: "关闭" },
-            { data: "conservative", label: "保守（最长 3 秒）" },
-            { data: "standard", label: "标准（最长 3.6 秒）" },
-            { data: "eager", label: "积极（最长 5 秒）" },
-          ]}
-          onChange={option => setSnapshot(player.updateSettings({ mpvCrossfade: option.data as CrossfadeMode }))}
-        />
+      {settings.playbackBackend === "mpv" && <>
+        <Field label="过渡模式" description={settings.mpvTransitionMode === "none"
+          ? "当前歌曲播完后再切换下一首，不叠加或淡化音频。"
+          : settings.mpvTransitionMode === "crossfade"
+            ? "让上一首逐渐淡出、下一首逐渐淡入。需要 ffmpeg，仅用于顺序播放和列表循环。"
+            : "根据歌曲尾段音量选择衔接点。需要 ffmpeg，仅用于顺序播放和列表循环。"} bottomSeparator="standard">
+          <Dropdown
+            selectedOption={settings.mpvTransitionMode}
+            rgOptions={[
+              { data: "none", label: "无" },
+              { data: "auto", label: "自动衔接" },
+              { data: "crossfade", label: "渐变过渡" },
+            ]}
+            onChange={option => setSnapshot(player.updateSettings({
+              mpvTransitionMode: option.data as TransitionMode,
+              ...(option.data === "auto" && settings.mpvCrossfade === "off" ? { mpvCrossfade: "standard" } : {}),
+            }))}
+          />
+        </Field>
+        {settings.mpvTransitionMode === "auto" && <Field label="歌曲衔接" description="选择自动衔接的强度和最长淡化时间。" bottomSeparator="standard">
+          <Dropdown
+            selectedOption={settings.mpvCrossfade}
+            rgOptions={[
+              { data: "conservative", label: "保守（最长 3 秒）" },
+              { data: "standard", label: "标准（最长 3.6 秒）" },
+              { data: "eager", label: "积极（最长 5 秒）" },
+            ]}
+            onChange={option => setSnapshot(player.updateSettings({ mpvCrossfade: option.data as CrossfadeMode }))}
+          />
+        </Field>}
+        {settings.mpvTransitionMode === "crossfade" && <Field label="渐变过渡时长" description="可选 1–12 秒；歌曲较短时自动缩短淡化窗口。" bottomSeparator="standard">
+          <Dropdown
+            selectedOption={settings.mpvCrossfadeSeconds}
+            rgOptions={Array.from({ length: 12 }, (_, index) => ({ data: index + 1, label: `${index + 1} 秒` }))}
+            onChange={option => setSnapshot(player.updateSettings({ mpvCrossfadeSeconds: Number(option.data) }))}
+          />
+        </Field>}
+      </>}
+      {settings.playbackBackend !== "mpd" && <Field label="提前预载下一首" description={settings.playbackBackend === "web"
+        ? "在当前歌曲剩余约 45 秒时提前解析并缓冲下一首，切歌时复用缓存。仅用于顺序播放和列表循环。"
+        : "无过渡模式下也可提前缓冲下一首，当前歌曲播完后再切换。需要 ffmpeg；自动衔接和渐变过渡会始终预载。"} bottomSeparator="standard">
+        <Toggle value={settings.preloadNext} onChange={preloadNext => setSnapshot(player.updateSettings({ preloadNext }))} />
       </Field>}
       {settings.playbackBackend === "mpd" && <>
         <Field label="MPD 地址" description="本机默认为 127.0.0.1；也可填写局域网 / 远程主机名或 IPv6 地址。" bottomSeparator="standard">

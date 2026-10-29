@@ -3,26 +3,25 @@ import { describe, it } from "node:test";
 import { runInNewContext } from "node:vm";
 import { recognitionScript, recognitionUpdateScript } from "./recognition-player.ts";
 
-/** 一个只认 getBoundingClientRect 的假 input，用来喂顶栏搜索框。 */
 /** vm 里造出来的对象原型和测试进程不是一回事，深比较前先拍平。 */
 function plain<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function fakeInput(rect: { top: number; left: number; width: number; height: number }, placeholder = "") {
-  const parent = { append: (...children: unknown[]) => void (parent.children.push(...children)), children: [] as unknown[] };
+function fakeInput(rect: { top: number; left: number; width: number; height: number }, placeholder = "", header = "#page_pc_main_nav") {
+  const parent = new Element();
   const input = {
     parentElement: parent,
     placeholder,
     getAttribute: (name: string) => (name === "placeholder" ? placeholder : null),
     getBoundingClientRect: () => ({ ...rect, right: rect.left + rect.width, bottom: rect.top + rect.height }),
+    closest: (selector: string) => header && selector.split(", ").includes(header) ? parent : null,
   };
   return input;
 }
 
 function anchorFixture(inputs: unknown[]) {
-  // 记录 createElement 造出来的东西，好让 querySelector 真的能找到上一次的按钮：
-  // 幂等性正是靠「已经插了一个就别再插」实现的，假件看不见就测不出来。
+  // 查询只返回仍在 DOM 中的按钮，以覆盖重复刷新、重挂载及旧版本升级。
   const created: Element[] = [];
   const context = {
     window: {} as any,
@@ -35,9 +34,9 @@ function anchorFixture(inputs: unknown[]) {
         return element;
       },
       addEventListener() {},
-      querySelector: (selector: string) =>
-        selector.includes("data-nemusic-recognition-button") ? created.find(element => element.attrs.has("data-nemusic-recognition-button")) ?? null : null,
-      querySelectorAll: () => inputs,
+      querySelectorAll: (selector: string) => selector === '[data-nemusic-recognition-button]'
+        ? created.filter(element => element.attrs.has("data-nemusic-recognition-button") && element.parentElement)
+        : inputs,
     },
     AbortController,
     atob, btoa,
@@ -65,18 +64,32 @@ class Element {
   style: Record<string, string> = {};
   href = "";
   children: Element[] = [];
+  parentElement: Element | null = null;
   selectors = new Map<string, Element>();
-  append(...children: Element[]) { this.children.push(...children); }
-  replaceChildren(...children: Element[]) { this.children = children; }
+  append(...children: Element[]) {
+    for (const child of children) {
+      child.remove();
+      child.parentElement = this;
+      this.children.push(child);
+    }
+  }
+  replaceChildren(...children: Element[]) {
+    for (const child of [...this.children]) child.remove();
+    this.append(...children);
+  }
   attrs = new Set<string>();
   setAttribute(name: string) { this.attrs.add(name); }
   querySelector(selector: string) {
     if (!this.selectors.has(selector)) this.selectors.set(selector, new Element());
     return this.selectors.get(selector)!;
   }
-  addEventListener() {}
+  listeners = new Map<string, (...args: any[]) => void>();
+  addEventListener(name: string, callback: (...args: any[]) => void) { this.listeners.set(name, callback); }
   focus() {}
-  remove() {}
+  remove() {
+    if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
+    this.parentElement = null;
+  }
 }
 
 function setup(options: {
@@ -207,7 +220,7 @@ describe("识曲按钮的挂载位置", () => {
     assert.deepEqual(result, { ok: true, note: "" });
     assert.equal((search.parentElement as any).children.length, 1, "按钮应该挂在搜索框那一组");
     assert.equal((junk.parentElement as any).children.length, 0);
-    assert.equal(context.window.__nemusicRecognition.version, 5);
+    assert.equal(context.window.__nemusicRecognition.version, 6);
   });
 
   it("已经装好时重复调用是幂等的，不会再插一个按钮", () => {
@@ -225,11 +238,72 @@ describe("识曲按钮的挂载位置", () => {
     assert.match(result.note, /一个 input 都没有/);
   });
 
-  it("搜索框位置不对时把候选尺寸报出来，方便去调", () => {
-    // 全都在视口外或者尺寸为零：以前这里直接 return，什么线索都没有。
+  it("隐藏的顶栏搜索框需要等到显示后再挂载", () => {
     const hidden = fakeInput({ top: 900, left: 900, width: 0, height: 0 });
     const { result } = anchorFixture([hidden]);
     assert.match(result.note, /没找到可以放识曲按钮的搜索框/);
+  });
+
+  it("不把我喜欢的音乐页面中的搜索框当成顶栏，滚动到顶部也不行", () => {
+    const playlist = fakeInput({ top: 26, left: 800, width: 320, height: 34 }, "搜索我喜欢的音乐", "");
+    const inputs = [playlist];
+    const { result, context } = anchorFixture(inputs);
+    assert.match(result.note, /等待全局导航栏搜索框显示/);
+    assert.equal(playlist.parentElement.children.length, 0);
+
+    const header = fakeInput({ top: 40, left: 210, width: 200, height: 34 }, "");
+    inputs.push(header);
+    runInNewContext(recognitionUpdateScript("http://localhost", "token", false), context);
+    assert.equal(playlist.parentElement.children.length, 0);
+    assert.equal(header.parentElement.children.length, 1);
+  });
+
+  it("顶栏搜索框不带搜索占位文字时仍排除更宽的歌单搜索框", () => {
+    const header = fakeInput({ top: 40, left: 210, width: 200, height: 34 }, "每日推荐");
+    const playlist = fakeInput({ top: 70, left: 400, width: 400, height: 34 }, "搜索", "");
+    anchorFixture([playlist, header]);
+    assert.equal(playlist.parentElement.children.length, 0);
+    assert.equal(header.parentElement.children.length, 1);
+  });
+
+  it("修复已有按钮的错误位置，并在顶栏消失后清理按钮", () => {
+    const header = fakeInput({ top: 24, left: 210, width: 260, height: 34 }, "搜索");
+    const playlist = fakeInput({ top: 260, left: 800, width: 260, height: 34 }, "搜索", "");
+    const inputs = [header, playlist];
+    const { context } = anchorFixture(inputs);
+    const misplaced = header.parentElement.children[0];
+    playlist.parentElement.append(misplaced);
+    runInNewContext(recognitionUpdateScript("http://localhost", "token", false), context);
+    assert.equal(playlist.parentElement.children.length, 0);
+    assert.equal(header.parentElement.children.length, 1);
+    assert.notEqual(header.parentElement.children[0], misplaced);
+    inputs.splice(0, 1);
+    runInNewContext(recognitionUpdateScript("http://localhost", "token", false), context);
+    assert.equal(header.parentElement.children.length, 0);
+    assert.equal(playlist.parentElement.children.length, 0);
+  });
+
+  it("替换旧版本按钮的点击处理，让它打开新版识曲面板", () => {
+    const header = fakeInput({ top: 24, left: 210, width: 260, height: 34 }, "搜索");
+    const { context } = anchorFixture([header]);
+    const old = context.window.__nemusicRecognition;
+    const oldButton = header.parentElement.children[0];
+    old.version = 5;
+    runInNewContext(recognitionScript("http://localhost", "token", false), context);
+    const fresh = context.window.__nemusicRecognition;
+    let opened = false;
+    fresh.show = () => { opened = true; };
+    assert.notEqual(fresh, old);
+    assert.equal(header.parentElement.children.length, 1);
+    assert.notEqual(header.parentElement.children[0], oldButton);
+    header.parentElement.children[0].listeners.get("click")!({ preventDefault() {}, stopPropagation() {} });
+    assert.equal(opened, true);
+  });
+
+  it("兼容旧网页的全局顶栏搜索框", () => {
+    const header = fakeInput({ top: 24, left: 210, width: 260, height: 34 }, "搜索", ".m-top");
+    anchorFixture([header]);
+    assert.equal(header.parentElement.children.length, 1);
   });
 
   it("placeholder 写着搜索的框即使位置稍偏也会被选中", () => {

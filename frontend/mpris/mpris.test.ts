@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { describe, it } from "node:test";
-import { runInNewContext } from "node:vm";
+import { createContext, runInContext, runInNewContext } from "node:vm";
 import { HelperClient, HelperConnectionError } from "../runtime/helper-client.ts";
+import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
 
 const source = stripTypeScriptTypes(
   readFileSync(new URL("./mpris.ts", import.meta.url), "utf8")
@@ -19,11 +20,13 @@ const targetSource = stripTypeScriptTypes(
 );
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function setup(options: { trackId?: string; lyric?: unknown; platform?: string; endpoint?: string; reconnectEndpoint?: string; failState?: boolean } = {}) {
+function setup(options: { trackId?: string; lyric?: unknown; platform?: string; endpoint?: string; reconnectEndpoint?: string; failState?: boolean; snapshot?: () => unknown; notifyMode?: "system" | "steam" } = {}) {
   const evaluations: string[] = [];
   const polls: { signal: AbortSignal; deliver: (commands: unknown[]) => void; fail: () => void }[] = [];
   const endpointCalls: string[] = [];
   const requests: { url: string; token: string }[] = [];
+  const statePayloads: Record<string, any>[] = [];
+  const toasts: string[][] = [];
   let interval: () => void = () => {};
   let holdSnapshot: Promise<void> | null = null;
   let stateUpdates = 0;
@@ -33,6 +36,7 @@ function setup(options: { trackId?: string; lyric?: unknown; platform?: string; 
   const Bridge = runInNewContext(`${targetSource}\nconst mprisHelper = new HelperClient(ffi('mpris_endpoint'), ffi('mpris_reconnect'), fetch);\n${source}; MprisBridge`, {
     HelperClient,
     HelperConnectionError,
+    steamToast: (title: string, artist: string) => { toasts.push([title, artist]); },
     navigator: { platform: options.platform ?? "Linux" },
     window: {
       setInterval(callback: () => void) { interval = callback; return 1; },
@@ -62,7 +66,7 @@ function setup(options: { trackId?: string; lyric?: unknown; platform?: string; 
           evaluations.push(params.expression);
           if (params.expression === "snapshot") {
             await holdSnapshot;
-            const snapshot = options.trackId
+            const snapshot = options.snapshot ? options.snapshot() : options.trackId
               ? { active: true, playbackStatus: "Playing", title: "歌名", artist: "歌手", trackId: options.trackId, duration: 100, position: 0 }
               : { active: true };
             return { result: { value: snapshot } };
@@ -76,7 +80,7 @@ function setup(options: { trackId?: string; lyric?: unknown; platform?: string; 
         return {};
       },
     },
-    fetch: async (url: string, requestOptions: { signal: AbortSignal; headers: Record<string, string> }) => {
+    fetch: async (url: string, requestOptions: { signal: AbortSignal; headers: Record<string, string>; body?: string }) => {
       requests.push({ url, token: requestOptions.headers["X-NEMusic-Token"] });
       if (url.endsWith("/commands?wait=1")) {
         return new Promise((resolve, reject) => {
@@ -90,17 +94,18 @@ function setup(options: { trackId?: string; lyric?: unknown; platform?: string; 
       }
       if (url.endsWith("/state")) {
         stateUpdates++;
+        statePayloads.push(JSON.parse(requestOptions.body!));
         if (options.failState) throw new Error("connection lost");
       }
       // The bridge drains the body of every state push; a real Response always offers the body.
       return { ok: true, arrayBuffer: async () => new ArrayBuffer(0) };
     },
   });
-  const bridge = new Bridge(() => {}, () => {});
+  const bridge = new Bridge(() => {}, () => {}, () => options.notifyMode ?? "system");
   bridge.setEnabled(true);
   bridge.start();
   return {
-    bridge, evaluations, polls, endpointCalls, requests,
+    bridge, evaluations, polls, endpointCalls, requests, statePayloads, toasts,
     tick: () => interval(),
     holdSnapshot: (promise: Promise<void>) => { holdSnapshot = promise; },
     stateUpdates: () => stateUpdates,
@@ -109,6 +114,37 @@ function setup(options: { trackId?: string; lyric?: unknown; platform?: string; 
     advance: (ms: number) => { clock.now += ms; },
   };
 }
+
+describe("网页切歌通知", () => {
+  for (const notifyMode of ["system", "steam"] as const) {
+    it(`${notifyMode} 通知不在切歌空档或媒体会话延迟更新时重复提示上一首`, async () => {
+      const playing = { resourceTrackId: "1", resourceDuration: 100, resourceName: "上一首", resourceArtists: [{ name: "歌手一" }] };
+      const source = { getState: () => ({ playing }), dispatch() {} };
+      const mediaSession = { metadata: { title: "上一首", artist: "歌手一" }, playbackState: "playing" };
+      const page = createContext({
+        document: { querySelectorAll: () => [], querySelector: () => null },
+        navigator: { mediaSession },
+        __NEMusicOnSteamPlayerStore: source, __NEMusicOnSteamPlayerStoreSource: {},
+      });
+      const player = setup({ snapshot: () => runInContext(SNAPSHOT_SCRIPT, page), notifyMode });
+      await flush();
+      Object.assign(playing, { resourceTrackId: "", resourceName: "", resourceArtists: [] });
+      player.tick();
+      await flush();
+      Object.assign(playing, { resourceTrackId: "2", resourceName: "下一首", resourceArtists: [{ name: "歌手二" }] });
+      player.tick();
+      await flush();
+      mediaSession.metadata = { title: "下一首", artist: "歌手二" };
+      player.tick();
+      await flush();
+
+      const songs = player.statePayloads.filter(state => state.title).map(state => [state.trackId, state.title, state.artist, state.notify]);
+      assert.deepEqual(songs, [["1", "上一首", "歌手一", notifyMode], ["2", "下一首", "歌手二", notifyMode]]);
+      assert.deepEqual(player.toasts, notifyMode === "steam" ? [["上一首", "歌手一"], ["下一首", "歌手二"]] : []);
+      await player.bridge.stop();
+    });
+  }
+});
 
 describe("MPRIS command delivery", () => {
   it("executes incoming commands and publishes state without waiting for a timer", async () => {

@@ -5,7 +5,7 @@
  */
 
 /** 注入的 api 结构一有变化就递增，让升级能够替换掉页面上的旧脚本。 */
-const RECOGNITION_API_VERSION = 5;
+const RECOGNITION_API_VERSION = 6;
 
 /**
  * 两个脚本都返回 {ok, note}：note 是人话版的失败原因，直接显示到插件的设置页。
@@ -214,34 +214,35 @@ export function recognitionScript(endpoint: string, token: string, open = false)
         list.append(item);
       }
     };
-    /**
-     * 把按钮挂到网易云顶栏的搜索框右边。返回空串表示已经在位，非空就是人话的失败原因。
-     *
-     * 以前这里是「第一个满足 top<100 && width>120 的 input 就用它」，条件又窄又硬：
-     * 网易云把顶栏改高一点、搜索框窄一点，按钮就无声无息地不装了，而且一行日志都没有。
-     * 现在改成给所有候选打分再挑最好的一个，挑不到就把候选的尺寸报出来。
-     */
+    // 只允许挂到全局导航栏。歌单搜索框可能在滚动后也出现在视口顶部，
+    // 不能用位置或 placeholder 打分来替代容器判断；顶栏未挂载时等下一次刷新。
     const ensureHeaderButton = () => {
-      if (document.querySelector?.('[data-nemusic-recognition-button]')) return '';
       const inputs = Array.from(document.querySelectorAll?.('input[placeholder], input[type="search"], input') ?? []);
       const candidates = [];
       for (const input of inputs) {
+        if (!input.closest?.('#page_pc_main_nav, .m-top, #g-topbar')) continue;
         let rect = null;
         try { rect = input.getBoundingClientRect(); } catch (error) { continue; }
-        if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+        if (!rect || rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0) continue;
+        const style = typeof getComputedStyle === 'function' ? getComputedStyle(input) : null;
+        if (style?.display === 'none' || style?.visibility === 'hidden') continue;
         const placeholder = String(input.getAttribute?.('placeholder') || input.placeholder || '');
-        // 分层而不是加权求和：placeholder 像搜索框是最强的信号，其次是位置在顶栏，
-        // 最后才比宽度。加权分数调起来很难推理，调坏了也看不出是哪一权出错的。
-        const looksSearch = /搜索|search|搜/i.test(placeholder);
-        const inHeader = rect.top < 140;
-        const score = (looksSearch ? 100000 : 0) + (inHeader ? 10000 : 0) + Math.min(rect.width, 600) * 10 - rect.left;
+        const hint = [placeholder, input.getAttribute?.('aria-label'), input.getAttribute?.('type')].join(' ');
+        const looksSearch = /搜索|search|搜/i.test(hint) || input.closest?.('.m-srch, [class*="SearchWrapper_"]');
+        const score = (looksSearch ? 100000 : 0) + Math.min(rect.width, 600) * 10 - rect.left;
         candidates.push({ input, rect, placeholder, score });
       }
       candidates.sort((left, right) => right.score - left.score);
       const best = candidates[0];
+      const parent = best?.input.parentElement;
+      // 清理旧版本或页面切换时留在错误位置的按钮；旧闭包上的点击处理也要替换。
+      const buttons = Array.from(document.querySelectorAll?.('[data-nemusic-recognition-button]') ?? []);
+      const current = buttons.find(button => button === api.headerButton && parent && button.parentElement === parent);
+      for (const button of buttons) if (button !== current) button.remove();
+      if (current) return '';
+      api.headerButton = null;
       if (!best || !best.input.parentElement) {
-        const seen = candidates.slice(0, 4).map(item => 'top=' + Math.round(item.rect.top) + ' left=' + Math.round(item.rect.left) + ' ' + Math.round(item.rect.width) + 'x' + Math.round(item.rect.height) + ' 「' + item.placeholder.slice(0, 12) + '」').join('; ');
-        const note = '页面顶栏没找到可以放识曲按钮的搜索框' + (seen ? '（候选：' + seen + '）' : '（页面里一个 input 都没有）');
+        const note = '页面顶栏没找到可以放识曲按钮的搜索框' + (inputs.length ? '（等待全局导航栏搜索框显示）' : '（页面里一个 input 都没有）');
         try { console.warn('[NEMusic] recognition anchor', note); } catch (error) {}
         return note;
       }
@@ -254,6 +255,7 @@ export function recognitionScript(endpoint: string, token: string, open = false)
       button.style.cssText = 'display:inline-flex;align-items:center;justify-content:center;width:34px;height:34px;margin-left:8px;padding:0;border:0;border-radius:8px;background:transparent;color:inherit;cursor:pointer;';
       button.addEventListener('click', event => { event.preventDefault(); event.stopPropagation(); api.show(); });
       best.input.parentElement.append(button);
+      api.headerButton = button;
       return '';
     };
     api.start = async () => {

@@ -48,22 +48,26 @@
 | 歌词       | 仅 Linux       | 依赖 MPRIS 连接，做法见[#歌词](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E6%AD%8C%E8%AF%8D)            |
 | 全局快捷键 | 仅 Linux       | 依赖 MPRIS 连接，做法见[#全局快捷键](https://github.com/TATyKeFei/NEMusicOnSteam/wiki/%E5%8A%9F%E8%83%BD%E4%BB%8B%E7%BB%8D#%E5%85%A8%E5%B1%80%E5%BF%AB%E6%8D%B7%E9%94%AE)       |
 | 多播放后端支持 | 仅 Linux   | 可选 mpv、mpd 作为音频播放器引擎                      |
-| 歌曲自动衔接 | 仅 Linux     | 播放完后自动衔接过度下一首歌                          |
+| 歌曲过渡     | 仅 Linux     | mpv 可选无、自动衔接或 1–12 秒渐变过渡                |
+| 提前预载下一首 | 支持       | 网页播放和 mpv 无过渡模式下也可独立启用预载           |
 | 界面Ui缩放 | 支持           | 网易云很多样式都是根据固定像素而不是分辨率百分比，导致ui在高分辨率大尺寸的显示器显得很小。缩放可以解决这些问题  |
 | 全屏与窗口铺满 | 支持       | 点击搜索框右侧全屏按钮进入桌面全屏；按住 Shift 点击只铺满当前 Steam 窗口，不改变窗口大小。再次点击或按 Esc 退出 |
 | UnblockNeteaseMusic | 支持  | 支持下载播放灰色无声源歌曲，在官方无地址或仅有试听时尝试其他音源 |
 | Steam叠加页面 | 支持中      | 仅支持X11的游戏/软件，因为sbSteam还不支持Wayland，使用Wayland的游戏打开叠加面板画面会卡死 |
 | last.fm    | 后续支持       | 记录听歌统计                                          |
-| 手柄控制支持 | 后续支持     | 为一些掌机如SteamDeck服务，就不用搞得屏幕一堆指纹了   |
+| 手柄控制支持 | 后续支持     | 为一些掌机如 SteamDeck、刷了 Linux 的硬破 Switch 服务，就不用搞得屏幕一堆指纹擦来擦去了   |
 | API 接口   | 后续支持       | 其他插件可以使用api控制播放暂停歌曲                   |
 | HTTP代理   | 后续考虑支持   | 一些海外华人可能由于回国流量差延迟高导致播放缓存卡顿，用一些回国加速器可能没法正常用Steam，代理可能解决这个痛点       |
 
-# 不支持功能
+## 受到限制无法支持的功能
+
+这些功能如果未来开放或发现有实现方式会支持的
 
 | 内容               | 支持状况          | 备注   |
 | :--- | :--- | :--- |
 | Steam大屏幕模式支持           | 不支持 | 不清楚millennium的原因还是什么，没法在大屏幕模式中注入任何控件           |
-| Steam好友状态显示当前播放歌曲 | 不支持 | 目前没有稳定良好的思路方法实现，也怕有坏人用来骚扰好友                   |
+| Steam好友状态显示当前播放歌曲 | 不支持 | 目前发现Steam有残留文本代码显示听的原声集但未使用，怕封号风险也不敢做。如果用添加非Steam程序的思路我怕有人故意骚扰好友       |
+| 桌面歌词                      | 不支持 | 虽然但是更建议使用当前桌面环境下的歌词小部件。由于 Steam 还在使用 X11，在 Wayland 上会可能有一些问题。等 Steam 支持 Wayland 再考虑 |
 
 # 预览
 
@@ -132,8 +136,9 @@ npm run build -- --no-install   # 只打包、不复制到millennium插件目录
 - Steam 更新可能改掉 `BrowserView` 或主窗口名字 `SP Desktop`可能导致打不开，需要时间适配
 - MPRIS 通过 DevTools 在网易云页面读取状态并调用现有播放器动作，依赖网页的 React/Redux 结构；网易云音乐Web版改版可能需要时间更新适配
 - mpv 后端依赖本机安装 `mpv`，启动时会避开 Steam Runtime 的动态库环境；目前由网易云网页提供歌曲地址和播放列表，网页登录失效或网易云改版时，mpv 也无法继续解析新歌曲
-- 歌曲自动衔接默认关闭，可在 mpv 设置中选择保守、标准或积极，淡化上限分别为 3、3.6、5 秒。另需安装 `ffmpeg`（Arch：`sudo pacman -S mpv ffmpeg`）；解码到有限 PCM 缓冲，在同一条 mpv 输出流内混合，跳过下一首最多 2 秒的近乎静音开头。暂停和拖动进度仍可用，歌词跟随已播放的下一首进度
-- 自动衔接只用于顺序播放和列表循环；随机、单曲循环、FM、一起听及试听片段保持普通切歌。下一首解析或解码失败时继续当前曲，播完再按普通方式切歌。此功能采用非 AI 的能量检测与淡化，不包含节拍补齐、BPM 对齐或生成音乐
+- mpv 的“过渡模式”位于“播放后端”下方，可选无（默认）、自动衔接或渐变过渡。自动衔接时才显示“歌曲衔接”的保守、标准和积极档位，淡化上限分别为 3、3.6、5 秒；渐变过渡则单独设置 1–12 秒（默认 4 秒），让上一首淡出、下一首淡入，歌曲较短时缩短淡化窗口。两种过渡都需要 `ffmpeg`（Arch：`sudo pacman -S mpv ffmpeg`），在同一条 mpv 输出流内混合，跳过下一首最多 2 秒的近乎静音开头。暂停和拖动进度仍可用，歌词跟随已播放的下一首进度
+- “提前预载下一首”默认关闭，可在网页播放和 mpv 无过渡模式下独立开启，通常在歌曲剩余 45 秒时开始。网页使用网易云当前播放音质，提前缓冲音频并缓存下一首的 URL 响应；浏览器决定实际媒体缓存量。mpv 需要 `ffmpeg`，提前解码到有限 PCM 缓冲，完整播完当前歌曲后再从下一首开头播放，不混音或跳过静音。自动衔接和渐变过渡始终预载下一首；长渐变在高倍速下会更早开始准备
+- 过渡和预载只用于顺序播放和列表循环；随机、单曲循环、FM、一起听及试听片段保持普通切歌。下一首解析或解码失败时继续当前曲，播完再按普通方式切歌。关闭预载、改队列、切换网页音质或拖回歌曲前段会清理网页预载缓存。此功能采用非 AI 的能量检测与淡化，不包含节拍补齐、BPM 对齐或生成音乐
 - 远程 MPD 必须能直接访问音频地址；需要特定 Referer 的部分解灰音源可能被拒绝。MPD 密码保存在本机插件设置中，采用 MPD 自身的认证协议
 - 后台播放依赖 Steam 的通话功能，会调用`SteamClient.Browser.SetBackgroundThrottlingDisabled(true)`函数。如果正在通话时暂停播放音乐可能导致通话出问题
 
@@ -144,7 +149,7 @@ npm run build -- --no-install   # 只打包、不复制到millennium插件目录
 - 登录态在 Steam 自带的浏览器里，和系统其他浏览器不共享
 - 不会窃取任何数据，程序就开源在这了，不放心就自己构建插件
 - 不承担封号风险: 如果被封号建议去测丁磊老冯
-- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的（声明的声明：我虽然用Arch + rust但我不是那种xnnLGBT，我只是爱好者别给我扣帽子）
+- 本项目Ai生成: 这个项目是我指挥Ai写的并审查，反正这个项目也不大就内嵌个页面支持点小玩意啥的没啥技术含量。我不会typescript和lua，我臭玩rust和godotscript的
 
 # 使用/参考的项目
 
@@ -158,9 +163,10 @@ npm run build -- --no-install   # 只打包、不复制到millennium插件目录
 | :--- | :--- | :--- |
 | Millennium | [Github仓库](https://github.com/SteamClientHomebrew/Millennium)  | 用于加载本插件                                      |
 | MusicFox   | [Github仓库](https://github.com/go-musicfox/go-musicfox)         | 好用的网易云终端工具，本项目的MPIRS功能参考了此项目 |
-| open orpheus | [Github仓库](https://github.com/YUCLing/open-orpheus)          | 能让Linux运行网易云客户端，听歌识曲功能参考了此项目 |
+| Open Orpheus | [Github仓库](https://github.com/YUCLing/open-orpheus)          | 能让Linux运行网易云客户端，听歌识曲功能参考了此项目 |
 | NeteaseCloudMusicApiEnhanced | [Github仓库](https://github.com/NeteaseCloudMusicApiEnhanced/api-enhanced) | 听歌识曲api接口功能用了他 |
-| Qplayer    | [Github仓库](https://github.com/TIMER-err/qplayer)               | 第三方网易云音乐客户端，一起听、衔接功能参考了他          |
+| Qplayer    | [Github仓库](https://github.com/TIMER-err/qplayer)               | 第三方网易云音乐客户端，一起听参考了他    |
+| Splayer-Next | [Github仓库](https://github.com/SPlayer-Dev/SPlayer-Next)      | 第三方网易云音乐客户端，衔接功能参考了他  |
 | UnblockNeteaseMusic | [Github仓库](https://github.com/UnblockNeteaseMusic/server) | 支持播放无声源歌曲[上游库和许可证](THIRD_PARTY_NOTICES.md) |
 
 # 为什么有网易云客户端还要去写这个？

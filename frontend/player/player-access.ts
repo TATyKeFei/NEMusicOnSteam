@@ -147,10 +147,20 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const media = mediaCandidates.sort((left, right) => mediaScore(right) - mediaScore(left))[0] || null;
   const metadata = navigator.mediaSession?.metadata;
   const text = selectors => document.querySelector(selectors)?.textContent?.trim() || '';
-  const title = metadata?.title || text('.m-playbar .words .name, [class*="song-name"], [class*="songName"], [class*="SongName"]');
-  const artist = metadata?.artist || text('.m-playbar .words .by a, [class*="artist-name"], [class*="artistName"]');
-  const album = metadata?.album || '';
-  const artUrl = metadata?.artwork?.at(-1)?.src || playing?.resourceCoverUrl || document.querySelector('.m-playbar .head img')?.src || '';
+  // 网页切歌先更新 Redux，mediaSession 要到新音频开始播放才更新。
+  // 有原生歌曲 ID 时必须连同元数据一起读 Redux，避免「新 ID + 上一首歌名」触发通知。
+  const nativeMetadata = Boolean(playing && ('resourceTrackId' in playing || 'resourceName' in playing));
+  const nativeId = String(playing?.resourceTrackId || '');
+  const current = playing?.curPlaying;
+  const currentId = String(current?.trackId || current?.resourceId || current?.track?.id || current?.id || '');
+  const nativeTrack = [playing?.curTrack, playing?.curVoice].find(item => nativeId && String(item?.mainTrackId || item?.id || '') === nativeId);
+  const track = nativeTrack || (nativeId && currentId === nativeId ? current?.track || current : null);
+  const artists = playing?.resourceArtists ?? track?.artists ?? track?.ar ?? [];
+  const trackAlbum = track?.album || track?.al || {};
+  const title = nativeMetadata ? String(playing?.resourceName ?? track?.name ?? '') : metadata?.title || text('.m-playbar .words .name, [class*="song-name"], [class*="songName"], [class*="SongName"]');
+  const artist = nativeMetadata ? (Array.isArray(artists) ? artists.map(item => item?.name).filter(Boolean).join(' / ') : '') : metadata?.artist || text('.m-playbar .words .by a, [class*="artist-name"], [class*="artistName"]');
+  const album = nativeMetadata ? String(trackAlbum.name || '') : metadata?.album || '';
+  const artUrl = nativeMetadata ? String(playing?.resourceCoverUrl ?? trackAlbum.picUrl ?? '') : metadata?.artwork?.at(-1)?.src || document.querySelector('.m-playbar .head img')?.src || '';
   const progressSlider = slider('播放进度调节');
   const progress = sliderValue(sliderHandle('播放进度调节')) || sliderValue(progressSlider);
   const mediaDuration = Number.isFinite(media?.duration) && media.duration > 0 ? media.duration : 0;
@@ -175,5 +185,5 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const playbackStatus = media ? (media.ended ? 'Stopped' : media.paused ? 'Paused' : 'Playing') : playControl ? (isPlayingButton ? 'Playing' : 'Paused') : sessionState === 'playing' ? 'Playing' : sessionState === 'paused' ? 'Paused' : title ? 'Playing' : 'Stopped';
   const nextControl = findControl(NEXT_LABELS);
   const previousControl = findControl(PREV_LABELS);
-  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: String(playing?.resourceTrackId || [title, artist, album].join('|')), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(nextControl) && !isDisabled(nextControl), canGoPrevious: Boolean(previousControl) && !isDisabled(previousControl), volume, loopStatus, shuffle, rate };
+  return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: nativeMetadata ? nativeId : [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(nextControl) && !isDisabled(nextControl), canGoPrevious: Boolean(previousControl) && !isDisabled(previousControl), volume, loopStatus, shuffle, rate };
 })()`;

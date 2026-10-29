@@ -14,10 +14,11 @@ from mpv_helper import MpvProcess, MpvService
 from pcm_mixer import BLOCK_FRAMES, BUFFER_BLOCKS, FRAME_BYTES, SAMPLE_RATE, Decoder, PcmMixer, blend, energy, floats
 
 
-def make_audio(path, seconds, frequency=440, silence=0):
+def make_audio(path, seconds, frequency=440, silence=0, quiet_after=None):
     samples = array.array("h")
     for frame in range(int(seconds * SAMPLE_RATE)):
-        sample = int(6000 * math.sin(math.tau * frequency * frame / SAMPLE_RATE)) if frame >= silence * SAMPLE_RATE else 0
+        audible = frame >= silence * SAMPLE_RATE and (quiet_after is None or frame < quiet_after * SAMPLE_RATE)
+        sample = int(6000 * math.sin(math.tau * frequency * frame / SAMPLE_RATE)) if audible else 0
         samples.extend((sample, sample))
     with wave.open(path, "wb") as handle:
         handle.setnchannels(2)
@@ -62,11 +63,102 @@ class MixerTests(unittest.TestCase):
         make_audio(self.second, 8, 660, silence=0.2)
         self.environment = MpvProcess.clean_environment()
 
-    def mixer(self):
-        mixer = PcmMixer(self.directory.name, {"url": self.first, "title": "first", "trackId": "1", "duration": 5},
+    def mixer(self, transition_mode="auto", seconds=3.6, duration=5):
+        mixer = PcmMixer(self.directory.name, {"url": self.first, "title": "first", "trackId": "1", "duration": duration,
+                                             "transitionMode": transition_mode, "crossfadeSeconds": seconds},
                          "standard", self.environment, lambda: 0)
         self.addCleanup(mixer.close)
         return mixer
+
+    def test_transition_modes_use_energy_or_the_fixed_tail_window(self):
+        make_audio(self.first, 5, quiet_after=0.5)
+        for mode in ("auto", "crossfade"):
+            with self.subTest(mode=mode):
+                mixer = self.mixer(mode)
+                mixer.prepare({"url": self.second, "trackId": "2", "duration": 8, "fromTrackId": "1", "revision": 1})
+                wait_until(lambda: mixer.current.eof and mixer.following.buffered > 4 * SAMPLE_RATE)
+                started = None
+                for _ in range(110):
+                    data = mixer.render()
+                    self.assertTrue(data)
+                    mixer.rendered += len(data) // FRAME_BYTES
+                    if started is None and mixer.fade_progress is not None:
+                        started = mixer.rendered / SAMPLE_RATE
+                    if len(mixer.events) > 1:
+                        break
+                self.assertIsNotNone(started)
+                # 自动衔接可在低音量尾段提前接入，渐变过渡等待最后 3.6 秒。
+                self.assertAlmostEqual(started, 0.7 if mode == "auto" else 1.4, delta=0.06)
+                self.assertEqual(len(mixer.events), 2)
+                boundary = mixer.events[1][0] / SAMPLE_RATE
+                self.assertAlmostEqual(boundary, 4.25 if mode == "auto" else 5, delta=0.1)
+                self.assertEqual(mixer.view(boundary)["payload"]["transitionMode"], mode)
+                mixer.close()
+
+    def test_crossfade_short_next_track_preserves_the_outgoing_tail(self):
+        make_audio(self.second, 1.2, 660)
+        mixer = self.mixer("crossfade")
+        mixer.prepare({"url": self.second, "trackId": "2", "duration": 1.2, "fromTrackId": "1", "revision": 1})
+        wait_until(lambda: mixer.current.eof and mixer.following.eof)
+        for _ in range(110):
+            data = mixer.render()
+            self.assertTrue(data)
+            mixer.rendered += len(data) // FRAME_BYTES
+            if len(mixer.events) > 1:
+                break
+        self.assertEqual(len(mixer.events), 2)
+        boundary = mixer.events[1][0] / SAMPLE_RATE
+        self.assertAlmostEqual(boundary, 5, delta=0.1)
+        self.assertAlmostEqual(mixer.view(boundary)["position"], 0.6, delta=0.1)
+
+    def test_no_transition_keeps_both_full_tracks_without_overlap_or_intro_skipping(self):
+        mixer = self.mixer("none")
+        mixer.prepare({"url": self.second, "trackId": "2", "duration": 8, "fromTrackId": "1", "revision": 1})
+        wait_until(lambda: mixer.current.eof and mixer.following.buffered > 4 * SAMPLE_RATE)
+        audio = bytearray()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            data = mixer.render()
+            if data is None:
+                time.sleep(0.001)
+                continue
+            if not data:
+                break
+            audio.extend(data)
+            mixer.rendered += len(data) // FRAME_BYTES
+        else:
+            self.fail("mixer did not finish")
+        boundary = mixer.events[1][0]
+        self.assertEqual(boundary, 5 * SAMPLE_RATE)
+        self.assertEqual(len(audio) // FRAME_BYTES, 13 * SAMPLE_RATE)
+        self.assertEqual(mixer.view(5)["position"], 0)
+        self.assertEqual(energy(audio[boundary * FRAME_BYTES:(boundary + BLOCK_FRAMES) * FRAME_BYTES]), 0)
+
+    def test_crossfade_duration_accepts_one_and_twelve_seconds(self):
+        make_audio(self.first, 14)
+        make_audio(self.second, 28, 660)
+        for seconds in (1, 12):
+            with self.subTest(seconds=seconds):
+                mixer = self.mixer("crossfade", seconds=seconds, duration=14)
+                mixer.prepare({"url": self.second, "trackId": "2", "duration": 28, "fromTrackId": "1", "revision": 1})
+                wait_until(lambda: mixer.current.buffered >= 6 * SAMPLE_RATE and mixer.following.buffered >= 6 * SAMPLE_RATE)
+                started = None
+                deadline = time.monotonic() + 10
+                while len(mixer.events) < 2 and time.monotonic() < deadline:
+                    data = mixer.render()
+                    if data is None:
+                        time.sleep(0.001)
+                        continue
+                    self.assertTrue(data)
+                    mixer.rendered += len(data) // FRAME_BYTES
+                    if started is None and mixer.fade_progress is not None:
+                        started = mixer.rendered / SAMPLE_RATE
+                self.assertIsNotNone(started)
+                self.assertAlmostEqual(started, 14 - seconds, delta=0.1)
+                self.assertEqual(len(mixer.events), 2)
+                self.assertAlmostEqual(mixer.events[1][0] / SAMPLE_RATE, 14, delta=0.1)
+                self.assertEqual(mixer.view(14)["payload"]["crossfadeSeconds"], seconds)
+                mixer.close()
 
     def test_decoder_is_bounded_and_closes_children(self):
         decoder = Decoder({"url": self.second}, self.environment)
@@ -163,6 +255,15 @@ class MixerTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("mpv"), "mpv and ffmpeg are required")
 class PcmOutputTests(unittest.TestCase):
     def test_real_mpv_uses_one_stream_and_keeps_pause_and_seek(self):
+        self.check_output("auto")
+
+    def test_real_crossfade_keeps_one_stream_and_preserves_the_mode_after_seek(self):
+        self.check_output("crossfade")
+
+    def test_real_no_transition_preloads_and_preserves_the_mode_after_seek(self):
+        self.check_output("none")
+
+    def check_output(self, transition_mode):
         with tempfile.TemporaryDirectory(prefix="nemusic-pcm-output-") as directory:
             first = os.path.join(directory, "first.wav")
             second = os.path.join(directory, "second.wav")
@@ -180,14 +281,18 @@ class PcmOutputTests(unittest.TestCase):
             try:
                 with patch.object(service, "validate", side_effect=lambda payload: payload["url"]):
                     service.load({"url": first, "title": "first", "trackId": "1", "duration": 4,
-                                  "autoplay": True, "crossfade": "standard"})
+                                  "autoplay": True, "crossfade": "off" if transition_mode == "none" else "standard",
+                                  "transitionMode": transition_mode, "crossfadeSeconds": 2, "preloadNext": transition_mode == "none"})
                     mixer = service.mixer
                     service.prepare({"url": second, "title": "second", "trackId": "2", "duration": 6,
                                      "fromTrackId": "1", "revision": 1, "crossfade": "standard", "streamId": mixer.identifier})
                     process = service.mpv.process.pid
                     wait_until(lambda: service.snapshot()["trackId"] == "2", timeout=9)
                     state = service.snapshot()
-                    self.assertGreater(state["position"], 2)
+                    if transition_mode == "none":
+                        self.assertLess(state["position"], 0.5)
+                    else:
+                        self.assertGreater(state["position"], 1.8)
                     self.assertEqual(service.mpv.process.pid, process)
                     self.assertEqual(service.mpv.property("path"), mixer.fifo)
                     service.command({"action": "pause"})
@@ -195,11 +300,17 @@ class PcmOutputTests(unittest.TestCase):
                     time.sleep(0.15)
                     self.assertAlmostEqual(service.snapshot()["position"], position, delta=0.08)
                     service.command({"action": "setposition", "value": 1_000_000})
+                    wait_until(lambda: abs(service.snapshot()["position"] - 1) < 0.1)
                     self.assertAlmostEqual(service.snapshot()["position"], 1, delta=0.1)
                     self.assertFalse(os.path.exists(mixer.fifo))
+                    self.assertEqual(service.mixer.transition_mode, transition_mode)
+                    self.assertEqual(service.mixer.crossfade_seconds, 2)
                     self.assertEqual(service.snapshot()["playbackStatus"], "Paused")
                     self.assertFalse(service.prepare({"fromTrackId": "2", "revision": 9,
                                                       "streamId": mixer.identifier})["accepted"])
+                    service.command({"action": "loop", "value": "Track"})
+                    self.assertIsNone(service.mixer)
+                    self.assertEqual(service.mpv.property("loop-file"), "inf")
             finally:
                 service.close()
             self.assertFalse(any(thread.name in ("nemusic-pcm", "nemusic-decode") for thread in threading.enumerate()))

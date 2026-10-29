@@ -2,7 +2,7 @@ import { tryEvaluateInPlayer } from "../player/player-target.ts";
 import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
 import { downloadScript, type DownloadTrack, type DownloadSong } from "../download/download-player.ts";
 import { CROSSFADE_QUEUE_SCRIPT, crossfadeAdoptScript, crossfadeClockScript, type CrossfadeCandidate } from "./crossfade-player.ts";
-import type { CrossfadeMode } from "../settings.ts";
+import type { CrossfadeMode, TransitionMode } from "../settings.ts";
 import type { Command } from "../mpris/mpris-player.ts";
 import type { ExternalPlayback, TrackState } from "../mpris/mpris.ts";
 
@@ -260,6 +260,9 @@ export type ExternalAudioOptions = {
   resolveTrack?: (quality: number, signal?: AbortSignal) => Promise<DownloadTrack>;
   holdWebDuringResolution?: () => boolean;
   crossfade?: () => CrossfadeMode;
+  transitionMode?: () => TransitionMode;
+  crossfadeSeconds?: () => number;
+  preloadNext?: () => boolean;
   resolveNextTrack?: (quality: number, song: DownloadSong, signal?: AbortSignal) => Promise<DownloadTrack>;
 };
 
@@ -435,7 +438,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
       this.handoff = null;
       this.ignoreHandoffs = true;
       this.clearPreload();
-      if (this.options.crossfade?.() && this.options.crossfade() !== "off" && this.endpoint) {
+      if (this.usesPcm() && this.endpoint) {
         await this.request("/command", generation, { action: "pause" });
         if (!this.isCurrent(generation)) return false;
       }
@@ -450,7 +453,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
         this.stopRequested = false;
       } else {
         this.ignoreHandoffs = false;
-        if (autoplay && this.options.crossfade?.() && this.options.crossfade() !== "off" && this.endpoint) {
+        if (autoplay && this.usesPcm() && this.endpoint) {
           await this.request("/command", generation, { action: "play" });
         }
       }
@@ -559,7 +562,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
       const web = (await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null;
       if (!this.isCurrent(generation)) return;
       let earlyPayload: ExternalAudioPayload | null = null;
-      if (this.options.crossfade?.() && this.options.crossfade() !== "off") {
+      if (this.usesPcm()) {
         const response = await this.request("/state", generation);
         if (!this.isCurrent(generation)) return;
         if (response.ok) earlyPayload = await response.json() as ExternalAudioPayload;
@@ -688,19 +691,24 @@ export class ExternalAudioBridge implements ExternalPlayback {
       || (web.playbackStatus === "Playing" && this.state.playbackStatus !== "Paused"));
   }
 
+  private usesPcm(): boolean {
+    return Boolean(this.options.preloadNext?.() || (this.options.crossfade?.() && this.options.crossfade() !== "off"));
+  }
+
   private async loadFromWeb(web: TrackState, autoplay: boolean, generation: number): Promise<void> {
     this.clearPreload();
     this.handoff = null;
     this.webClockPosition = null;
     this.webClockTarget = null;
     const transportEpoch = this.transportEpoch;
-    let crossfade: CrossfadeMode = this.options.crossfade?.() ?? "off";
-    if (crossfade !== "off") {
+    let crossfade: CrossfadeMode = this.options.transitionMode?.() === "none" ? "off" : this.options.crossfade?.() ?? "off";
+    let preloadNext = this.options.preloadNext?.() === true;
+    if (crossfade !== "off" || preloadNext) {
       const queue = await tryEvaluateInPlayer(CROSSFADE_QUEUE_SCRIPT) as CrossfadeCandidate | null;
       if (!this.isCurrent(generation)) return;
-      if (!queue?.eligible || web.loopStatus === "Track" || web.shuffle) crossfade = "off";
+      if (!queue?.eligible || web.loopStatus === "Track" || web.shuffle) { crossfade = "off"; preloadNext = false; }
     }
-    if (this.options.holdWebDuringResolution?.() || crossfade !== "off") {
+    if (this.options.holdWebDuringResolution?.() || crossfade !== "off" || preloadNext) {
       await tryEvaluateInPlayer(externalSyncScript(false, true), { userGesture: true });
       if (!this.isCurrent(generation)) return;
     }
@@ -733,6 +741,9 @@ export class ExternalAudioBridge implements ExternalPlayback {
       duration: web.duration,
       loopStatus: web.loopStatus,
       crossfade: track.trial ? "off" : crossfade,
+      transitionMode: crossfade === "off" ? "none" : this.options.transitionMode?.() ?? "auto",
+      crossfadeSeconds: this.options.crossfadeSeconds?.(),
+      preloadNext: !track.trial && preloadNext,
       position: web.position,
       autoplay: transportEpoch === this.transportEpoch ? autoplay : this.playRequested,
       // 外部播放器 的初始音量是 100%：不把网页音量带上，从网页切过来就是一声爆音。
@@ -773,8 +784,9 @@ export class ExternalAudioBridge implements ExternalPlayback {
       }
       return;
     }
+    const ahead = Math.max(45, (this.options.crossfadeSeconds?.() ?? 0) * state.rate + 10);
     const song = candidate?.eligible && candidate.from === state.trackId && state.duration > 0
-      && state.duration - state.position <= 45 && !state.shuffle && state.loopStatus !== "Track" ? candidate.song : null;
+      && state.duration - state.position <= ahead && !state.shuffle && state.loopStatus !== "Track" ? candidate.song : null;
     const key = song ? `${streamId}:${state.trackId}:${song.id}` : "";
     if (key === this.preloadKey && !this.preloadDirty) return;
     this.clearPreload();
@@ -804,6 +816,9 @@ export class ExternalAudioBridge implements ExternalPlayback {
         trackId: String(song.id), url: track.url, title: track.name || song.name,
         artist: track.artist || song.artist, album: track.album || song.album, artUrl: track.cover || song.cover,
         duration: song.duration, crossfade: this.options.crossfade?.(),
+        transitionMode: this.options.transitionMode?.() ?? "auto",
+        crossfadeSeconds: this.options.crossfadeSeconds?.(),
+        preloadNext: this.options.preloadNext?.() === true,
       });
       if (!this.isCurrent(generation) || epoch !== this.preloadEpoch) return;
       if (!response.ok) throw new Error("下一首预加载失败");

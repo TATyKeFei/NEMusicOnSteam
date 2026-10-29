@@ -59,7 +59,7 @@ const webPlaying: TrackState = {
   rate: 1,
 };
 
-function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; crossfade?: boolean } = {}) {
+function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; crossfade?: boolean; transitionMode?: "none" | "auto" | "crossfade"; crossfadeSeconds?: number; preloadNext?: boolean } = {}) {
   const evaluations: string[] = [];
   const loads: Payload[] = [];
   const preparations: Payload[] = [];
@@ -105,7 +105,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     if (url.endsWith("/load")) {
       const body = JSON.parse(init!.body!);
       loads.push(body);
-      if (options.crossfade) mpv = { ...body, active: true, playbackStatus: body.autoplay ? "Playing" : "Paused", pcm: body.crossfade !== "off" };
+      if (options.crossfade || options.preloadNext) mpv = { ...body, active: true, playbackStatus: body.autoplay ? "Playing" : "Paused", pcm: body.crossfade !== "off" || body.preloadNext };
       return { ok: true, json: async () => ({}) };
     }
     if (url.endsWith("/prepare")) {
@@ -159,8 +159,11 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     ...(options.mpd ? { configuration: () => ({ host: "music.local", port: 6600, password: "", socket: "" }), supportsRate: false } : {}),
     endpoint: async () => { await endpointGate; return "http://localhost|test-token"; },
     quality: () => 1,
-    ...(options.crossfade ? {
-      crossfade: () => "standard",
+    ...(options.transitionMode ? { transitionMode: () => options.transitionMode } : {}),
+    ...(options.crossfadeSeconds ? { crossfadeSeconds: () => options.crossfadeSeconds } : {}),
+    ...(options.crossfade || options.preloadNext ? {
+      crossfade: () => options.crossfade ? "standard" : "off",
+      preloadNext: () => options.preloadNext === true,
       resolveNextTrack: async () => {
         await nextGate;
         return { ...downloadTrack, source: "api" };
@@ -236,6 +239,31 @@ function pageScripts(): PageScripts {
 const scripts = pageScripts();
 
 describe("single stream crossfade", () => {
+  it("keeps no-transition playback on the normal path until preloading is enabled", async () => {
+    const player = setup({ transitionMode: "none", web: { ...webPlaying, position: 80 } });
+    player.bridge.setEnabled(true);
+    await flush();
+    assert.equal(player.loads[0].crossfade, "off");
+    assert.equal(player.loads[0].preloadNext, false);
+    assert.equal(player.preparations.length, 0);
+    player.bridge.setEnabled(false);
+    await flush();
+  });
+
+  it("preloads early enough for a 12-second fade at high playback speed", async () => {
+    const player = setup({ crossfade: true, transitionMode: "crossfade", crossfadeSeconds: 12,
+      web: { ...webPlaying, position: 45, rate: 4 } });
+    player.bridge.setEnabled(true);
+    await flush();
+    player.setMpv({ ...webPlaying, position: 45, rate: 4, pcm: true });
+    player.tick();
+    await flush();
+    await flush();
+    assert.equal(player.preparations.filter(item => item.url).length, 1);
+    player.bridge.setEnabled(false);
+    await flush();
+  });
+
   it("synchronizes progress and the play icon after holding native audio paused on every tick", async () => {
     const player = setup({ crossfade: true });
     player.bridge.setEnabled(true);
@@ -258,15 +286,20 @@ describe("single stream crossfade", () => {
     await flush();
   });
 
-  it("preloads near the tail and adopts the next track without loading it again", async () => {
-    const player = setup({ crossfade: true, web: { ...webPlaying, position: 80 } });
+  for (const transitionMode of ["none", "auto", "crossfade"] as const) it(`preloads and adopts the next track without reloading in ${transitionMode} mode`, async () => {
+    const player = setup({ crossfade: transitionMode !== "none", preloadNext: transitionMode === "none", crossfadeSeconds: 12,
+      transitionMode, web: { ...webPlaying, position: 80 } });
     player.bridge.setEnabled(true);
     await flush();
     await flush();
     assert.equal(player.loads.length, 1);
-    assert.equal(player.loads[0].crossfade, "standard");
+    assert.equal(player.loads[0].crossfade, transitionMode === "none" ? "off" : "standard");
+    assert.equal(player.loads[0].transitionMode, transitionMode);
     assert.equal(player.loads[0].duration, 100);
     assert.equal(player.preparations.filter(item => item.url).length, 1);
+    assert.equal(player.preparations.find(item => item.url)?.transitionMode, transitionMode);
+    assert.equal(player.preparations.find(item => item.url)?.crossfadeSeconds, 12);
+    assert.equal(player.loads[0].crossfadeSeconds, 12);
     player.setMpv({ ...webPlaying, pcm: true, trackId: "2", position: 3.7, handoffId: "h1", handoffFrom: "t1" });
     player.tick();
     await flush();
@@ -330,12 +363,13 @@ describe("single stream crossfade", () => {
     await flush();
   });
 
-  it("disables the PCM path for unsupported queue modes", async () => {
-    const player = setup({ crossfade: true });
+  for (const transitionMode of ["none", "auto", "crossfade"] as const) it(`disables ${transitionMode} transitions for unsupported queue modes`, async () => {
+    const player = setup({ crossfade: transitionMode !== "none", preloadNext: true, transitionMode });
     player.setCandidate({ eligible: false, from: "t1", song: { id: 2, name: "next", artist: "artist", duration: 100 } });
     player.bridge.setEnabled(true);
     await flush();
     assert.equal(player.loads[0].crossfade, "off");
+    assert.equal(player.loads[0].preloadNext, false);
     assert.equal(player.preparations.length, 0);
     player.bridge.setEnabled(false);
     await flush();
