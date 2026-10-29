@@ -85,6 +85,13 @@ class MpdServiceTests(unittest.TestCase):
         self.assertEqual(state["playbackStatus"], "Playing")
         self.assertEqual(state["trackId"], "123")
 
+    def test_load_applies_explicit_repeat_mode_for_finish_current_and_recovery(self):
+        for mode in ("Track", "None", "Playlist"):
+            self.commands.clear()
+            self.service.load({"url": "https://music.example/song.mp3", "title": "歌曲", "loopStatus": mode})
+            self.assertIn(("repeat", 1 if mode == "Track" else 0), self.commands)
+            self.assertEqual(self.service.loop_status, mode)
+
     def test_reports_missing_mixer_without_faking_full_volume(self):
         self.status["volume"] = "-1"
         self.assertIsNone(self.service.snapshot()["volume"])

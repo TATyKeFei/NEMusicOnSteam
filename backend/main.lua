@@ -210,6 +210,22 @@ function unblock_endpoint()
     return helper_endpoint(helpers.unblock)
 end
 
+---@ffi
+---@return string
+function diagnostics()
+    -- 只返回固定依赖的可用性；不返回环境变量、目录、登录态或辅助进程令牌。
+    local script = [[for tool in python3 mpv ffmpeg node; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool=ok"; else echo "$tool=missing"; fi; done
+python3 -c 'from gi.repository import Gio, GLib' >/dev/null 2>&1 && echo 'PyGObject=ok' || echo 'PyGObject=missing'
+node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' >/dev/null 2>&1 && echo 'Node22=ok' || echo 'Node22=missing'
+test -n "$DBUS_SESSION_BUS_ADDRESS" && echo 'sessionBus=ok' || echo 'sessionBus=missing']]
+    local ok, pipe = pcall(io.popen, "env -u LD_LIBRARY_PATH -u LD_PRELOAD sh -c " .. shell_quote(script), "r")
+    if not ok or pipe == nil then return "environment=unavailable" end
+    local read_ok, result = pcall(pipe.read, pipe, "*a")
+    pcall(pipe.close, pipe)
+    if not read_ok or type(result) ~= "string" or result == "" then return "environment=unavailable" end
+    return "Millennium=" .. tostring(millennium.version()) .. "\n" .. result
+end
+
 local function on_load()
     logger:info("NEMusicOnSteam loaded with Millennium " .. tostring(millennium.version()))
     millennium.ready()

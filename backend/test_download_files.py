@@ -92,3 +92,23 @@ class UniquePathTests(unittest.TestCase):
             self.assertEqual(len(os.listdir(directory)), 2)
 
 
+
+class DownloadManifestTests(unittest.TestCase):
+    def test_tracks_quality_separately_and_ignores_removed_files(self):
+        with TemporaryDirectory() as directory:
+            path = os.path.join(directory, "歌曲.flac")
+            with open(path, "wb") as handle:
+                handle.write(b"fLaC")
+            files.recorded_download(directory, "123:999", path)
+            self.assertEqual(files.recorded_download(directory, "123:999"), path)
+            self.assertIsNone(files.recorded_download(directory, "123:320"))
+            os.unlink(path)
+            self.assertIsNone(files.recorded_download(directory, "123:999"))
+
+    def test_ignores_corruption_and_path_traversal(self):
+        with TemporaryDirectory() as directory:
+            manifest = os.path.join(directory, ".nemusic-downloads.json")
+            for contents in ('bad json', '{"123:320":"../outside.mp3"}', 'x' * 4_000_001):
+                with open(manifest, "w") as handle:
+                    handle.write(contents)
+                self.assertIsNone(files.recorded_download(directory, "123:320"))

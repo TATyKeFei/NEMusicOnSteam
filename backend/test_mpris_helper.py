@@ -371,6 +371,12 @@ class PositionTrackingTests(ServiceTestCase):
 
 
 class PlaybackNotificationTests(ServiceTestCase):
+    def test_unmuting_notifications_does_not_announce_the_already_playing_song(self):
+        self.playback(notify="none")
+        self.playback(notify="system")
+        self.assertEqual(self.notifications(), [])
+        self.playback(trackId="new", title="下一首", notify="system")
+        self.assertEqual(self.notifications(), [("下一首", "歌手一")])
     def playback(self, **changes):
         state = {"active": True, "playbackStatus": "Playing", "trackId": "song-1", "title": "歌曲一", "artist": "歌手一"}
         state.update(changes)
@@ -600,7 +606,7 @@ class DownloadEndpointTests(DownloadTestCase):
         target = Path(self.directory.name) / "新建目录"
         with self.public_host(), patch.object(helper.threading, "Thread") as worker:
             reply = self.post_download({"url": "https://cdn.example.com/song.mp3", "filename": "歌 - 名", "directory": str(target), "type": "mp3"})
-        reply.assert_called_once_with(202, {"started": True})
+        reply.assert_called_once_with(202, {"started": True, "skipped": False, "path": ""})
         worker.return_value.start.assert_called_once_with()
         self.assertTrue(target.is_dir())
         self.assertTrue(self.service.download["active"])
@@ -697,3 +703,43 @@ class IdleShutdownTests(DownloadTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class DownloadManagementTests(DownloadTestCase):
+    def test_cancel_only_matches_the_active_job_id(self):
+        self.service.download = {"active": True, "id": "new", "cancelled": False}
+        self.assertFalse(self.service.cancel_download("old"))
+        self.assertFalse(self.service.cancel_download(""))
+        self.assertFalse(self.service.download["cancelled"])
+        self.assertTrue(self.service.cancel_download("new"))
+        self.assertTrue(self.service.download["cancelled"])
+
+    def test_cancelled_worker_removes_partial_audio_and_suppresses_notifications(self):
+        response = io.BytesIO(b"ID3" + b"x" * 100)
+        response.headers = Message()
+        job = {"active": True, "id": "job", "cancelled": True, "path": "", "error": ""}
+        with patch.object(helper, "urlopen", return_value=response), patch.object(helper, "tag_audio") as tag:
+            self.service.run_download(job, "https://cdn.example.com/song.mp3", self.directory.name, "歌曲", "mp3")
+        self.assertFalse(job["active"])
+        self.assertEqual(job["path"], "")
+        self.assertEqual(job["error"], "")
+        self.assertEqual(os.listdir(self.directory.name), [])
+        tag.assert_not_called()
+        self.assertFalse(any(call.args[0] == self.service.send_notification for call in repository.GLib.idle_add.call_args_list))
+
+    def test_manifest_duplicate_skips_network_and_honors_quality_and_override(self):
+        path = os.path.join(self.directory.name, "歌曲.mp3")
+        with open(path, "wb") as handle:
+            handle.write(b"ID3")
+        download_files.recorded_download(self.directory.name, "123:320", path)
+        payload = {"url": "https://cdn.example.com/song.mp3", "filename": "歌曲", "directory": self.directory.name,
+                   "songId": 123, "quality": 320, "skipDuplicates": True, "jobId": "job"}
+        with self.public_host(), patch.object(helper.threading, "Thread") as worker:
+            reply = self.post_download(payload)
+            reply.assert_called_once_with(202, {"started": True, "skipped": True, "path": path})
+            worker.assert_not_called()
+            self.post_download({**payload, "quality": 999})
+            worker.return_value.start.assert_called_once()
+        self.service.download = None
+        with self.public_host(), patch.object(helper.threading, "Thread") as worker:
+            self.post_download({**payload, "skipDuplicates": False})
+            worker.return_value.start.assert_called_once()

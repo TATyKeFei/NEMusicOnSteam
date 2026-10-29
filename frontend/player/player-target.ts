@@ -18,6 +18,33 @@ let session: PlayerSession | null = null;
 let resolving: Promise<PlayerSession | null> | null = null;
 let epoch = 0;
 let selection: { marker: string; existingTargetIds: Set<string>; targetId: string | null; ready: boolean } | null = null;
+const pageListeners = new Set<(event: Record<string, unknown>) => void>();
+let removeEventListener: (() => void) | null = null;
+
+async function enablePageEvents(sessionId: string): Promise<void> {
+  await ChromeDevToolsProtocol.send("Runtime.enable", {}, sessionId);
+  await ChromeDevToolsProtocol.send("Runtime.addBinding", { name: "__NEMusicOnSteamEvent" }, sessionId);
+}
+
+/** 通过 CDP binding 推送用户操作，不再每 120ms 查询一次按钮状态。 */
+export function listenPlayerEvents(listener: (event: Record<string, unknown>) => void): (() => void) | null {
+  if (typeof ChromeDevToolsProtocol.on !== "function") return null;
+  pageListeners.add(listener);
+  if (!removeEventListener) {
+    removeEventListener = ChromeDevToolsProtocol.on("Runtime.bindingCalled", event => {
+      if (event.name !== "__NEMusicOnSteamEvent" || event.sessionId !== session?.sessionId || event.payload.length > 4096) return;
+      try {
+        const value = JSON.parse(event.payload);
+        if (value && typeof value === "object") for (const callback of pageListeners) callback(value);
+      } catch {}
+    });
+  }
+  if (session) void enablePageEvents(session.sessionId).catch(() => {});
+  return () => {
+    pageListeners.delete(listener);
+    if (!pageListeners.size) { removeEventListener?.(); removeEventListener = null; }
+  };
+}
 
 export async function preparePlayerTarget(marker: string): Promise<void> {
   releasePlayerSession();
@@ -79,6 +106,7 @@ async function resolveSession(): Promise<PlayerSession | null> {
       expected.targetId = target.targetId;
     }
     session = { targetId: target.targetId, sessionId: attached.sessionId };
+    if (pageListeners.size) void enablePageEvents(attached.sessionId).catch(() => {});
     return session;
   })();
   resolving = pending;

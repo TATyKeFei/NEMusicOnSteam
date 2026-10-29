@@ -6,8 +6,8 @@ const getEndpoint = ffi<[], string>("mpv_endpoint");
 export type PlaybackOptions = Omit<ExternalAudioOptions, "name" | "endpoint" | "configuration">;
 
 export class MpvBridge extends ExternalAudioBridge {
-  constructor(options: PlaybackOptions) {
-    super({ ...options, name: "mpv", endpoint: getEndpoint });
+  constructor(options: PlaybackOptions & { audioSettings?: () => { loudness: string; audioDevice: string } }) {
+    super({ ...options, name: "mpv", endpoint: getEndpoint, configuration: options.audioSettings });
   }
 }
 

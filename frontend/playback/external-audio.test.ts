@@ -59,7 +59,7 @@ const webPlaying: TrackState = {
   rate: 1,
 };
 
-function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; crossfade?: boolean; transitionMode?: "none" | "auto" | "crossfade"; crossfadeSeconds?: number; preloadNext?: boolean } = {}) {
+function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; crossfade?: boolean; transitionMode?: "none" | "auto" | "crossfade"; crossfadeSeconds?: number; preloadNext?: boolean; stopAfterTrack?: boolean } = {}) {
   const evaluations: string[] = [];
   const loads: Payload[] = [];
   const preparations: Payload[] = [];
@@ -67,6 +67,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
   const posts: string[] = [];
   const volumeCommands: number[] = [];
   const positionCommands: number[] = [];
+  const loopCommands: string[] = [];
   const order: string[] = [];
   const requests: { url: string; signal?: AbortSignal; keepalive?: boolean }[] = [];
   let interval: () => void = () => {};
@@ -117,6 +118,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
       posts.push(body.action);
       order.push(`mpv:${body.action}`);
       if (body.action === "volume") volumeCommands.push(body.value);
+      if (body.action === "loop") loopCommands.push(body.value);
       if (body.action === "setposition" || body.action === "seek") positionCommands.push(body.value);
       return { ok: true, json: async () => ({ handled: true }) };
     }
@@ -159,6 +161,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     ...(options.mpd ? { configuration: () => ({ host: "music.local", port: 6600, password: "", socket: "" }), supportsRate: false } : {}),
     endpoint: async () => { await endpointGate; return "http://localhost|test-token"; },
     quality: () => 1,
+    stopAfterTrack: () => options.stopAfterTrack === true,
     ...(options.transitionMode ? { transitionMode: () => options.transitionMode } : {}),
     ...(options.crossfadeSeconds ? { crossfadeSeconds: () => options.crossfadeSeconds } : {}),
     ...(options.crossfade || options.preloadNext ? {
@@ -194,6 +197,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     posts,
     volumeCommands,
     positionCommands,
+    loopCommands,
     order,
     requests,
     tick: () => interval(),
@@ -1019,6 +1023,32 @@ describe("external audio bridge tick", () => {
     await flush();
     assert.equal(player.loads.length, 2);
     assert.equal(player.loads[1].autoplay, true);
+  });
+
+  it("pauses at the end without arming autoplay when a sleep timer requests it", async () => {
+    const player = setup({ stopAfterTrack: true, mpv: { active: true, playbackStatus: "Playing", trackId: "t1", position: 10 } });
+    player.bridge.setEnabled(true); await flush();
+    player.setMpv({ active: true, playbackStatus: "Stopped", trackId: "t1", position: 100 });
+    player.tick(); await flush();
+    assert.deepEqual(player.posts, ["pause"]);
+    assert.deepEqual(player.webCommands, []);
+    assert.match(player.lastSync(), /else if \(true\)/);
+    player.tick(); await flush(); assert.ok(!player.webCommands.includes("next"));
+  });
+
+  it("temporarily disables backend single-track repeat for finish-current timers", async () => {
+    const player = setup({ stopAfterTrack: true, web: { ...webPlaying, loopStatus: "Track" } });
+    player.bridge.setEnabled(true); await flush(); assert.equal(player.loads[0].loopStatus, "None");
+    await player.bridge.command({ action: "loop", value: "Track" } as any);
+    assert.equal(player.webCommands.at(-1), "loop");
+    assert.deepEqual(player.loopCommands, ["None"]);
+  });
+
+  it("keeps disconnected output device status visible after successful polling", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1", audioDeviceStatus: "所选设备已断开，已回退到系统默认输出" } });
+    player.bridge.setEnabled(true); await flush(); assert.match(player.bridge.getStatus(), /已断开/);
+    player.setMpv({ active: true, playbackStatus: "Playing", trackId: "t1", audioDeviceStatus: "" });
+    player.tick(); await flush(); assert.equal(player.bridge.getStatus(), "mpv 已连接");
   });
 
   it("keeps mpv stopped after an explicit stop", async () => {

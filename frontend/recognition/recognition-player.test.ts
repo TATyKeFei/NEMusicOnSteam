@@ -220,7 +220,7 @@ describe("识曲按钮的挂载位置", () => {
     assert.deepEqual(result, { ok: true, note: "" });
     assert.equal((search.parentElement as any).children.length, 1, "按钮应该挂在搜索框那一组");
     assert.equal((junk.parentElement as any).children.length, 0);
-    assert.equal(context.window.__nemusicRecognition.version, 6);
+    assert.equal(context.window.__nemusicRecognition.version, 7);
   });
 
   it("已经装好时重复调用是幂等的，不会再插一个按钮", () => {

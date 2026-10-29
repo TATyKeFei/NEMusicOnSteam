@@ -2,9 +2,11 @@ import { DEFAULT_DOWNLOAD_NAME_TEMPLATE, DEFAULT_DOWNLOAD_QUALITY, isDownloadQua
 import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } from "./unblock/sources.ts";
 
 export type NotificationMode = "system" | "steam" | "none";
+export type NotificationSettingsMode = "unified" | "independent";
 export type PlaybackBackend = "web" | "mpv" | "mpd";
 export type CrossfadeMode = "off" | "conservative" | "standard" | "eager";
 export type TransitionMode = "none" | "auto" | "crossfade";
+export type LoudnessMode = "off" | "replaygain" | "dynamic";
 export type MpdSettings = { host: string; port: number; password: string; socket: string };
 export const DEFAULT_MPD_SETTINGS: MpdSettings = { host: "127.0.0.1", port: 6600, password: "", socket: "" };
 export const UI_SCALE_MIN = 0.8;
@@ -16,6 +18,16 @@ export type PlayerSettings = {
   mpvTransitionMode: TransitionMode;
   mpvCrossfadeSeconds: number;
   preloadNext: boolean;
+  mpvLoudness: LoudnessMode;
+  audioOutputDevice: string;
+  restoreSession: boolean;
+  resumeOnRestore: boolean;
+  skipDuplicateDownloads: boolean;
+  sleepFadeSeconds: number;
+  notificationSettingsMode: NotificationSettingsMode;
+  trackNotificationMode: NotificationMode;
+  downloadNotificationMode: NotificationMode;
+  trackNotifyOnlyCollapsed: boolean;
   mpd: MpdSettings;
   unblockEnabled: boolean;
   unblockSources: UnblockSource[];
@@ -37,6 +49,16 @@ export const defaultSettings: PlayerSettings = {
   mpvTransitionMode: "none",
   mpvCrossfadeSeconds: 4,
   preloadNext: false,
+  mpvLoudness: "off",
+  audioOutputDevice: "auto",
+  restoreSession: true,
+  resumeOnRestore: false,
+  skipDuplicateDownloads: true,
+  sleepFadeSeconds: 10,
+  notificationSettingsMode: "unified",
+  trackNotificationMode: "system",
+  downloadNotificationMode: "system",
+  trackNotifyOnlyCollapsed: false,
   mpd: DEFAULT_MPD_SETTINGS,
   unblockEnabled: false,
   unblockSources: DEFAULT_UNBLOCK_SOURCES,
@@ -98,10 +120,17 @@ function templateOr(value: unknown, fallback: string): string {
 
 export function sanitizeSettings(value: unknown): PlayerSettings {
   const record = value != null && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  const notificationMode = notificationModeOr(
+  const legacyNotificationMode = notificationModeOr(
     record.notificationMode,
     notificationModeOr(record.downloadNotificationMode, defaultSettings.notificationMode),
   );
+  const trackNotificationMode = notificationModeOr(record.trackNotificationMode, legacyNotificationMode);
+  const downloadNotificationMode = notificationModeOr(record.downloadNotificationMode, legacyNotificationMode);
+  const hasNotificationSettingsMode = record.notificationSettingsMode === "unified" || record.notificationSettingsMode === "independent";
+  // 旧设置的两个渠道不同时保留独立模式；相同时直接作为统一通知方式。
+  const notificationSettingsMode = hasNotificationSettingsMode ? record.notificationSettingsMode as NotificationSettingsMode
+    : trackNotificationMode === downloadNotificationMode ? "unified" : "independent";
+  const notificationMode = hasNotificationSettingsMode ? legacyNotificationMode : trackNotificationMode;
   const crossfade = record.mpvCrossfade === "conservative" || record.mpvCrossfade === "standard" || record.mpvCrossfade === "eager"
     ? record.mpvCrossfade : "off";
   // 旧版用“关闭”档位控制启停；迁移后由过渡模式统一控制。
@@ -116,6 +145,16 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     mpvCrossfadeSeconds: finiteNumber(record.mpvCrossfadeSeconds)
       ? Math.max(1, Math.min(12, Math.round(record.mpvCrossfadeSeconds))) : defaultSettings.mpvCrossfadeSeconds,
     preloadNext: booleanOr(record.preloadNext, defaultSettings.preloadNext),
+    mpvLoudness: record.mpvLoudness === "replaygain" || record.mpvLoudness === "dynamic" ? record.mpvLoudness : "off",
+    audioOutputDevice: typeof record.audioOutputDevice === "string" ? record.audioOutputDevice.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 512) || "auto" : "auto",
+    restoreSession: booleanOr(record.restoreSession, true),
+    resumeOnRestore: booleanOr(record.resumeOnRestore, false),
+    skipDuplicateDownloads: booleanOr(record.skipDuplicateDownloads, true),
+    sleepFadeSeconds: finiteNumber(record.sleepFadeSeconds) ? Math.max(0, Math.min(30, Math.round(record.sleepFadeSeconds))) : 10,
+    notificationSettingsMode,
+    trackNotificationMode,
+    downloadNotificationMode,
+    trackNotifyOnlyCollapsed: booleanOr(record.trackNotifyOnlyCollapsed, false),
     mpd: sanitizeMpdSettings(record.mpd),
     unblockEnabled: booleanOr(record.unblockEnabled, defaultSettings.unblockEnabled),
     unblockSources: sanitizeUnblockSources(record.unblockSources),
@@ -128,6 +167,12 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     notificationMode,
     downloadNameTemplate: templateOr(record.downloadNameTemplate, defaultSettings.downloadNameTemplate),
   };
+}
+
+export function notificationModeFor(settings: Pick<PlayerSettings, "notificationSettingsMode" | "notificationMode" | "trackNotificationMode" | "downloadNotificationMode">,
+  channel: "track" | "download"): NotificationMode {
+  return settings.notificationSettingsMode === "unified" ? settings.notificationMode
+    : channel === "track" ? settings.trackNotificationMode : settings.downloadNotificationMode;
 }
 
 export function readSettings(storage: Pick<Storage, "getItem"> | null): PlayerSettings {

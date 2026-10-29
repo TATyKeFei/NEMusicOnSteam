@@ -153,6 +153,8 @@ export class MprisBridge {
     return this.status;
   }
 
+  snapshot(): TrackState { return { ...this.state }; }
+
   canReconnect(): boolean {
     return Boolean(this.timer && this.connectionFailed && !this.reconnectRequested);
   }
@@ -336,11 +338,11 @@ export class MprisBridge {
   // Steam 弹窗放在这里触发，这样即使 Python 辅助进程不可用也能工作；
   // "system" 模式下的桌面通知仍然由辅助进程自己发出。
   private maybeToastTrack(state: TrackState): void {
-    if (this.notifyMode() !== "steam") return;
     if (!state.active || state.playbackStatus !== "Playing" || !state.title) return;
     const track = [state.trackId, state.title, state.artist].join("\u0000");
     if (track === this.lastToastedTrack) return;
     this.lastToastedTrack = track;
+    if (this.notifyMode() !== "steam") return;
     steamToast(state.title, state.artist, /^https?:/.test(state.artUrl) ? state.artUrl : undefined);
   }
 }

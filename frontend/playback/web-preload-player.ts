@@ -30,7 +30,7 @@ export function webPreloadScript(enabled: boolean): string {
       const network = moduleId == null ? null : loader(moduleId);
       if (typeof network?.default !== 'function') return false;
       const original = network.default;
-      api = { store: playerStore, active: true, revision: 0, cache: null, media: null, pending: '', retryAt: 0 };
+      api = { store: playerStore, active: true, revision: 0, cache: null, media: null, pending: '', retryAt: 0, status: '等待预载时机' };
       const requestKey = (raw, options) => {
         try {
           const url = new URL(raw, location.href);
@@ -61,6 +61,7 @@ export function webPreloadScript(enabled: boolean): string {
         api.cache = null;
         if (api.media) {
           api.media.onerror = null;
+          api.media.oncanplay = null;
           api.media.pause();
           api.media.removeAttribute('src');
           api.media.load();
@@ -83,11 +84,16 @@ export function webPreloadScript(enabled: boolean): string {
         const eligible = candidate?.eligible && song && candidate.from === snapshot.trackId
           && snapshot.duration > 0 && snapshot.duration - snapshot.position <= 45
           && snapshot.playbackStatus === 'Playing';
-        if (!eligible) { api.clear(); return; }
+        if (!eligible) {
+          api.status = !candidate?.eligible ? '当前播放模式不支持预载' : !song ? '没有可预载的下一首'
+            : snapshot.playbackStatus !== 'Playing' ? '播放暂停，等待继续' : '等待歌曲剩余 45 秒时预载';
+          api.clear(); return;
+        }
         if (api.pending === cacheKey || (api.cache?.key === cacheKey && api.cache.expires > Date.now())) return;
         api.clear();
         if (Date.now() < api.retryAt) return;
         api.pending = cacheKey;
+        api.status = '正在解析下一首：' + song.name;
         const revision = api.revision;
         const controller = api.controller = new AbortController();
         const path = '/api/song/enhance/player/url/v1';
@@ -103,26 +109,38 @@ export function webPreloadScript(enabled: boolean): string {
           media.preload = 'auto';
           media.muted = true;
           api.media = media;
+          api.status = '正在缓冲下一首：' + song.name;
+          media.oncanplay = () => { if (api.media === media) api.status = '下一首已有可播放缓冲：' + song.name; };
           api.cache = { key: cacheKey, request: requestKey(path, options), payload,
             expires: Date.now() + Math.min(Number(item.expi) || 300, 300) * 1000 };
           media.onerror = () => {
             if (api.media !== media) return;
             api.clear();
             api.retryAt = Date.now() + 5000;
+            api.status = '音频缓冲失败，5 秒后重试';
           };
           media.src = item.url;
           media.load();
         })().catch(() => {
-          if (api.active && revision === api.revision) { api.clear(); api.retryAt = Date.now() + 5000; }
+          if (api.active && revision === api.revision) { api.clear(); api.retryAt = Date.now() + 5000; api.status = '下一首暂不可用，5 秒后重试'; }
         }).finally(() => {
           if (revision === api.revision) api.pending = '';
         });
       };
+      api.update = () => {
+        if (api.store !== findPlayerStore()) { api.restore(); return false; }
+        const state = playerStore.getState();
+        const quality = state?.host?.isAnonymous ? state?.setting?.quantity?.listenAnon : state?.setting?.quantity?.listenReg;
+        api.preload(${CROSSFADE_QUEUE_SCRIPT}, ${SNAPSHOT_SCRIPT}, quality || 320);
+        return true;
+      };
       globalThis[key] = api;
     }
-    const state = playerStore.getState();
-    const quality = state?.host?.isAnonymous ? state?.setting?.quantity?.listenAnon : state?.setting?.quantity?.listenReg;
-    api.preload(${CROSSFADE_QUEUE_SCRIPT}, ${SNAPSHOT_SCRIPT}, quality || 320);
-    return true;
+    return api.update();
   })()`;
 }
+
+export const WEB_PRELOAD_UPDATE_SCRIPT = `(() => {
+  const api = globalThis.__NEMusicOnSteamWebPreload;
+  return { installed: Boolean(api?.update?.()), status: api?.status || '' };
+})()`;

@@ -187,6 +187,8 @@ class MpdService(PlaybackHttpService):
             self.song_id = song_id
             self.track = {key: str(payload.get(key) or "") for key in ("title", "artist", "album", "artUrl", "trackId")}
             # 单曲模式阻止 MPD 跳到用户原队列，下一首始终由网易云网页决定。
+            if payload.get("loopStatus") in ("None", "Track", "Playlist"):
+                self.loop_status = payload["loopStatus"]
             session.command("single", 1)
             session.command("repeat", int(self.loop_status == "Track"))
             session.command("random", 0)

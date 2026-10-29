@@ -1,6 +1,7 @@
 import { PLAYER_ACCESS_SCRIPT } from "./player-access.ts";
 
 export type PlayerRecoverySnapshot = {
+  accountId?: string;
   href: string;
   current: Record<string, unknown> | null;
   queue: unknown[];
@@ -49,6 +50,7 @@ export const PLAYER_RECOVERY_SCRIPT = `(() => {
   const state = playerStore.getState();
   const position = active?.currentTime ?? playing?.restoreResource?.current ?? progress?.getAttribute('aria-valuenow') ?? 0;
   return { owned: true, snapshot: {
+    accountId: String(state.host?.uid || ''),
     href: location.href,
     current: playing?.curPlaying || null,
     queue: Array.isArray(state.playingList?.curPlayingList) ? state.playingList.curPlayingList : [],
@@ -94,6 +96,7 @@ export function playerRestoreScript(snapshot: PlayerRecoverySnapshot): string {
     const store = await waitForPlayerReady();
     if (!store) throw new Error('网易云页面尚未完成初始化，未恢复播放');
     if (!snapshot.current) return true;
+    if (snapshot.accountId && String(store.getState()?.host?.uid || '') !== snapshot.accountId) throw new Error('登录账号已改变，未恢复其他账号的播放队列');
     await store.dispatch({ type: 'playingList/onUpdate', payload: { curPlayingList: snapshot.queue } });
     await store.dispatch({ type: 'playing/onUpdate', payload: { playingMode: snapshot.mode } });
     await store.dispatch({ type: 'playing/setVolume', payload: { volume: snapshot.volume } });

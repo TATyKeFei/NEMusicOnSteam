@@ -128,3 +128,44 @@ class MpvAnalyzeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class MpvAudioConfigurationTests(unittest.TestCase):
+    setUp = MpvPlaybackTests.setUp
+    def test_switching_loudness_removes_the_previous_filter(self):
+        self.service.configure({"loudness": "dynamic"})
+        self.service.mpv.command.assert_any_call("set_property", "af", "lavfi=[loudnorm=I=-16:TP=-1.5:LRA=11]")
+        self.service.configure({"loudness": "replaygain"})
+        self.service.mpv.command.assert_any_call("set_property", "replaygain", "track")
+        self.assertIn(("set_property", "af", ""), [call.args for call in self.service.mpv.command.call_args_list])
+        self.service.configure({"loudness": "off"})
+        self.service.mpv.command.assert_any_call("set_property", "replaygain", "no")
+
+    def test_device_disconnection_falls_back_and_reconnection_restores_selection(self):
+        device = {"name": "pipewire/headphones", "description": "耳机"}
+        self.properties["audio-device-list"] = [device]
+        self.service.configure({"audioDevice": device["name"]})
+        self.service.mpv.command.assert_any_call("set_property", "audio-device", device["name"])
+        self.properties["audio-device-list"] = []
+        self.service.device_checked_at = 0
+        self.assertIn("已断开", self.service.audio_state()["audioDeviceStatus"])
+        self.service.mpv.command.assert_any_call("set_property", "audio-device", "auto")
+        self.properties["audio-device-list"] = [device]
+        self.service.device_checked_at = 0
+        self.assertEqual(self.service.audio_state()["audioDeviceStatus"], "")
+        self.assertEqual(self.service.mpv.command.call_args.args, ("set_property", "audio-device", device["name"]))
+
+    def test_rejects_invalid_configuration_before_changing_mpv(self):
+        for payload in ({"loudness": "loud"}, {"audioDevice": "bad\nname"}, {"audioDevice": "x" * 513}):
+            with self.assertRaises(ValueError):
+                self.service.configure(payload)
+        self.service.mpv.command.assert_not_called()
+
+    def test_device_disappearing_during_selection_still_falls_back(self):
+        self.properties["audio-device-list"] = [{"name": "pipewire/headphones"}]
+        def command(_name, key, value):
+            if key == "audio-device" and value != "auto":
+                raise RuntimeError("device unavailable")
+        self.service.mpv.command.side_effect = command
+        self.service.configure({"audioDevice": "pipewire/headphones"})
+        self.assertEqual(self.service.selected_audio_device, "auto")
+        self.assertIn("已回退", self.service.audio_state()["audioDeviceStatus"])

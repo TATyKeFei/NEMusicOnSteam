@@ -198,6 +198,43 @@ class MpvService(PlaybackHttpService):
     def alive(self):
         return self.mpv.process.poll() is None
 
+    def configure(self, payload):
+        with self.operations:
+            mode = payload.get("loudness", "off")
+            if mode not in ("off", "replaygain", "dynamic"):
+                raise ValueError("无效的响度模式")
+            device = payload.get("audioDevice", "auto")
+            if not isinstance(device, str) or not device or len(device) > 512 or any(ord(char) < 32 for char in device):
+                raise ValueError("无效的音频设备")
+            self.audio_configuration = {"loudness": mode, "audioDevice": device}
+            self.mpv.command("set_property", "replaygain", "track" if mode == "replaygain" else "no")
+            self.mpv.command("set_property", "af", "lavfi=[loudnorm=I=-16:TP=-1.5:LRA=11]" if mode == "dynamic" else "")
+            self.device_checked_at = 0
+            self.audio_state()
+
+    def audio_state(self):
+        now = time.monotonic()
+        if now - getattr(self, "device_checked_at", 0) >= 2:
+            raw = self.mpv.property("audio-device-list", [])
+            self.audio_devices = [{"name": str(item["name"]), "description": str(item.get("description") or item["name"])}
+                                  for item in raw if isinstance(item, dict) and item.get("name")] if isinstance(raw, list) else []
+            requested = getattr(self, "audio_configuration", {}).get("audioDevice", "auto")
+            available = requested == "auto" or any(item["name"] == requested for item in self.audio_devices)
+            self.audio_device_status = "" if available else "所选设备已断开，已回退到系统默认输出"
+            selected = requested if available else "auto"
+            if getattr(self, "selected_audio_device", "auto") != selected:
+                try:
+                    self.mpv.command("set_property", "audio-device", selected)
+                except RuntimeError:
+                    if selected == "auto":
+                        raise
+                    self.mpv.command("set_property", "audio-device", "auto")
+                    selected = "auto"
+                    self.audio_device_status = "所选设备不可用，已回退到系统默认输出"
+                self.selected_audio_device = selected
+            self.device_checked_at = now
+        return {"audioDevices": getattr(self, "audio_devices", []), "audioDeviceStatus": getattr(self, "audio_device_status", "")}
+
     def close(self):
         with self.operations:
             self.closed.set()
@@ -292,6 +329,7 @@ class MpvService(PlaybackHttpService):
         preload = payload.get("preloadNext") is True and payload.get("transitionMode") == "none"
         if (profile in PROFILES and payload.get("transitionMode") != "none") or preload:
             source = {**payload, **self.metadata(payload), "position": position,
+                      "loudness": getattr(self, "audio_configuration", {}).get("loudness", "off"),
                       "duration": max(0, self.number(payload.get("duration")))}
             mixer = PcmMixer(self.runtime_dir, source, profile if profile in PROFILES else "standard", MpvProcess.clean_environment(),
                              lambda: self.mpv.property("time-pos", 0) if self.mpv.property("path") == mixer.fifo else 0)
@@ -328,6 +366,7 @@ class MpvService(PlaybackHttpService):
                     return {"accepted": True, "streamId": self.mixer.identifier}
             if payload.get("url"):
                 self.validate(payload)
+                payload = {**payload, "loudness": getattr(self, "audio_configuration", {}).get("loudness", "off")}
                 payload = {**payload, **self.metadata(payload), "position": 0,
                            "duration": max(0, self.number(payload.get("duration")))}
             return {"accepted": self.mixer.prepare(payload), "streamId": self.mixer.identifier}
@@ -395,12 +434,14 @@ class MpvService(PlaybackHttpService):
             return self.snapshot_locked()
 
     def snapshot_locked(self):
+        audio = self.audio_state()
         path = self.mpv.property("path")
         with self.lock:
             track = dict(self.track)
         if not path or not track:
             return {
                 "active": False,
+                **audio,
                 "playbackStatus": "Stopped",
                 "title": track.get("title", ""),
                 "artist": track.get("artist", ""),
@@ -432,6 +473,7 @@ class MpvService(PlaybackHttpService):
         loop_file = self.mpv.property("loop-file", "no")
         return {
             "active": True,
+            **audio,
             "playbackStatus": "Stopped" if ended else "Paused" if paused else "Playing",
             **track,
             **transition,

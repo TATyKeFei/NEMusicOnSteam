@@ -17,12 +17,13 @@ type Bridge = {
   refresh(callback: (active: boolean, fillWindow: boolean) => void): void;
 };
 
-function setup() {
+function setup(pushEvents = false) {
   const events: [boolean, boolean][] = [];
   let state: ButtonState = { active: false, fillWindow: false, request: 0 };
   let heldState: Promise<ButtonState> | null = null;
   const timers = new Map<number, () => void>();
   let timerId = 0;
+  let push: ((event: Record<string, unknown>) => void) | null = null;
   const BridgeClass = runInNewContext(`${source}; FullscreenButtonBridge`, {
     window: {
       setInterval(callback: () => void) { timers.set(++timerId, callback); return timerId; },
@@ -30,6 +31,7 @@ function setup() {
     },
     console: { warn() {} },
     PLAYER_TARGET_MISSING: "missing",
+    listenPlayerEvents: (callback: typeof push) => { if (!pushEvents) return null; push = callback; return () => { push = null; }; },
     fullscreenButtonScript: () => "install",
     fullscreenButtonUpdateScript: () => "update",
     fullscreenButtonStateScript: () => "state",
@@ -42,12 +44,25 @@ function setup() {
     events,
     callback,
     timers,
+    push(next: ButtonState) { push?.({ type: "fullscreen", ...next }); },
     setState(next: ButtonState) { state = next; },
     holdState(promise: Promise<ButtonState> | null) { heldState = promise; },
   };
 }
 
 describe("fullscreen button requests", () => {
+  it("delivers pushed requests before the first refresh and unsubscribes on disable", async () => {
+    const player = setup(true); player.bridge.setEnabled(true);
+    player.push({ active: true, fillWindow: false, request: 1 });
+    player.setState({ active: true, fillWindow: false, request: 1 });
+    player.bridge.refresh(player.callback); await flush();
+    assert.deepEqual(player.events, [[true, false]]);
+    player.push({ active: true, fillWindow: false, request: 1 });
+    player.push({ active: false, fillWindow: false, request: 2 });
+    assert.deepEqual(player.events, [[true, false], [false, false]]);
+    player.bridge.setEnabled(false); player.push({ active: true, fillWindow: true, request: 3 });
+    assert.equal(player.events.length, 2);
+  });
   it("forwards window fill and exit requests exactly once", async () => {
     const player = setup();
     player.bridge.setEnabled(true);

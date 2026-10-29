@@ -78,9 +78,9 @@ export const MENU_HELPERS_SCRIPT = `(() => {
 const MENU_INSTALL = `() => {
   const helpers = ${MENU_HELPERS_SCRIPT};
   const KEY = '__nemusicDownload';
-  const VERSION = 1;
+  const VERSION = 2;
   const ITEM = '下载';
-  const SCAN_MS = 300;
+  const SCAN_MS = 3000;
   const CLICK_WINDOW_MS = 4000;
   const EXAMINE_LIMIT = 400;
   const ITEM_SELECTOR = 'li, a, button, div, span, [role="menuitem"]';
@@ -92,8 +92,9 @@ const MENU_INSTALL = `() => {
 
   const current = window[KEY];
   if (current && current.version === VERSION) return { installed: true, menus: current.menus, songs: current.songs };
-
-  const api = current || { version: VERSION, menus: 0, songs: 0, pending: [], seen: new WeakSet(), lastClick: null, timer: 0, toastTimer: 0 };
+  current?.destroy?.();
+  if (current?.timer) clearInterval(current.timer);
+  const api = { version: VERSION, menus: 0, songs: 0, pending: current?.pending || [], seen: new WeakSet(), lastClick: null, timer: 0, toastTimer: 0 };
 
   const text = element => String(element?.textContent || '').replace(/\\s+/g, '');
 
@@ -255,8 +256,20 @@ const MENU_INSTALL = `() => {
   api.take = () => api.pending.splice(0, api.pending.length);
   api.toast = toast;
   window[KEY] = api;
-  document.addEventListener('click', event => { api.lastClick = { node: event.target, at: Date.now() }; }, true);
-  if (!api.timer) api.timer = setInterval(scan, SCAN_MS);
+  let scheduled = 0;
+  const schedule = () => {
+    if (scheduled || !api.lastClick || Date.now() - api.lastClick.at > CLICK_WINDOW_MS) return;
+    scheduled = setTimeout(() => { scheduled = 0; scan(); }, 80);
+  };
+  const clicked = event => { api.lastClick = { node: event.target, at: Date.now() }; schedule(); };
+  document.addEventListener('click', clicked, true);
+  const observer = typeof MutationObserver === 'function' ? new MutationObserver(schedule) : null;
+  observer?.observe(document.body, { childList: true, subtree: true });
+  api.timer = setInterval(scan, SCAN_MS);
+  api.destroy = () => {
+    clearInterval(api.timer); clearTimeout(scheduled); clearTimeout(api.toastTimer);
+    observer?.disconnect(); document.removeEventListener?.('click', clicked, true);
+  };
   return { installed: true, menus: api.menus, songs: api.songs };
 }`;
 

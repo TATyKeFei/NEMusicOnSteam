@@ -15,7 +15,7 @@ from audio_source import audio_headers
 from audio_tags import cover_extension, tag_audio
 from download_files import (
     DOWNLOAD_CHUNK, DOWNLOAD_TIMEOUT, MAX_DOWNLOAD_BYTES,
-    audio_extension, download_directory, open_unique, sanitize_filename, validate_download_url,
+    audio_extension, download_directory, open_unique, sanitize_filename, validate_download_url, recorded_download,
 )
 
 from gi.repository import Gio, GLib
@@ -208,6 +208,13 @@ class MprisService:
                     self.reply(200, {})
                     GLib.idle_add(service.loop.quit)
                     return
+                if self.path == "/download/cancel":
+                    payload = self.read_payload()
+                    if payload is None or not isinstance(payload.get("id"), str):
+                        self.reply(400, {"error": "缺少下载任务编号"})
+                        return
+                    self.reply(200, {"cancelled": service.cancel_download(payload["id"])})
+                    return
                 if self.path == "/download":
                     payload = self.read_payload()
                     if payload is None:
@@ -221,7 +228,7 @@ class MprisService:
                     if job is None:
                         self.reply(409, {"error": "已有下载任务在进行"})
                         return
-                    self.reply(202, {"started": True})
+                    self.reply(202, {"started": True, "skipped": bool(job.get("skipped")), "path": job.get("path", "")})
                     return
                 if self.path != "/state":
                     self.reply(404, {})
@@ -252,11 +259,12 @@ class MprisService:
                     service.last_seen = now
                     if seeked:
                         GLib.idle_add(service.emit_seeked, int(state["position"] * 1000000))
-                    if service.notify_mode == "system" and state.get("active") and state.get("playbackStatus") == "Playing" and state.get("title"):
+                    if state.get("active") and state.get("playbackStatus") == "Playing" and state.get("title"):
                         track = (state.get("trackId"), state.get("title"), state.get("artist"))
                         if track != service.last_notified_track:
                             service.last_notified_track = track
-                            GLib.idle_add(service.notify_track, str(state["title"]), str(state.get("artist") or "未知歌手"), str(state.get("artUrl") or ""))
+                            if service.notify_mode == "system":
+                                GLib.idle_add(service.notify_track, str(state["title"]), str(state.get("artist") or "未知歌手"), str(state.get("artUrl") or ""))
                 changed = []
                 if any(previous.get(key) != state.get(key) for key in ("active", "playbackStatus")):
                     changed.append("PlaybackStatus")
@@ -522,18 +530,38 @@ class MprisService:
             raise ValueError(f"下载目录不可用: {error}")
         if not os.path.isdir(destination) or not os.access(destination, os.W_OK):
             raise ValueError(f"下载目录不可用: {destination}")
+        song_id = meta.get("songId")
+        quality = meta.get("quality")
+        key = f"{song_id}:{quality}" if isinstance(song_id, int) and song_id > 0 and isinstance(quality, int) else ""
         with self.lock:
             if self.download is not None and self.download.get("active"):
                 return None
             job = {"active": True, "received": 0, "total": 0, "filename": "", "path": "", "error": ""}
+            job["id"] = str(meta.get("jobId") or "")[:128]
+            job["cancelled"] = False
+            if key and meta.get("skipDuplicates") is True:
+                existing = recorded_download(destination, key)
+                if existing:
+                    job.update(active=False, skipped=True, path=existing, filename=os.path.basename(existing))
+                    self.download = job
+                    return job
             self.download = job
             self.last_seen = time.monotonic()
         tags = {key: str(meta.get(key) or "") for key in ("title", "artist", "album")}
         tags["cover"] = cover
         tags["notify"] = str(meta.get("notify") or "system")
+        tags["recordKey"] = key
         worker = threading.Thread(target=self.run_download, args=(job, str(url), destination, str(filename or ""), declared, tags), daemon=True)
         worker.start()
         return job
+
+    def cancel_download(self, identifier):
+        with self.lock:
+            job = self.download
+            if not job or not job.get("active") or not identifier or identifier != job.get("id"):
+                return False
+            job["cancelled"] = True
+            return True
 
     def run_download(self, job, url, destination, filename, declared, meta=None):
         meta = meta if isinstance(meta, dict) else {}
@@ -556,6 +584,8 @@ class MprisService:
                 received = 0
                 with handle:
                     while chunk:
+                        if job.get("cancelled"):
+                            raise InterruptedError("下载已取消")
                         handle.write(chunk)
                         received += len(chunk)
                         if received > MAX_DOWNLOAD_BYTES:
@@ -565,11 +595,17 @@ class MprisService:
                             job["total"] = max(declared_total, received)
                             self.last_seen = time.monotonic()
                         chunk = response.read(DOWNLOAD_CHUNK)
+                if job.get("cancelled"):
+                    raise InterruptedError("下载已取消")
                 with self.lock:
                     job["filename"] = os.path.basename(path)
                     job["path"] = path
                     job["total"] = received
                 tag_audio(path, extension, meta.get("title") or "", meta.get("artist") or "", meta.get("album") or "", meta.get("cover") or "")
+                if job.get("cancelled"):
+                    raise InterruptedError("下载已取消")
+                if meta.get("recordKey"):
+                    recorded_download(destination, meta["recordKey"], path)
                 if notify_system:
                     GLib.idle_add(self.send_notification, "下载完成", f"{os.path.basename(path)} 已保存到 {os.path.dirname(path)}", "folder-download")
         except (OSError, ValueError, HTTPException) as error:
@@ -580,8 +616,9 @@ class MprisService:
                     pass
             failure = str(error) or error.__class__.__name__
             with self.lock:
-                job["error"] = failure
-            if notify_system:
+                job["error"] = "" if job.get("cancelled") else failure
+                job["path"] = ""
+            if notify_system and not job.get("cancelled"):
                 GLib.idle_add(self.send_notification, "下载失败", failure, "dialog-error")
         finally:
             with self.lock:

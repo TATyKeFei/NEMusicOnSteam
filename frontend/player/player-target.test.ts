@@ -210,3 +210,32 @@ describe("player CDP session", () => {
     await preparing;
   });
 });
+
+describe("player CDP push events", () => {
+  it("enables Runtime, filters sessions and payloads, reconnects and unsubscribes", async () => {
+    const calls: { method: string; session?: string }[] = [], events: unknown[] = [];
+    let callback: ((value: any) => void) | null = null, attached = 0, removed = 0;
+    const api = runInNewContext(`${source}; ({ evaluateInPlayer, releasePlayerSession, listenPlayerEvents })`, {
+      isPlayerDocument: () => true,
+      ChromeDevToolsProtocol: {
+        on: (_name: string, fn: typeof callback) => { callback = fn; return () => { removed++; callback = null; }; },
+        send: async (method: string, _params: any, session?: string) => {
+          calls.push({ method, session });
+          if (method === "Target.getTargets") return { targetInfos: [{ targetId: "player", url: "player" }] };
+          if (method === "Target.attachToTarget") return { sessionId: `s${++attached}` };
+          return { result: { value: true } };
+        },
+      },
+    });
+    const unsubscribe = api.listenPlayerEvents((event: unknown) => { events.push(event); });
+    await api.evaluateInPlayer("1"); await new Promise(resolve => setImmediate(resolve));
+    assert.ok(calls.some(item => item.method === "Runtime.enable" && item.session === "s1"));
+    assert.ok(calls.some(item => item.method === "Runtime.addBinding" && item.session === "s1"));
+    const emit = (sessionId: string, payload: string, name = "__NEMusicOnSteamEvent") => callback!({ sessionId, payload, name });
+    emit("other", '{"type":"fullscreen"}'); emit("s1", "bad-json"); emit("s1", "x".repeat(4097)); emit("s1", "{}", "other");
+    assert.equal(events.length, 0); emit("s1", '{"type":"fullscreen"}'); assert.equal(events.length, 1);
+    api.releasePlayerSession(); await api.evaluateInPlayer("2"); await new Promise(resolve => setImmediate(resolve));
+    emit("s1", "{}"); assert.equal(events.length, 1); emit("s2", "{}"); assert.equal(events.length, 2);
+    unsubscribe(); assert.equal(removed, 1); assert.equal(callback, null);
+  });
+});

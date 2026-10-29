@@ -10,7 +10,10 @@ class Element {
   textContent = "";
   type = "";
   title = "";
-  innerHTML = "";
+  private html = "";
+  htmlWrites = 0;
+  get innerHTML() { return this.html; }
+  set innerHTML(value: string) { this.html = value; this.htmlWrites++; }
   parentElement: Element | null = null;
   nextSibling: Element | null = null;
   isConnected = false;
@@ -27,6 +30,10 @@ class Element {
 
   setAttribute(name: string, value: string) { this.attributes.set(name, value); }
   getAttribute(name: string) { return this.attributes.get(name) ?? null; }
+  closest(selector: string): Element | null {
+    if (selector.includes("#page_pc_main_nav") && this.getAttribute("id") === "page_pc_main_nav") return this;
+    return this.parentElement?.closest(selector) ?? null;
+  }
   addEventListener(type: string, listener: (event: { preventDefault(): void; stopPropagation(): void }) => void) {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
   }
@@ -49,7 +56,7 @@ class Element {
 }
 
 function setup() {
-  const toolbar = new Element({ top: 16, left: 220, right: 1000, bottom: 60, width: 780, height: 44 });
+  const toolbar = new Element({ top: 16, left: 220, right: 1000, bottom: 60, width: 780, height: 44 }, { id: "page_pc_main_nav" });
   const parent = new Element({ top: 20, left: 240, right: 540, bottom: 56, width: 300, height: 36 });
   const search = new Element({ top: 20, left: 275, right: 500, bottom: 54, width: 225, height: 34 }, { placeholder: "搜索" });
   const unrelated = new Element({ top: 20, left: 780, right: 812, bottom: 54, width: 32, height: 34 });
@@ -91,6 +98,18 @@ function setup() {
 }
 
 describe("全屏按钮", () => {
+  it("稳态更新不重复写入图标，顶栏消失时隐藏并在回来后恢复", () => {
+    const { context, body, toolbar } = setup();
+    const button = body.children[0];
+    const writes = button.htmlWrites;
+    runInNewContext(fullscreenButtonUpdateScript(), context);
+    runInNewContext(fullscreenButtonUpdateScript(), context);
+    assert.equal(button.htmlWrites, writes);
+    toolbar.setAttribute("id", "playlist-search"); runInNewContext(fullscreenButtonUpdateScript(), context);
+    assert.equal(button.style.display, "none");
+    toolbar.setAttribute("id", "page_pc_main_nav"); runInNewContext(fullscreenButtonUpdateScript(), context);
+    assert.equal(button.style.display, "flex"); assert.equal(button.htmlWrites, writes);
+  });
   it("插在完整搜索框的外侧，忽略右上角的其他图标", () => {
     const { context, body, toolbar, parent, search, unrelated, installed } = setup();
     assert.equal(installed, true);

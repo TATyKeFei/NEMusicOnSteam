@@ -59,6 +59,13 @@ function setup(options: { owned?: boolean; playing?: boolean } = {}) {
 }
 
 describe("player recovery state", () => {
+  it("refuses another account's saved queue before dispatching any changes", async () => {
+    const runtime = setup();
+    const snapshot = runInNewContext(PLAYER_RECOVERY_SCRIPT, runtime.context).snapshot as PlayerRecoverySnapshot;
+    snapshot.accountId = "12345";
+    await assert.rejects(runInNewContext(playerRestoreScript(snapshot), runtime.context), /账号已改变/);
+    assert.equal(runtime.actions.length, 0);
+  });
   it("waits for the mini bar and lazy Redux models before declaring the webpage ready", async () => {
     const runtime = setup();
     const together = runtime.state['async:listenTogetherPlayList'];

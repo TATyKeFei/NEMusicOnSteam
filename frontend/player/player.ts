@@ -11,6 +11,12 @@ import { MprisBridge } from "../mpris/mpris.ts";
 import { MpvBridge } from "../playback/mpv.ts";
 import { MpdBridge } from "../playback/mpd.ts";
 import { WebPreloadBridge } from "../playback/web-preload.ts";
+import { SleepTimer, type SleepSnapshot } from "../playback/sleep-timer.ts";
+import { sleepGuardScript } from "../playback/sleep-player.ts";
+import { SNAPSHOT_SCRIPT } from "./player-access.ts";
+import { saveSession, readSession, clearSession } from "./session.ts";
+import { collectDiagnostics } from "../runtime/diagnostics.ts";
+import type { Command } from "../mpris/mpris-player.ts";
 import { EXTERNAL_MUTE_SCRIPT } from "../playback/external-audio.ts";
 import { commandScript } from "../mpris/mpris-player.ts";
 import { releasePlayerSession, preparePlayerTarget } from "./player-target.ts";
@@ -25,7 +31,7 @@ import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
 import { TogetherBridge, type TogetherSnapshot } from "../together/together.ts";
 import { UnblockBridge } from "../unblock/unblock.ts";
 import type { IdentityVariant } from "../together/identity-player.ts";
-import { browserStorage, readSettings, writeSettings, sanitizeSettings, type PlayerSettings } from "../settings.ts";
+import { browserStorage, readSettings, writeSettings, sanitizeSettings, notificationModeFor, type PlayerSettings } from "../settings.ts";
 import { STEAM_PAGE_FALLBACK_CLASSES, steamPageTransition, steamPageVisible, type SteamPageSelectors } from "./steam-page.ts";
 import {
   BROWSER_VIEW_STACK_TOP,
@@ -102,20 +108,26 @@ export type PlayerSnapshot = {
   quality: QualitySnapshot;
   together: TogetherSnapshot;
   download: DownloadSnapshot;
+  preloadStatus: string;
+  audioDevices: { name: string; description: string }[];
+  sleep: SleepSnapshot;
   settings: PlayerSettings;
 };
 
 export class PlayerController {
   private readonly chrome = new PlayerChrome();
-  private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); }, () => this.settings.notificationMode);
+  private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); }, () =>
+    this.settings.trackNotifyOnlyCollapsed && this.mode === "expanded" && !this.owner?.document.hidden ? "none" : notificationModeFor(this.settings, "track"));
   private readonly unblock = new UnblockBridge(() => ({ enabled: this.settings.unblockEnabled, sources: this.settings.unblockSources }));
-  private readonly mpv = new MpvBridge({
+  private readonly mpv: MpvBridge = new MpvBridge({
     quality: () => this.settings.downloadQuality,
-    crossfade: () => this.settings.mpvTransitionMode === "none" ? "off"
+    crossfade: () => this.sleep.snapshot().mode === "track" || this.settings.mpvTransitionMode === "none" ? "off"
       : this.settings.mpvTransitionMode === "crossfade" ? "standard" : this.settings.mpvCrossfade,
     transitionMode: () => this.settings.mpvTransitionMode,
     crossfadeSeconds: () => this.settings.mpvCrossfadeSeconds,
-    preloadNext: () => this.settings.preloadNext,
+    preloadNext: () => this.sleep.snapshot().mode !== "track" && this.settings.preloadNext,
+    stopAfterTrack: () => this.sleep.snapshot().mode === "track",
+    audioSettings: () => ({ loudness: this.settings.mpvLoudness, audioDevice: this.settings.audioOutputDevice }),
     resolveNextTrack: (quality, song, signal) => this.unblock.resolve(quality, song, signal),
     resolveTrack: (quality, signal) => this.unblock.resolve(quality, undefined, signal),
     holdWebDuringResolution: () => this.settings.unblockEnabled,
@@ -124,6 +136,7 @@ export class PlayerController {
   private readonly mpd = new MpdBridge({
     settings: () => this.settings.mpd,
     quality: () => this.settings.downloadQuality,
+    stopAfterTrack: () => this.sleep.snapshot().mode === "track",
     resolveTrack: (quality, signal) => this.unblock.resolve(quality, undefined, signal),
     holdWebDuringResolution: () => this.settings.unblockEnabled,
     commandWeb: async command => Boolean(await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true })),
@@ -135,14 +148,30 @@ export class PlayerController {
     targetMissing: error => error instanceof Error && error.message === PLAYER_TARGET_MISSING,
   });
   private readonly fullscreenButton = new FullscreenButtonBridge();
-  private readonly webPreload = new WebPreloadBridge(() => this.settings.playbackBackend === "web" && this.settings.preloadNext);
+  private readonly webPreload = new WebPreloadBridge(() => this.settings.playbackBackend === "web" && this.settings.preloadNext && this.sleep.snapshot().mode !== "track");
+  private readonly sleep: SleepTimer = new SleepTimer({
+    state: async () => this.settings.playbackBackend === "mpv" ? this.mpv.snapshot()
+      : this.settings.playbackBackend === "mpd" ? this.mpd.snapshot()
+        : /Linux/i.test(navigator.platform) ? this.mpris.snapshot()
+          : await tryEvaluateInPlayer(SNAPSHOT_SCRIPT) as ReturnType<MprisBridge["snapshot"]> | null,
+    pause: async () => { if (!await this.performCommand({ action: "pause" })) throw new Error("播放器没有响应暂停命令"); },
+    volume: async value => { if (!await this.performCommand({ action: "volume", value })) throw new Error("播放器没有响应音量命令"); },
+    guard: async id => {
+      const result = this.loaded ? await tryEvaluateInPlayer(sleepGuardScript(id)) : null;
+      if (id !== null && result !== true) throw new Error("无法设置网页停止保护，请等待播放器就绪后重试");
+    },
+    prepareEnd: () => { this.webPreload.refresh(); if (this.settings.playbackBackend === "mpv") this.mpv.reconnect(); else if (this.settings.playbackBackend === "mpd") this.mpd.reconnect(); },
+    restoreEnd: () => { if (this.loaded && !this.shuttingDown) { this.webPreload.refresh(); if (this.settings.playbackBackend === "mpv") this.mpv.reconnect(); else if (this.settings.playbackBackend === "mpd") this.mpd.reconnect(); } },
+    fadeSeconds: () => this.settings.sleepFadeSeconds,
+  });
   private readonly quality = new QualityBridge();
   private readonly together = new TogetherBridge();
   private readonly download = new DownloadBridge(() => ({
     quality: this.settings.downloadQuality,
     directory: this.settings.downloadDirectory,
     nameTemplate: this.settings.downloadNameTemplate,
-    notificationMode: this.settings.notificationMode,
+    notificationMode: notificationModeFor(this.settings, "download"),
+    skipDuplicates: this.settings.skipDuplicateDownloads,
   }), {
     helper: mprisHelper,
     evaluate: expression => evaluateInPlayer(expression, { awaitPromise: true }),
@@ -190,6 +219,7 @@ export class PlayerController {
   private recoveryBusy = false;
   private recoveryFailed = false;
   private lastRecoveryAt = 0;
+  private lastSessionSaveAt = 0;
   private readonly steamSettings: SteamSettingsStatus | null;
   private playbackEpoch = 0;
 
@@ -217,6 +247,8 @@ export class PlayerController {
   shutdown(): void {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    if (this.settings.restoreSession && this.recoverySnapshot) saveSession(browserStorage(), this.recoverySnapshot);
+    void this.sleep.cancel().catch(() => {});
     this.booted = false;
     this.pendingOpen = false;
     this.mode = "closed";
@@ -249,6 +281,11 @@ export class PlayerController {
       quality: this.quality.snapshot(),
       together: this.together.snapshot(),
       download: this.download.snapshot(),
+      preloadStatus: this.settings.playbackBackend === "web" ? this.webPreload.getStatus()
+        : this.settings.playbackBackend === "mpd" ? "MPD 使用自身缓冲"
+          : !this.settings.preloadNext && this.settings.mpvTransitionMode === "none" ? "已关闭" : this.mpv.getPreloadStatus(),
+      audioDevices: this.mpv.audioDevices(),
+      sleep: this.sleep.snapshot(),
       settings: { ...this.settings, mpd: { ...this.settings.mpd }, unblockSources: [...this.settings.unblockSources] },
     };
   }
@@ -262,6 +299,8 @@ export class PlayerController {
     if (patch.playbackBackend != null) this.applyPlaybackBackend();
     if (patch.mpd != null) this.mpd.reconnect();
     if (patch.mpvCrossfade != null || patch.mpvTransitionMode != null || patch.mpvCrossfadeSeconds != null || patch.preloadNext != null) this.mpv.reconnect();
+    if (patch.mpvLoudness != null || patch.audioOutputDevice != null) this.mpv.reconnect();
+    if (patch.restoreSession === false) clearSession(browserStorage());
     if (patch.preloadNext != null || patch.playbackBackend != null || patch.unblockEnabled != null || patch.unblockSources != null) this.webPreload.refresh();
     if (patch.uiScale != null) this.applyUiScale();
     this.syncView(true, this.render());
@@ -313,6 +352,23 @@ export class PlayerController {
     void this.download.downloadPlayingList();
   }
 
+  cancelDownload(id: string): void { void this.download.cancelTask(id); }
+  retryDownload(id: string): void { this.download.retryTask(id); }
+  retryFailedDownloads(): void { this.download.retryFailed(); }
+  clearFinishedDownloads(): void { this.download.clearFinished(); }
+  startSleepTimer(value: number | "track"): void { void this.sleep.start(value).catch(error => { this.status = errorText(error); }); }
+  cancelSleepTimer(): void {
+    void this.sleep.cancel().catch(error => { this.status = errorText(error); });
+  }
+  async diagnose(): Promise<string> { return collectDiagnostics(this.snapshot()); }
+
+  private async performCommand(command: Command): Promise<boolean> {
+    if (this.shuttingDown || !this.loaded) return false;
+    return this.settings.playbackBackend === "mpv" ? this.mpv.command(command)
+      : this.settings.playbackBackend === "mpd" ? this.mpd.command(command)
+        : Boolean(await tryEvaluateInPlayer(commandScript(command), { awaitPromise: true, userGesture: true }));
+  }
+
   open(): string {
     this.boot();
     this.recoveryFailed = false;
@@ -357,6 +413,8 @@ export class PlayerController {
     this.pendingOpen = false;
     this.mode = "closed";
     this.status = "已关闭";
+    if (this.settings.restoreSession && this.recoverySnapshot) saveSession(browserStorage(), { ...this.recoverySnapshot, playing: false });
+    void this.sleep.cancel().catch(() => {});
     // 关掉播放器要连外部音频一起停：换父窗口时音乐仍需继续。
     this.stopExternalPlayback();
     this.destroyView();
@@ -615,7 +673,15 @@ export class PlayerController {
     const view = this.view;
     void tryEvaluateInPlayer(PLAYER_RECOVERY_SCRIPT).then(value => {
       const state = value as { snapshot?: PlayerRecoverySnapshot | null } | null;
-      if (this.view === view && state?.snapshot) this.recoverySnapshot = state.snapshot;
+      if (this.view === view && state?.snapshot) {
+        const external = this.settings.playbackBackend === "mpv" ? this.mpv.snapshot() : this.settings.playbackBackend === "mpd" ? this.mpd.snapshot() : null;
+        this.recoverySnapshot = external?.active ? { ...state.snapshot, position: external.position, playing: external.playbackStatus === "Playing" } : state.snapshot;
+        this.recoverySnapshot = { ...this.recoverySnapshot, volume: this.sleep.recoveryVolume(this.recoverySnapshot.volume) };
+        if (this.settings.restoreSession && Date.now() - this.lastSessionSaveAt >= 10000) {
+          this.lastSessionSaveAt = Date.now();
+          saveSession(browserStorage(), this.recoverySnapshot);
+        }
+      }
     }).catch(error => {
       console.warn("[NEMusic] player checkpoint", error);
     }).finally(() => { this.recoveryBusy = false; });
@@ -676,7 +742,10 @@ export class PlayerController {
       this.applyUiScale();
       await this.unblock.installPageHook();
       if (this.view !== view) return;
-      const snapshot = this.restorePending ?? await tryEvaluateInPlayer(PLAYER_RECOVERY_CHECKPOINT_SCRIPT) as PlayerRecoverySnapshot | null;
+      const temporary = this.restorePending ?? (this.settings.restoreSession ? await tryEvaluateInPlayer(PLAYER_RECOVERY_CHECKPOINT_SCRIPT) as PlayerRecoverySnapshot | null : null);
+      const saved = !temporary && this.settings.restoreSession ? readSession(browserStorage()) : null;
+      const persisted = temporary ?? saved;
+      const snapshot = this.restorePending ?? (persisted ? { ...persisted, playing: persisted.playing && this.settings.resumeOnRestore } : null);
       if (this.view !== view) return;
       if (snapshot != null) {
         this.restorePending = snapshot;

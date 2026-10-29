@@ -88,7 +88,11 @@ class Decoder:
             arguments += ["-headers", "".join(f"{key}: {value}\r\n" for key, value in audio_headers(payload["url"]).items())]
         if position:
             arguments += ["-ss", str(position)]
-        arguments += ["-i", payload["url"], "-vn", "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "f32le", "pipe:1"]
+        arguments += ["-i", payload["url"], "-vn"]
+        # PCM 输出不再携带原文件的 ReplayGain 标签，因此在解码每首歌时应用它。
+        if payload.get("loudness") == "replaygain":
+            arguments += ["-af", "volume=replaygain=track:replaygain_noclip=1"]
+        arguments += ["-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "f32le", "pipe:1"]
         self.process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                         stderr=subprocess.DEVNULL, env=environment, close_fds=True)
         self.thread = threading.Thread(target=self.read, name="nemusic-decode", daemon=True)

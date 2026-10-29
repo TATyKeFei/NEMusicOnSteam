@@ -1,9 +1,11 @@
-import { DialogButton, Dropdown, Field, TextField, Toggle } from "millennium";
+import { AudioSettings, SleepSettings, DownloadTasks, Diagnostics } from "./settings-extras.tsx";
+import { Dropdown, Field, TextField, Toggle } from "millennium";
+import { SettingsActions, SettingsButton } from "./settings-controls.tsx";
 import { useEffect, useState } from "react";
 import type { PlayerController, PlayerSnapshot } from "./player/player.ts";
 import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
 import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
-import { sanitizeMpdSettings, type NotificationMode, type PlaybackBackend, type CrossfadeMode, type TransitionMode } from "./settings.ts";
+import { sanitizeMpdSettings, type NotificationMode, type NotificationSettingsMode, type PlaybackBackend, type CrossfadeMode, type TransitionMode } from "./settings.ts";
 import { sanitizeUnblockSources } from "./unblock/sources.ts";
 
 const NOTIFICATION_OPTIONS = [
@@ -44,6 +46,9 @@ function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
     && JSON.stringify(a.quality) === JSON.stringify(b.quality)
     && JSON.stringify(a.together) === JSON.stringify(b.together)
     && JSON.stringify(a.download) === JSON.stringify(b.download)
+    && a.preloadStatus === b.preloadStatus
+    && JSON.stringify(a.audioDevices) === JSON.stringify(b.audioDevices)
+    && JSON.stringify(a.sleep) === JSON.stringify(b.sleep)
     && JSON.stringify(a.settings) === JSON.stringify(b.settings);
 }
 
@@ -124,10 +129,9 @@ export function SettingsContent({ player }: { player: PlayerController }) {
   // MPRIS 以及基于它的快捷键命令只在 Linux 上存在。
 
   return (
-    <div
-      className="nemusic-settings-content"
-      style={{ flex: "1 1 0", height: "100%", minHeight: 0, overflowX: "hidden", overflowY: "auto", scrollbarGutter: "stable", paddingRight: 12, boxSizing: "border-box" }}
-    >
+    <div className="nemusic-settings-content" style={{ flex: "1 1 0", height: "100%", minHeight: 0, overflowX: "hidden", overflowY: "auto", scrollbarGutter: "stable", paddingRight: 12, boxSizing: "border-box" }}>
+      <details open style={{ marginBottom: 14 }}>
+        <summary style={{ padding: "12px 0", cursor: "pointer", fontSize: 17 }}>播放与音频</summary>
       <Field
         label="播放后端"
         description={settings.playbackBackend === "mpv"
@@ -200,45 +204,14 @@ export function SettingsContent({ player }: { player: PlayerController }) {
           <TextField bIsPassword value={mpd.password} onChange={event => setMpd({ ...mpd, password: event.target.value })} />
         </Field>
         <Field label="MPD 连接" description="先启动 MPD 并启用 HTTP/HTTPS 输入和音频输出。远程设备需要能直接访问歌曲地址。插件只清理自己添加的歌曲，不清空原队列。" bottomSeparator="standard">
-          <DialogButton onClick={commitMpd}>保存并连接</DialogButton>
-          <DialogButton onClick={() => player.reconnectMpd()}>重新连接</DialogButton>
+          <SettingsActions>
+            <SettingsButton onClick={commitMpd}>保存并连接</SettingsButton>
+            <SettingsButton onClick={() => player.reconnectMpd()}>重新连接</SettingsButton>
+          </SettingsActions>
         </Field>
       </>}
-      <Field
-        label="UnblockNeteaseMusic（实验性）"
-        description="仅 Linux：网页点击灰歌、外部播放和下载在官方无地址或仅有试听时尝试其他音源。需要 Node.js 22+。"
-        bottomSeparator="standard"
-      >
-        <Toggle value={settings.unblockEnabled} onChange={unblockEnabled => setSnapshot(player.updateSettings({ unblockEnabled }))} />
-      </Field>
-      {settings.unblockEnabled && <>
-        <Field
-          label="解灰音源顺序"
-          description="按填写顺序匹配，用逗号分隔。可选 kuwo（酷我）、kugou（酷狗）、bodian（波点）、bilibili（音频）、bilivideo（视频）。按回车或移开焦点保存；实际版本和音质取决于音源。"
-          bottomSeparator="standard"
-        >
-          <TextField
-            value={unblockSources}
-            onChange={event => setUnblockSources(event.target.value)}
-            onBlur={commitUnblockSources}
-            onKeyDown={event => { if (event.key === "Enter") commitUnblockSources(); }}
-          />
-        </Field>
-        <Field label="解灰服务" description={snapshot.unblockStatus} bottomSeparator="standard">
-          <DialogButton onClick={() => player.checkUnblock()}>检测连接</DialogButton>
-        </Field>
-      </>}
-      <Field
-        label="网易云界面缩放"
-        description="只缩放内嵌的网易云页面，修改后立即生效"
-        bottomSeparator="standard"
-      >
-        <Dropdown
-          rgOptions={UI_SCALE_OPTIONS}
-          selectedOption={settings.uiScale}
-          onChange={option => setSnapshot(player.updateSettings({ uiScale: Number(option.data) }))}
-        />
-      </Field>
+      {settings.playbackBackend === "mpv" && <AudioSettings player={player} snapshot={snapshot} />}
+      <Field label="下一首预载状态" description={snapshot.preloadStatus} bottomSeparator="standard" />
       <Field
         label="播放音质"
         description="播放歌曲时切换音质会短暂暂停重新加载并保留播放进度；可能需要下一首才生效"
@@ -260,6 +233,10 @@ export function SettingsContent({ player }: { player: PlayerController }) {
         description={`${qualityLabel(quality.current)}。${quality.status}。如果没有变化可能是没有vip或当前歌曲不支持所选音质`}
         bottomSeparator="standard"
       />
+      <SleepSettings player={player} snapshot={snapshot} />
+      </details>
+      <details style={{ marginBottom: 14 }}>
+        <summary style={{ padding: "12px 0", cursor: "pointer", fontSize: 17 }}>下载管理</summary>
       <Field
         label="下载音质"
         description="下载当前歌曲时用的音质，和上面的播放音质互不影响。账号没vip或歌曲没版权时可能拿不到所选档位"
@@ -302,6 +279,21 @@ export function SettingsContent({ player }: { player: PlayerController }) {
           }}
         />
       </Field>
+      <DownloadTasks player={player} snapshot={snapshot} />
+      </details>
+      <details style={{ marginBottom: 14 }}>
+        <summary style={{ padding: "12px 0", cursor: "pointer", fontSize: 17 }}>界面与启动</summary>
+      <Field
+        label="网易云界面缩放"
+        description="只缩放内嵌的网易云页面，修改后立即生效"
+        bottomSeparator="standard"
+      >
+        <Dropdown
+          rgOptions={UI_SCALE_OPTIONS}
+          selectedOption={settings.uiScale}
+          onChange={option => setSnapshot(player.updateSettings({ uiScale: Number(option.data) }))}
+        />
+      </Field>
       <Field label="启动时打开" description="Steam 主窗口出现后自动展开播放器。" bottomSeparator="standard">
         <Toggle
           value={settings.openOnStart}
@@ -328,19 +320,47 @@ export function SettingsContent({ player }: { player: PlayerController }) {
           onChange={(disableBackgroundThrottling) => setSnapshot(player.updateSettings({ disableBackgroundThrottling }))}
         />
       </Field>
+      <Field label="恢复上次播放" description="重启 Steam 后恢复队列、歌曲和进度，记录最多保留 30 天。" bottomSeparator="standard">
+        <Toggle value={settings.restoreSession} onChange={restoreSession => setSnapshot(player.updateSettings({ restoreSession }))} />
+      </Field>
+      {settings.restoreSession && <Field label="恢复后自动开播" description="关闭时只恢复歌曲和进度，等待手动播放。" bottomSeparator="standard">
+        <Toggle value={settings.resumeOnRestore} onChange={resumeOnRestore => setSnapshot(player.updateSettings({ resumeOnRestore }))} />
+      </Field>}
+      </details>
+      <details style={{ marginBottom: 14 }}>
+        <summary style={{ padding: "12px 0", cursor: "pointer", fontSize: 17 }}>通知</summary>
+      <Field label="通知设置" description="统一设置所有通知，或分别设置切歌与下载的提醒方式。" bottomSeparator="standard">
+        <Dropdown selectedOption={settings.notificationSettingsMode}
+          rgOptions={[{ data: "unified", label: "统一" }, { data: "independent", label: "独立" }]}
+          onChange={option => setSnapshot(player.updateSettings({ notificationSettingsMode: option.data as NotificationSettingsMode }))} />
+      </Field>
+      {settings.notificationSettingsMode === "unified" ? <Field label="通知方式" description="切歌、下载完成或失败时统一使用此提醒方式。" bottomSeparator="standard">
+        <Dropdown rgOptions={NOTIFICATION_OPTIONS} selectedOption={settings.notificationMode}
+          onChange={option => setSnapshot(player.updateSettings({ notificationMode: option.data as NotificationMode }))} />
+      </Field> : <>
       <Field
-        label="通知方式"
-        description="切歌、下载完成或失败时统一使用此提醒方式。系统通知走桌面通知（Linux 需要 Python 辅助进程），Steam 弹窗用右下角的 Steam 通知样式，无则不提醒"
+        label="切歌通知"
+        description="切歌时使用此提醒方式。系统通知走桌面通知（Linux 需要 Python 辅助进程），Steam 弹窗用右下角的 Steam 通知样式，无则不提醒"
         bottomSeparator="standard"
       >
         <Dropdown
           rgOptions={NOTIFICATION_OPTIONS}
-          selectedOption={settings.notificationMode}
+          selectedOption={settings.trackNotificationMode}
           onChange={option => {
-            setSnapshot(player.updateSettings({ notificationMode: option.data as NotificationMode }));
+            setSnapshot(player.updateSettings({ trackNotificationMode: option.data as NotificationMode }));
           }}
         />
       </Field>
+      <Field label="下载通知" description="下载完成或失败时使用的通知方式。" bottomSeparator="standard">
+        <Dropdown rgOptions={NOTIFICATION_OPTIONS} selectedOption={settings.downloadNotificationMode} onChange={option => setSnapshot(player.updateSettings({ downloadNotificationMode: option.data as NotificationMode }))} />
+      </Field>
+      </>}
+      <Field label="切歌时只在播放器收起后提醒" description="播放器正在前台展开时不发送切歌通知；下载通知不受此限制。" bottomSeparator="standard">
+        <Toggle value={settings.trackNotifyOnlyCollapsed} onChange={trackNotifyOnlyCollapsed => setSnapshot(player.updateSettings({ trackNotifyOnlyCollapsed }))} />
+      </Field>
+      </details>
+      <details style={{ marginBottom: 14 }}>
+        <summary style={{ padding: "12px 0", cursor: "pointer", fontSize: 17 }}>诊断与工具</summary>
       <Field
         label="诊断"
         description={`${SETTINGS_ENTRY_TEXT[snapshot.settingsEntry]}。Steam 更新后如果显示兼容注入，说明官方补丁没匹配上，可以去 Github 反馈`}
@@ -348,14 +368,42 @@ export function SettingsContent({ player }: { player: PlayerController }) {
       />
       <Field label="系统媒体控制" description={snapshot.mprisStatus}>
         {snapshot.mprisCanReconnect && (
-          <DialogButton onClick={() => {
+          <SettingsButton onClick={() => {
             player.reconnectMpris();
             setSnapshot(player.snapshot());
           }}>
             重连
-          </DialogButton>
+          </SettingsButton>
         )}
       </Field>
+      <Diagnostics player={player} snapshot={snapshot} />
+      </details>
+      <details style={{ marginBottom: 14 }}>
+        <summary style={{ padding: "12px 0", cursor: "pointer", fontSize: 17 }}>高级：网络与一起听身份</summary>
+      <Field
+        label="UnblockNeteaseMusic（实验性）"
+        description="仅 Linux：网页点击灰歌、外部播放和下载在官方无地址或仅有试听时尝试其他音源。需要 Node.js 22+。"
+        bottomSeparator="standard"
+      >
+        <Toggle value={settings.unblockEnabled} onChange={unblockEnabled => setSnapshot(player.updateSettings({ unblockEnabled }))} />
+      </Field>
+      {settings.unblockEnabled && <>
+        <Field
+          label="解灰音源顺序"
+          description="按填写顺序匹配，用逗号分隔。可选 kuwo（酷我）、kugou（酷狗）、bodian（波点）、bilibili（音频）、bilivideo（视频）。按回车或移开焦点保存；实际版本和音质取决于音源。"
+          bottomSeparator="standard"
+        >
+          <TextField
+            value={unblockSources}
+            onChange={event => setUnblockSources(event.target.value)}
+            onBlur={commitUnblockSources}
+            onKeyDown={event => { if (event.key === "Enter") commitUnblockSources(); }}
+          />
+        </Field>
+        <Field label="解灰服务" description={snapshot.unblockStatus} bottomSeparator="standard">
+          <SettingsButton onClick={() => player.checkUnblock()}>检测连接</SettingsButton>
+        </Field>
+      </>}
       <Field
         label="一起听身份"
         description={identityText(together.identity)}
@@ -372,7 +420,7 @@ export function SettingsContent({ player }: { player: PlayerController }) {
           }}
         />
       </Field>
+      </details>
     </div>
   );
 }
-

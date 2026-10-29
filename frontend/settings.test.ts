@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { defaultSettings, readSettings, sanitizeSettings, SETTINGS_KEY, uiScaleOr, writeSettings } from "./settings.ts";
+import { defaultSettings, notificationModeFor, readSettings, sanitizeSettings, SETTINGS_KEY, uiScaleOr, writeSettings } from "./settings.ts";
 
 describe("settings", () => {
   it("drops garbage and keeps defaults", () => {
@@ -84,11 +84,12 @@ describe("settings", () => {
     for (const quality of ["320", 0, 300, 320.5, NaN, null]) assert.equal(sanitizeSettings({ downloadQuality: quality }).downloadQuality, 320);
   });
 
-  it("merges separate notification preferences using the existing track notification mode", () => {
+  it("migrates legacy track notifications and preserves independent download preferences", () => {
     for (const notificationMode of ["system", "steam", "none"]) {
       const settings = sanitizeSettings({ notificationMode, downloadNotificationMode: notificationMode === "none" ? "steam" : "none" });
       assert.equal(settings.notificationMode, notificationMode);
-      assert.equal("downloadNotificationMode" in settings, false);
+      assert.equal(settings.trackNotificationMode, notificationMode);
+      assert.equal(settings.downloadNotificationMode, notificationMode === "none" ? "steam" : "none");
     }
   });
 
@@ -96,6 +97,44 @@ describe("settings", () => {
     assert.equal(sanitizeSettings({ downloadNotificationMode: "none" }).notificationMode, "none");
     assert.equal(sanitizeSettings({ notificationMode: "invalid", downloadNotificationMode: "steam" }).notificationMode, "steam");
     assert.equal(sanitizeSettings({ notificationMode: "invalid", downloadNotificationMode: "invalid" }).notificationMode, "system");
+  });
+
+  it("defaults to unified notifications and preserves existing behavior when migrating", () => {
+    assert.equal(sanitizeSettings({}).notificationSettingsMode, "unified");
+    const legacy = sanitizeSettings({ notificationMode: "none" });
+    assert.equal(legacy.notificationSettingsMode, "unified");
+    assert.equal(notificationModeFor(legacy, "track"), "none");
+    assert.equal(notificationModeFor(legacy, "download"), "none");
+    // 上一版的统一字段可能仍是默认值，应迁移实际生效的两个渠道。
+    const same = sanitizeSettings({ notificationMode: "system", trackNotificationMode: "steam", downloadNotificationMode: "steam" });
+    assert.equal(same.notificationSettingsMode, "unified");
+    assert.equal(notificationModeFor(same, "track"), "steam");
+    assert.equal(notificationModeFor(same, "download"), "steam");
+    const different = sanitizeSettings({ trackNotificationMode: "steam", downloadNotificationMode: "none" });
+    assert.equal(different.notificationSettingsMode, "independent");
+    assert.equal(notificationModeFor(different, "track"), "steam");
+    assert.equal(notificationModeFor(different, "download"), "none");
+  });
+
+  it("uses the shared channel in unified mode without overwriting independent preferences", () => {
+    const independent = sanitizeSettings({ notificationSettingsMode: "independent", notificationMode: "system", trackNotificationMode: "steam", downloadNotificationMode: "none" });
+    for (const notificationMode of ["system", "steam", "none"] as const) {
+      const unified = sanitizeSettings({ ...independent, notificationSettingsMode: "unified", notificationMode });
+      assert.equal(notificationModeFor(unified, "track"), notificationMode);
+      assert.equal(notificationModeFor(unified, "download"), notificationMode);
+      const restored = sanitizeSettings(JSON.parse(JSON.stringify({ ...unified, notificationSettingsMode: "independent" })));
+      assert.equal(notificationModeFor(restored, "track"), "steam");
+      assert.equal(notificationModeFor(restored, "download"), "none");
+    }
+  });
+
+  it("keeps an explicit mode when the two channels happen to match", () => {
+    for (const notificationSettingsMode of ["unified", "independent"] as const) {
+      const settings = sanitizeSettings({ notificationSettingsMode, notificationMode: "none", trackNotificationMode: "steam", downloadNotificationMode: "steam" });
+      const roundTrip = sanitizeSettings(JSON.parse(JSON.stringify(settings)));
+      assert.equal(roundTrip.notificationSettingsMode, notificationSettingsMode);
+      assert.equal(notificationModeFor(roundTrip, "download"), notificationSettingsMode === "unified" ? "none" : "steam");
+    }
   });
 
   it("round-trips through a storage stub", () => {
@@ -129,6 +168,18 @@ describe("settings", () => {
     assert.equal(readSettings(storage).preloadNext, true);
     assert.equal(readSettings(storage).downloadDirectory, "~/Music/网易云音乐");
     assert.equal(readSettings(storage).downloadQuality, 999);
+  });
+
+  it("sanitizes new audio, recovery, download and sleep options and preserves independent notifications", () => {
+    const settings = sanitizeSettings({ mpvLoudness: "dynamic", audioOutputDevice: " bad\noutput ", restoreSession: false,
+      resumeOnRestore: true, skipDuplicateDownloads: false, sleepFadeSeconds: 99, trackNotificationMode: "steam", downloadNotificationMode: "none", trackNotifyOnlyCollapsed: true });
+    assert.equal(settings.mpvLoudness, "dynamic"); assert.equal(settings.audioOutputDevice, "badoutput");
+    assert.equal(settings.restoreSession, false); assert.equal(settings.resumeOnRestore, true); assert.equal(settings.skipDuplicateDownloads, false);
+    assert.equal(settings.sleepFadeSeconds, 30); assert.equal(settings.trackNotifyOnlyCollapsed, true);
+    const reread = sanitizeSettings(JSON.parse(JSON.stringify(settings)));
+    assert.equal(reread.trackNotificationMode, "steam"); assert.equal(reread.downloadNotificationMode, "none");
+    assert.equal(sanitizeSettings({ mpvLoudness: "bad", sleepFadeSeconds: NaN }).mpvLoudness, "off");
+    assert.equal(sanitizeSettings({ sleepFadeSeconds: -2 }).sleepFadeSeconds, 0);
   });
 
 });

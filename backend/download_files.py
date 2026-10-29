@@ -1,8 +1,10 @@
 """下载文件名、格式和目标地址校验，不依赖 D-Bus。"""
 
 import ipaddress
+import json
 import os
 import socket
+import tempfile
 from urllib.parse import urlsplit
 
 DEFAULT_DOWNLOAD_DIRECTORY = "~/Music/网易云音乐"
@@ -14,6 +16,38 @@ DECLARED_AUDIO_TYPES = ("mp3", "flac", "m4a", "wav", "aac", "ape", "ogg")
 AUDIO_SUFFIXES = tuple("." + kind for kind in DECLARED_AUDIO_TYPES)
 CONTROL_CHARACTERS = frozenset(chr(code) for code in range(32)) | {"\x7f"}
 MP3_MAGIC = (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2", b"\xff\xfa", b"\xff\xf9")
+
+
+def recorded_download(directory, key, filename=None):
+    """按歌曲 ID/音质记录已有下载；只记录文件名，不保存地址或账号信息。"""
+    manifest = os.path.join(directory, ".nemusic-downloads.json")
+    try:
+        with open(manifest, encoding="utf-8") as handle:
+            contents = handle.read(4_000_001)
+            records = json.loads(contents) if len(contents) <= 4_000_000 else {}
+        if not isinstance(records, dict):
+            records = {}
+    except (OSError, ValueError):
+        records = {}
+    if filename is None:
+        name = records.get(key)
+        if isinstance(name, str) and name == os.path.basename(name) and os.path.isfile(os.path.join(directory, name)):
+            return os.path.join(directory, name)
+        return None
+    records[key] = os.path.basename(filename)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=directory, delete=False) as handle:
+            temporary = handle.name
+            json.dump(dict(list(records.items())[-10000:]), handle, ensure_ascii=False)
+        os.replace(temporary, manifest)
+    except OSError:
+        if temporary:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+    return None
 
 
 def audio_extension(data, declared=None):

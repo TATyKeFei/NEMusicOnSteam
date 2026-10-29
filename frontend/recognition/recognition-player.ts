@@ -1,3 +1,5 @@
+import { HEADER_ANCHOR_SCRIPT } from "../player/header-anchor.ts";
+
 /**
  * recognitionScript 的稳态部分：刷新已在运行的页面脚本的配置，并汇报它是否还在。
  * 识曲每两秒运行一次定时器，为了确认「装上了没有」而每次都发整份脚本，
@@ -5,7 +7,7 @@
  */
 
 /** 注入的 api 结构一有变化就递增，让升级能够替换掉页面上的旧脚本。 */
-const RECOGNITION_API_VERSION = 6;
+const RECOGNITION_API_VERSION = 7;
 
 /**
  * 两个脚本都返回 {ok, note}：note 是人话版的失败原因，直接显示到插件的设置页。
@@ -217,23 +219,10 @@ export function recognitionScript(endpoint: string, token: string, open = false)
     // 只允许挂到全局导航栏。歌单搜索框可能在滚动后也出现在视口顶部，
     // 不能用位置或 placeholder 打分来替代容器判断；顶栏未挂载时等下一次刷新。
     const ensureHeaderButton = () => {
+      ${HEADER_ANCHOR_SCRIPT}
       const inputs = Array.from(document.querySelectorAll?.('input[placeholder], input[type="search"], input') ?? []);
-      const candidates = [];
-      for (const input of inputs) {
-        if (!input.closest?.('#page_pc_main_nav, .m-top, #g-topbar')) continue;
-        let rect = null;
-        try { rect = input.getBoundingClientRect(); } catch (error) { continue; }
-        if (!rect || rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0) continue;
-        const style = typeof getComputedStyle === 'function' ? getComputedStyle(input) : null;
-        if (style?.display === 'none' || style?.visibility === 'hidden') continue;
-        const placeholder = String(input.getAttribute?.('placeholder') || input.placeholder || '');
-        const hint = [placeholder, input.getAttribute?.('aria-label'), input.getAttribute?.('type')].join(' ');
-        const looksSearch = /搜索|search|搜/i.test(hint) || input.closest?.('.m-srch, [class*="SearchWrapper_"]');
-        const score = (looksSearch ? 100000 : 0) + Math.min(rect.width, 600) * 10 - rect.left;
-        candidates.push({ input, rect, placeholder, score });
-      }
-      candidates.sort((left, right) => right.score - left.score);
-      const best = candidates[0];
+      const input = headerSearchInputs()[0];
+      const best = input ? { input } : null;
       const parent = best?.input.parentElement;
       // 清理旧版本或页面切换时留在错误位置的按钮；旧闭包上的点击处理也要替换。
       const buttons = Array.from(document.querySelectorAll?.('[data-nemusic-recognition-button]') ?? []);

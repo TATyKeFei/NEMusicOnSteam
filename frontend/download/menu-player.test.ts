@@ -503,3 +503,21 @@ describe("menu scanning against a fake page", () => {
     assert.equal(page.run().menus, 0);
   });
 });
+
+describe("menu scanner scheduling", () => {
+  it("debounces click and DOM changes with a low frequency fallback and cleans up", () => {
+    const page = pageStub(); const listeners = new Map<string, (event: any) => void>();
+    const callbacks = new Map<number, () => void>(); let serial = 0, mutation: (() => void) | null = null, disconnected = false;
+    const periods: number[] = [];
+    Object.assign(page.context, {
+      setInterval: (_fn: () => void, ms: number) => { periods.push(ms); return 10; }, clearInterval() {},
+      setTimeout: (fn: () => void) => { callbacks.set(++serial, fn); return serial; }, clearTimeout: (id: number) => { callbacks.delete(id); },
+      MutationObserver: class { constructor(callback: () => void) { mutation = callback; } observe() {} disconnect() { disconnected = true; } },
+    });
+    Object.assign(page.context.document as object, { addEventListener: (name: string, fn: (event: any) => void) => { listeners.set(name, fn); }, removeEventListener: (name: string) => { listeners.delete(name); } });
+    assert.equal(page.run().installed, true); assert.deepEqual(periods, [3000]);
+    mutation!(); assert.equal(callbacks.size, 0, "idle DOM changes do not scan the page");
+    listeners.get("click")!({ target: {} }); mutation!(); mutation!(); assert.equal(callbacks.size, 1);
+    (page.api() as any).destroy(); assert.equal(disconnected, true); assert.equal(listeners.size, 0); assert.equal(callbacks.size, 0);
+  });
+});

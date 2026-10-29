@@ -1,4 +1,4 @@
-import { evaluateInPlayer, PLAYER_TARGET_MISSING } from "../player/player-target.ts";
+import { evaluateInPlayer, listenPlayerEvents, PLAYER_TARGET_MISSING } from "../player/player-target.ts";
 import { fullscreenButtonScript, fullscreenButtonStateScript, fullscreenButtonUpdateScript } from "./fullscreen-player.ts";
 
 /** 在页面与 Steam 主窗口之间传递一次性的桌面全屏请求。 */
@@ -10,34 +10,47 @@ export class FullscreenButtonBridge {
   private request = 0;
   private generation = 0;
   private onRequest: ((active: boolean, fillWindow: boolean) => void) | null = null;
-  private stateTimer = 0;
+  private unsubscribe: (() => void) | null = null;
+  private lastPollAt = 0;
+  private pending: { active: boolean; fillWindow: boolean } | null = null;
 
   setEnabled(enabled: boolean): void {
     if (enabled === Boolean(this.timer)) return;
     this.generation++;
     if (!enabled) {
       window.clearInterval(this.timer);
-      window.clearInterval(this.stateTimer);
+      this.unsubscribe?.();
+      this.unsubscribe = null;
       this.timer = 0;
-      this.stateTimer = 0;
       this.busy = false;
       this.stateBusy = false;
       this.installed = false;
       this.request = 0;
       this.onRequest = null;
+      this.pending = null;
+      this.lastPollAt = 0;
       return;
     }
     if (this.timer) return;
     this.timer = window.setInterval((): void => { void this.install(); }, 2000);
-    this.stateTimer = window.setInterval((): void => {
-      if (this.onRequest) this.refresh(this.onRequest);
-    }, 120);
+    this.unsubscribe = listenPlayerEvents(event => {
+      if (event.type !== "fullscreen" || typeof event.active !== "boolean" || typeof event.fillWindow !== "boolean" || typeof event.request !== "number") return;
+      if (event.request === this.request) return;
+      this.request = event.request;
+      if (this.onRequest) this.onRequest(event.active, event.fillWindow);
+      else this.pending = { active: event.active, fillWindow: event.fillWindow };
+    });
     void this.install();
   }
 
   refresh(onRequest: (active: boolean, fillWindow: boolean) => void): void {
-    if (!this.timer || this.stateBusy) return;
+    if (!this.timer) return;
     this.onRequest = onRequest;
+    if (this.pending) { const pending = this.pending; this.pending = null; onRequest(pending.active, pending.fillWindow); }
+    if (this.stateBusy) return;
+    // 支持事件时只留低频校验；老宿主复用控制器的 400ms tick 作为回退。
+    if (this.unsubscribe && Date.now() - this.lastPollAt < 2000) return;
+    this.lastPollAt = Date.now();
     this.stateBusy = true;
     const generation = this.generation;
     void evaluateInPlayer(fullscreenButtonStateScript()).then(value => {

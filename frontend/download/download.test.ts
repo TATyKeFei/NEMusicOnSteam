@@ -130,3 +130,69 @@ describe("download helper restart", () => {
     assert.ok(player.requests.slice(previous).every(url => url.startsWith("http://localhost:2/")));
   });
 });
+
+describe("download task management", () => {
+  function managed() {
+    const waits: (() => void)[] = [], started: any[] = [], cancelled: string[] = [];
+    let resolveGate: Promise<void> | null = null, startGate: Promise<void> | null = null;
+    let job: any = { active: false, path: "/music/song.mp3", error: "" };
+    let rejectStart = false, quality = 320;
+    const bridge = new DownloadBridge(() => ({ quality, directory: "", nameTemplate: "{title}", notificationMode: "none" }), {
+      helper: { async request(path, init) {
+        const payload = init?.body ? JSON.parse(String(init.body)) : null;
+        if (path === "/download/cancel") { cancelled.push(payload.id); if (job.id === payload.id) job = { ...job, active: false, cancelled: true, path: "" }; return new Response("{}"); }
+        if (init?.method === "POST") {
+          started.push(payload); if (startGate) await startGate;
+          if (rejectStart) return new Response(JSON.stringify({ error: "已有下载任务在进行" }), { status: 409 });
+          job = { ...job, id: payload.jobId, cancelled: false };
+          return new Response("{}", { status: 202 });
+        }
+        return new Response(JSON.stringify(job));
+      } },
+      evaluate: async () => ({ installed: true, pending: [] }), notify() {},
+      timers: { setInterval: () => 1, clearInterval() {}, setTimeout: callback => { waits.push(callback as () => void); return 1; } },
+    }, async (_quality, song) => { if (resolveGate) await resolveGate; return { url: `https://audio.example/${song!.id}.mp3`, name: song!.name, artist: song!.artist, source: "api" }; });
+    bridge.setEnabled(true);
+    return { bridge, waits, started, cancelled, gateResolve(value: Promise<void> | null) { resolveGate = value; }, gateStart(value: Promise<void> | null) { startGate = value; },
+      setJob(value: any) { job = { ...job, ...value }; }, reject(value: boolean) { rejectStart = value; }, quality(value: number) { quality = value; },
+      async finish() { for (let index = 0; index < 10; index++) { await flush(); if (!waits.length) break; waits.shift()!(); } await flush(); },
+    };
+  }
+  it("deduplicates queued and completed songs while keeping quality choices per task", async () => {
+    const p = managed(); void p.bridge.download(songs[0]); await flush();
+    void p.bridge.download(songs[0]); void p.bridge.download(songs[1]); void p.bridge.download(songs[1]);
+    p.quality(999); await p.finish();
+    assert.equal(p.started.length, 2); assert.deepEqual(p.started.map(item => item.quality), [320, 320]);
+    p.quality(320); await p.bridge.download(songs[0]); assert.equal(p.started.length, 2);
+    assert.deepEqual(p.bridge.snapshot().tasks.map(item => item.state), ["completed", "completed"]);
+  });
+  it("cancels resolution before sending an audio request", async () => {
+    const p = managed(); let release!: () => void; p.gateResolve(new Promise(resolve => { release = resolve; }));
+    const downloading = p.bridge.download(songs[0]); await flush();
+    await p.bridge.cancelTask(p.bridge.snapshot().tasks[0].id); release(); await downloading;
+    assert.equal(p.started.length, 0); assert.equal(p.bridge.snapshot().busy, false); assert.equal(p.bridge.snapshot().tasks[0].state, "cancelled");
+  });
+  it("cancels a late accepted request after disable and prevents overlapping jobs on re-enable", async () => {
+    const p = managed(); let release!: () => void; p.gateStart(new Promise(resolve => { release = resolve; }));
+    p.setJob({ active: true }); const downloading = p.bridge.download(songs[0]); await flush();
+    const id = p.bridge.snapshot().tasks[0].id; p.bridge.setEnabled(false); p.bridge.setEnabled(true);
+    void p.bridge.download(songs[1]); assert.equal(p.started.length, 1); assert.equal(p.bridge.snapshot().busy, true);
+    release(); p.gateStart(null); await p.finish(); await downloading;
+    assert.equal(p.cancelled.filter(value => value === id).length, 2); assert.equal(p.started.length, 2);
+    assert.equal(p.bridge.snapshot().tasks[0].state, "cancelled");
+    p.setJob({ active: false, path: "/music/2.mp3" }); await p.finish(); assert.equal(p.bridge.snapshot().busy, false);
+  });
+  it("marks HTTP conflicts as failed and retries failed tasks", async () => {
+    const p = managed(); p.reject(true); await p.bridge.download(songs[0]);
+    assert.equal(p.bridge.snapshot().tasks[0].state, "failed"); assert.match(p.bridge.snapshot().tasks[0].error, /已有下载/);
+    p.reject(false); p.bridge.retryFailed(); await p.finish();
+    assert.equal(p.bridge.snapshot().tasks.at(-1)!.state, "completed");
+    p.bridge.clearFinished(); assert.equal(p.bridge.snapshot().tasks.length, 0);
+  });
+  it("removes a queued cancellation without affecting the active download", async () => {
+    const p = managed(); void p.bridge.download(songs[0]); await flush(); void p.bridge.download(songs[1]);
+    await p.bridge.cancelTask(p.bridge.snapshot().tasks[1].id); await p.finish();
+    assert.equal(p.started.length, 1); assert.equal(p.cancelled.length, 0);
+    assert.deepEqual(p.bridge.snapshot().tasks.map(item => item.state), ["completed", "cancelled"]);
+  });
+});

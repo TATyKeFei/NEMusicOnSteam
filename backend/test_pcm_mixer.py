@@ -70,6 +70,22 @@ class MixerTests(unittest.TestCase):
         self.addCleanup(mixer.close)
         return mixer
 
+    def test_replaygain_is_applied_before_pcm_tags_are_lost(self):
+        tagged = os.path.join(self.directory.name, "tagged.flac")
+        subprocess.run([shutil.which("ffmpeg"), "-v", "error", "-i", self.first,
+                        "-metadata", "REPLAYGAIN_TRACK_GAIN=-6 dB", "-metadata", "REPLAYGAIN_TRACK_PEAK=1", tagged],
+                       check=True, env=self.environment, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        levels = []
+        for loudness in ("off", "replaygain"):
+            decoder = Decoder({"url": tagged, "loudness": loudness}, self.environment)
+            try:
+                wait_until(lambda: decoder.buffered >= BLOCK_FRAMES or decoder.eof)
+                self.assertEqual(decoder.error, "")
+                levels.append(energy(decoder.take()))
+            finally:
+                decoder.close()
+        self.assertAlmostEqual(levels[1] / levels[0], 10 ** (-6 / 20), delta=0.02)
+
     def test_transition_modes_use_energy_or_the_fixed_tail_window(self):
         make_audio(self.first, 5, quiet_after=0.5)
         for mode in ("auto", "crossfade"):
@@ -254,6 +270,23 @@ class MixerTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("mpv"), "mpv and ffmpeg are required")
 class PcmOutputTests(unittest.TestCase):
+    def test_real_mpv_accepts_all_loudness_filters_without_audio_output(self):
+        with tempfile.TemporaryDirectory(prefix="nemusic-loudness-") as directory:
+            original = subprocess.Popen
+            def launch(arguments, **kwargs):
+                if arguments[0].endswith("mpv"):
+                    arguments = [*arguments, "--no-config", "--ao=null"]
+                return original(arguments, **kwargs)
+            with patch("mpv_helper.subprocess.Popen", side_effect=launch), patch.object(MpvService, "start_http"):
+                service = MpvService(directory, "token")
+            try:
+                for mode in ("dynamic", "replaygain", "off"):
+                    service.configure({"loudness": mode, "audioDevice": "auto"})
+                    self.assertTrue(service.alive())
+                    self.assertEqual(service.mpv.property("replaygain"), "track" if mode == "replaygain" else False)
+            finally:
+                service.close()
+
     def test_real_mpv_uses_one_stream_and_keeps_pause_and_seek(self):
         self.check_output("auto")
 
