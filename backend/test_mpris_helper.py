@@ -21,7 +21,9 @@ repository.Gio = SimpleNamespace()
 repository.GLib = SimpleNamespace(idle_add=Mock())
 spec = importlib.util.spec_from_file_location("mpris_helper_test_target", Path(__file__).with_name("mpris_helper.py"))
 helper = importlib.util.module_from_spec(spec)
-with patch.dict("sys.modules", {"gi": ModuleType("gi"), "gi.repository": repository}):
+gi_module = ModuleType("gi")
+gi_module.require_version = Mock()
+with patch.dict("sys.modules", {"gi": gi_module, "gi.repository": repository}):
     spec.loader.exec_module(helper)
 
 
@@ -518,6 +520,25 @@ class PlaybackNotificationTests(ServiceTestCase):
         values = self.service.connection.call.call_args.args[4][1]
         self.assertEqual(values[2], icon)
         self.assertEqual(values[6]["image-path"], ("s", icon))
+
+    def test_cover_pixels_are_sent_over_dbus_without_requiring_a_shared_file_path(self):
+        self.service.connection = Mock()
+        image = Mock()
+        pixels = b"\x12\x34\x56\xff\x78\x90\xab\xff"
+        for name, value in {"width": 2, "height": 1, "rowstride": 8, "has_alpha": True,
+                            "bits_per_sample": 8, "n_channels": 4, "pixels": pixels}.items():
+            getattr(image, "get_" + name).return_value = value
+        pixbuf = SimpleNamespace(Pixbuf=Mock())
+        pixbuf.Pixbuf.new_from_file_at_scale.return_value = image
+        variant = Mock(side_effect=lambda signature, value: (signature, value))
+        with patch.object(helper, "GdkPixbuf", pixbuf), \
+                patch.object(repository.GLib, "Variant", variant, create=True), \
+                patch.object(repository.GLib, "VariantType", SimpleNamespace(new=lambda signature: signature), create=True), \
+                patch.object(repository.Gio, "DBusCallFlags", SimpleNamespace(NONE=0), create=True):
+            self.service.send_notification("歌曲", "歌手", "/container-only/cover.webp")
+        hints = self.service.connection.call.call_args.args[4][1][6]
+        self.assertEqual(hints["image-data"], ("(iiibiiay)", (2, 1, 8, True, 8, 4, pixels)))
+        pixbuf.Pixbuf.new_from_file_at_scale.assert_called_once_with("/container-only/cover.webp", 256, 256, True)
 
     def test_missing_notification_service_is_logged_without_breaking_playback(self):
         connection = Mock()

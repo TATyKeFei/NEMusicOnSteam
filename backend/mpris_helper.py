@@ -21,6 +21,13 @@ from download_files import (
 from gi.repository import Gio, GLib
 from recognition import RecognitionService
 
+try:
+    import gi
+    gi.require_version("GdkPixbuf", "2.0")
+    from gi.repository import GdkPixbuf
+except (ImportError, ValueError):
+    GdkPixbuf = None
+
 warnings.filterwarnings("ignore", message="Gio.DBusConnection.register_object is deprecated")
 
 OBJECT_PATH = "/org/mpris/MediaPlayer2"
@@ -341,6 +348,18 @@ class MprisService:
             hints = {"suppress-sound": GLib.Variant("b", True)}
             if os.path.isabs(icon):
                 hints["image-path"] = GLib.Variant("s", icon)
+                # 通知服务在宿主上，不能假定它能打开 Steam 容器内的缓存路径。
+                # 按桌面通知协议传像素，也避免通知服务不支持 WebP 等缓存格式。
+                if GdkPixbuf is not None:
+                    try:
+                        image = GdkPixbuf.Pixbuf.new_from_file_at_scale(icon, 256, 256, True)
+                        hints["image-data"] = GLib.Variant("(iiibiiay)", (
+                            image.get_width(), image.get_height(), image.get_rowstride(),
+                            image.get_has_alpha(), image.get_bits_per_sample(), image.get_n_channels(),
+                            image.get_pixels(),
+                        ))
+                    except (GLib.Error, OSError, ValueError) as error:
+                        print(f"[NEMusic] Notification cover decode failed: {error}", file=sys.stderr, flush=True)
             self.connection.call(
                 "org.freedesktop.Notifications",
                 "/org/freedesktop/Notifications",

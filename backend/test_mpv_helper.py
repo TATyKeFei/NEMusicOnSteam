@@ -37,6 +37,30 @@ class MpvHostEnvironmentTests(unittest.TestCase):
         self.assertEqual(environment["LD_LIBRARY_PATH"], os.path.join(self.root, "usr/lib"))
         self.assertEqual(environment["GI_TYPELIB_PATH"], os.path.join(self.root, "usr/lib/girepository-1.0"))
 
+class MpvShutdownTests(unittest.TestCase):
+    def process(self):
+        process = MpvProcess.__new__(MpvProcess)
+        process.process = Mock()
+        process.process.poll.return_value = None
+        process.command = Mock()
+        process.socket_path = "/unused/mpv.sock"
+        process.log_handle = Mock()
+        return process
+
+    def test_process_is_closed_through_ipc_before_signalling(self):
+        process = self.process()
+        process.close()
+        process.command.assert_called_once_with("quit")
+        process.process.wait.assert_called_once_with(timeout=1)
+        process.process.terminate.assert_not_called()
+        process.log_handle.close.assert_called_once()
+
+    def test_unreachable_process_falls_back_to_termination(self):
+        process = self.process()
+        process.command.side_effect = ConnectionRefusedError()
+        process.close()
+        process.process.terminate.assert_called_once()
+
 
 class MpvPlaybackTests(unittest.TestCase):
     def test_local_playback_resolves_manifest_and_resets_http_headers(self):

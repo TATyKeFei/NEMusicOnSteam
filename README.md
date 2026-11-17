@@ -175,8 +175,6 @@ npm run build -- --no-install   # 只打包、不复制到millennium插件目录
 
 本仓库使用了以下项目的代码、参考了他们的实现思路
 
-- [SPlayer-Next](https://github.com/SPlayer-Dev/SPlayer-Next/tree/006c580628e7a006255dd0a1578de0226e9f12a7)：参考预加载、单输出流、能量检测及等功率衔接思路；本项目使用 Python / ffmpeg / mpv 独立实现
-
 非常感谢以下项目，没有他们我要摸打滚爬好久才能做出来，开源万岁!
 
 | 项目 | 链接 | 备注 |

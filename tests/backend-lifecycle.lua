@@ -223,3 +223,31 @@ assert(unblock_command:find("'/run/host/usr/bin/node'", 1, true), "host Node was
 container.unload()
 assert(#container.removed == 2)
 print("PASS SteamRT3 helpers use host tools and host library paths")
+
+local host_launcher = fixture(true, {
+    environment = {
+        HOME = "/home/test user",
+        SRT_LAUNCHER_SERVICE_ALONGSIDE_STEAM = "test.launcher",
+    },
+    directories = { ["/run/host/usr"] = true },
+    existing_files = {
+        ["/usr/bin/steam-runtime-launch-client"] = true,
+        ["/run/host/usr/bin/python3"] = true,
+    },
+})
+for _, method in ipairs({ "mpris_endpoint", "mpv_endpoint", "mpd_endpoint" }) do
+    assert(host_launcher.backend[method]():match("^http://"))
+end
+for _, launch in ipairs(host_launcher.launches) do
+    local command
+    for _, candidate in ipairs(host_launcher.commands) do
+        if candidate:match("^setsid ") and candidate:find(launch.directory, 1, true) then command = candidate end
+    end
+    assert(command:find("/usr/bin/steam-runtime-launch-client --bus-name='test.launcher' --", 1, true))
+    assert(command:find("env -u LD_LIBRARY_PATH -u LD_PRELOAD -u PYTHONHOME '/usr/bin/python3'", 1, true))
+    assert(launch.directory:find("/home/test user/.cache/nemusic-on-steam/", 1, true) == 1,
+        "host helpers need shared paths for scripts, notification covers and PCM FIFOs")
+end
+host_launcher.unload()
+for _, launch in ipairs(host_launcher.launches) do assert_stopped(host_launcher, launch) end
+print("PASS host launcher uses shared helper paths and cleans up on unload")

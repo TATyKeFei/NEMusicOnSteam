@@ -17,7 +17,7 @@ import { ROOM_HOST_HELPER } from "./together-role.ts";
  */
 
 /** 注入页面的 api 一有变化就递增，升级时才能替换掉旧脚本留下的闭包。 */
-const BUTTON_API_VERSION = 16;
+const BUTTON_API_VERSION = 17;
 
 /**
  * 素材取自 assets/icon/together.svg（测试会拿素材原文比一遍，改这里就得改素材）。
@@ -382,15 +382,14 @@ const SHARE_OID = 'btn_pc_minibar_share';
   // 归零，只看自己会以为「按钮还在原位好好的」，其实已经跟着旧播放栏一起看不见了。
   api.visible = node => {
     try {
-      const rect = node.getBoundingClientRect();
-      if (!(rect.width > 0 && rect.height > 0)) return false;
       const view = node.ownerDocument && node.ownerDocument.defaultView;
-      if (!view || !view.getComputedStyle) return true;
-      for (let cur = node; cur; cur = cur.parentElement) {
+      for (let cur = node; view?.getComputedStyle && cur; cur = cur.parentElement) {
         const style = view.getComputedStyle(cur);
-        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')) return false;
+        if (style && (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0'
+          || style.contentVisibility === 'hidden')) return false;
       }
-      return true;
+      const rect = node.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
     } catch (error) {
       return false;
     }
@@ -433,6 +432,7 @@ const SHARE_OID = 'btn_pc_minibar_share';
     const out = [];
     for (const node of Array.from(document.querySelectorAll(STRIP_SELECTOR))) {
       if (node === api.button || node.getAttribute?.('data-nemusic-together-button') != null) continue;
+      if (!api.visible(node)) continue;
       let rect;
       try {
         rect = node.getBoundingClientRect();
@@ -440,7 +440,6 @@ const SHARE_OID = 'btn_pc_minibar_share';
         continue;
       }
       if (Math.abs(rect.top + rect.height / 2 - middle) > STRIP_TOLERANCE) continue;
-      if (!api.visible(node)) continue;
       out.push(node);
     }
     out.sort((left, right) => left.getBoundingClientRect().left - right.getBoundingClientRect().left);
@@ -456,12 +455,22 @@ const SHARE_OID = 'btn_pc_minibar_share';
     // 二、分享没渲染，但评论在：那一组图标是[添加, 评论, 分享]，插在评论后面正好落在分享原来的
     // 位置上。
     const comment = strip.find(node => node.getAttribute('title') === '评论');
-    if (comment && comment.parentElement) return { selector: '播放栏里的评论按钮（分享没渲染）', node: comment, after: true };
+    const commentButton = comment ? api.buttonOf(comment) : null;
+    if (commentButton) return { selector: '播放栏里的评论按钮（分享没渲染）', node: commentButton, after: true };
     // 三、连评论都没有：插这条带子最左边的控件前面——播放栏左边那组图标就在那儿，插在它旁边
     // 至少还在左下角这一片，而不是跑到右边音量/歌单那边去。
+    // 未播放时经常只有几个弹性布局控件。插入按钮会改变它们的坐标，
+    // 继续按最左坐标选锚点会在相邻控件之间来回搬动，触发下一轮 DOM 监听。
+    const current = api.fallbackAnchor;
+    if (current?.isConnected && strip.some(node => api.buttonOf(node) === current)) {
+      return { selector: '播放栏最左边的控件', node: current, after: false };
+    }
     const first = strip[0];
     const firstButton = first ? api.buttonOf(first) : null;
-    if (firstButton) return { selector: '播放栏最左边的控件', node: firstButton, after: false };
+    if (firstButton) {
+      api.fallbackAnchor = firstButton;
+      return { selector: '播放栏最左边的控件', node: firstButton, after: false };
+    }
     return null;
   };
   // 播放栏在不同页面结构不一样（分享、一起听、评论、音效都是条件渲染），所以这里报的是这一带
@@ -493,9 +502,10 @@ const SHARE_OID = 'btn_pc_minibar_share';
     // 认评论那一档是插在它后面（分享原来在评论右边），其余都是插在前面。
     const sibling = found.after ? found.node.nextElementSibling : found.node;
     const button = api.button;
-    // 在位 = 还在锚点旁边、而且看得见。少一个条件都会出事：页面把旧播放栏淡出时，按钮还连着、
-    // 位置也没变，但已经看不见了，必须当成没在位重新挂到还亮着的那条播放栏上。
-    const inPlace = button != null && button.isConnected && api.visible(button)
+    // 锚点已经过可见性筛选。按钮紧挨着它就不再移动：未播放时的展开动画
+    // 可能暂时把按钮挤成零宽，原地 insertBefore 只会再次触发 DOM 监听，形成循环。
+    // 旧播放栏隐藏后，找到的会是另一条栏里的锚点，相邻关系自然失效。
+    const inPlace = button != null && button.isConnected
       && (found.after ? button.previousElementSibling === found.node : button.nextElementSibling === sibling);
     if (inPlace) {
       api.anchorName = found.selector;

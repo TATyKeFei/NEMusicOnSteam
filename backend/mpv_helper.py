@@ -80,11 +80,12 @@ class MpvProcess:
             self.process = subprocess.Popen(
                 [
                     executable,
+                    "--no-config",
                     "--idle=yes",
                     "--no-video",
                     "--force-window=no",
                     "--no-terminal",
-                    "--really-quiet",
+                    "--msg-level=all=warn",
                     "--pause=yes",
                     "--keep-open=yes",
                     "--input-ipc-server=" + self.socket_path,
@@ -222,7 +223,11 @@ class MpvProcess:
             return
         if process.poll() is None:
             try:
-                process.terminate()
+                # 优先通过 IPC 正常退出，让音频输出和 socket 一起关闭。
+                try:
+                    self.command("quit")
+                except (OSError, RuntimeError):
+                    process.terminate()
                 process.wait(timeout=1)
             except (OSError, subprocess.TimeoutExpired):
                 process.kill()

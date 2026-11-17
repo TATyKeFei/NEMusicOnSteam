@@ -199,10 +199,12 @@ class FakeNode {
   select(): void {}
   /** 假样式表：默认可见，hidden 标记用来模拟「渲染了但看不见」。 */
   hidden = false;
+  contentVisibility = "visible";
   ownerDocument = { defaultView: { getComputedStyle: (node: FakeNode) => ({
     display: node.hidden ? "none" : "block",
     visibility: "visible",
     opacity: "1",
+    contentVisibility: node.contentVisibility,
   }) } };
 
   getBoundingClientRect(): { top: number; left: number; height: number; width: number } {
@@ -475,6 +477,65 @@ function fixture(options: FixtureOptions = {}) {
 }
 
 describe("播放栏一起听按钮", () => {
+  it("展开动画把按钮暂时压成零宽时，不会原地反复插入触发 DOM 循环", () => {
+    const f = fixture({ share: false });
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    const readRect = button.getBoundingClientRect.bind(button);
+    button.getBoundingClientRect = () => ({ ...readRect(), width: 0 });
+    let moves = 0;
+    const insertBefore = f.bar.insertBefore.bind(f.bar);
+    f.bar.insertBefore = (node, reference) => { moves++; insertBefore(node, reference); };
+    f.mutate(f.bar, "attributes");
+    f.flushTimers();
+    f.run(togetherButtonUpdateScript());
+    assert.equal(moves, 0);
+    assert.equal(f.pendingDelays().length, 0);
+  });
+
+  it("未播放时展开播放栏改变控件坐标，不会在备用锚点之间来回搬动", () => {
+    const f = fixture({ share: false });
+    const volume = iconButton("音量", 10);
+    f.bar.append(volume.button);
+    f.install();
+    const button = f.bar.querySelector("[data-nemusic-together-button]")!;
+    assert.equal(button.nextElementSibling, volume.button);
+    let moves = 0;
+    const insertBefore = f.bar.insertBefore.bind(f.bar);
+    f.bar.insertBefore = (node, reference) => { moves++; insertBefore(node, reference); };
+    // 插入按钮和展开动画让音量控件的横坐标越过播放键，下一轮坐标排序会变化。
+    volume.button.rectLeft = 900;
+    volume.svg.rectLeft = 900;
+    for (let tick = 0; tick < 5; tick++) {
+      f.mutate(f.bar);
+      f.flushTimers();
+      f.run(togetherButtonUpdateScript());
+    }
+    assert.equal(button.nextElementSibling, volume.button);
+    assert.equal(moves, 0);
+    // 歌曲开始播放、分享按钮出现时仍应回到正式位置。
+    f.bar.append(f.share);
+    f.run(togetherButtonUpdateScript());
+    assert.equal(button.nextElementSibling, f.share);
+  });
+
+  it("折叠播放栏的 content-visibility:hidden 子树不强制读取布局", () => {
+    const f = fixture();
+    const collapsed = new FakeNode("div");
+    collapsed.contentVisibility = "hidden";
+    const hiddenShare = new FakeNode("button");
+    hiddenShare.title = "分享";
+    let reads = 0;
+    const readRect = hiddenShare.getBoundingClientRect.bind(hiddenShare);
+    hiddenShare.getBoundingClientRect = () => { reads++; return readRect(); };
+    collapsed.append(hiddenShare);
+    f.bar.insertBefore(collapsed, f.share);
+    const result = f.install();
+    assert.equal(result.note, "");
+    assert.equal(f.bar.querySelector("[data-nemusic-together-button]")!.nextElementSibling, f.share);
+    assert.equal(reads, 0, "不应强制布局隐藏内容");
+  });
+
   it("挂在分享按钮左边", () => {
     const f = fixture();
     const result = f.install();

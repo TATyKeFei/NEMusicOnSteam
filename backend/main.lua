@@ -98,7 +98,18 @@ local function host_command_prefix()
 end
 
 local function python_interpreter()
-    local python = shell_quote(find_tool("python3", "NEMUSIC_PYTHON"))
+    local executable = find_tool("python3", "NEMUSIC_PYTHON")
+    local service = utils.getenv("SRT_LAUNCHER_SERVICE_ALONGSIDE_STEAM")
+    local home = utils.getenv("HOME")
+    if host_tools_available() and service and service ~= "" and home and home:sub(1, 1) == "/"
+        and is_file("/usr/bin/steam-runtime-launch-client") then
+        -- 宿主 ELF 可能依赖绝对的 /usr/lib 路径（例如 mpv 的 libmujs），
+        -- 图像解码器也会启动宿主程序；仅修改 LD_LIBRARY_PATH 不足以兼容。
+        executable = executable:gsub("^/run/host/", "/")
+        return "env -u LD_LIBRARY_PATH -u LD_PRELOAD /usr/bin/steam-runtime-launch-client --bus-name="
+            .. shell_quote(service) .. " -- env -u LD_LIBRARY_PATH -u LD_PRELOAD -u PYTHONHOME " .. shell_quote(executable), true
+    end
+    local python = shell_quote(executable)
     local prefix = host_command_prefix()
     return prefix and (prefix .. python) or python
 end
@@ -244,11 +255,15 @@ local function helper_endpoint(helper)
         if content == nil then return failure("!asset-" .. asset[3]) end
         table.insert(assets, { asset[2], content, asset[3] })
     end
+    local interpreter, on_host = helper.interpreter()
     local base = utils.getenv("XDG_RUNTIME_DIR") or "/tmp"
+    -- SteamRT 的 /run/user 和 /tmp 是私有挂载。脚本、mpv socket 和 PCM FIFO
+    -- 必须全部在共享目录里，不能只把 mpv 子进程移到宿主。
+    if on_host then base = utils.getenv("HOME") .. "/.cache/nemusic-on-steam" end
     local dir = base .. "/nemusic-" .. helper.name .. "-" .. utils.uuid()
     if not fs.create_directories(dir) then return failure("!mkdir:" .. base) end
     helper.dir = dir
-    helper_grace[dir] = helper.shutdown_grace
+    helper_grace[dir] = helper.shutdown_grace or (on_host and 1500 or nil)
     helper.token = utils.uuid()
     utils.exec("chmod 700 " .. shell_quote(dir))
     for _, asset in ipairs(assets) do
@@ -259,7 +274,7 @@ local function helper_endpoint(helper)
     if not utils.write_file(dir .. "/token", helper.token) then return failure("!write-token", true) end
     -- 日志留在运行目录外，进程启动失败清理目录时仍能读取错误。
     local log_path = base .. "/nemusic-" .. helper.name .. ".log"
-    launch_helper(dir .. "/" .. helper.entry, dir, log_path, helper.interpreter)
+    launch_helper(dir .. "/" .. helper.entry, dir, log_path, interpreter)
     for _ = 1, helper.polls do
         endpoint = ready_endpoint()
         if endpoint ~= nil then
