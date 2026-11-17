@@ -90,6 +90,16 @@ class PlaybackHttpService:
             def do_POST(self):
                 if not self.authorized():
                     return
+                if self.path == "/local-track" and hasattr(service, "local_track"):
+                    payload = self.read_payload()
+                    if payload is None:
+                        self.reply(400, {"error": "无效请求"})
+                        return
+                    try:
+                        self.reply(200, service.local_track(payload))
+                    except (OSError, ValueError) as error:
+                        self.reply(400, {"error": str(error)})
+                    return
                 if self.path == "/configure" and hasattr(service, "configure"):
                     payload = self.read_payload()
                     if payload is None:

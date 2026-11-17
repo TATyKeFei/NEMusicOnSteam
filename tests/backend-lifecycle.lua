@@ -14,7 +14,12 @@ local function fixture(ready, options)
             return "helper"
         end } },
         utils = {
-            getenv = function() return "/tmp" end,
+            getenv = function(name)
+                local values = options.environment or {}
+                if values[name] ~= nil then return values[name] end
+                if name == "XDG_RUNTIME_DIR" then return "/tmp" end
+                return nil
+            end,
             uuid = function() serial = serial + 1; return tostring(serial) end,
             read_file = function(path) return files[path] end,
             write_file = function(path, value)
@@ -38,6 +43,8 @@ local function fixture(ready, options)
         },
         fs = {
             create_directories = function() return true end,
+            is_directory = function(path) return (options.directories or {})[path] == true end,
+            is_file = function(path) return (options.existing_files or {})[path] == true end,
             remove = function(path) files[path] = nil end,
             remove_all = function(directory)
                 table.insert(removed, directory)
@@ -184,3 +191,35 @@ for _, method in ipairs({ "mpris_endpoint", "mpv_endpoint", "mpd_endpoint", "unb
     assert(#failed.removed == 1)
 end
 print("PASS helper dependencies are deployed and preparation failures clean up")
+
+local container = fixture(true, {
+    environment = { PATH = "/usr/bin:/bin" },
+    directories = {
+        ["/run/host/usr"] = true,
+        ["/run/host/usr/bin"] = true,
+        ["/run/host/usr/lib"] = true,
+        ["/run/host/usr/lib/girepository-1.0"] = true,
+    },
+    existing_files = {
+        ["/run/host/usr/bin/python3"] = true,
+        ["/run/host/usr/bin/node"] = true,
+    },
+})
+assert(container.backend.mpris_endpoint():match("^http://"))
+assert(container.backend.unblock_endpoint():match("^http://"))
+local function launched_with(directory)
+    for _, command in ipairs(container.commands) do
+        if command:match("^setsid ") and command:find(directory, 1, true) then return command end
+    end
+end
+local mpris_command = assert(launched_with(container.launches[1].directory))
+assert(mpris_command:find("^setsid env "), "host helpers must be launched with a clean environment")
+assert(mpris_command:find("'/run/host/usr/bin/python3'", 1, true), "host Python was not selected")
+assert(mpris_command:find("'PATH=/run/host/usr/bin:/usr/bin:/bin'", 1, true), "host PATH was not applied")
+assert(mpris_command:find("'LD_LIBRARY_PATH=/run/host/usr/lib'", 1, true), "host libraries were not applied")
+assert(mpris_command:find("'GI_TYPELIB_PATH=/run/host/usr/lib/girepository-1.0'", 1, true), "host typelibs were not applied")
+local unblock_command = assert(launched_with(container.launches[2].directory))
+assert(unblock_command:find("'/run/host/usr/bin/node'", 1, true), "host Node was not selected")
+container.unload()
+assert(#container.removed == 2)
+print("PASS SteamRT3 helpers use host tools and host library paths")

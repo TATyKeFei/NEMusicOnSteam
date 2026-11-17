@@ -3,6 +3,7 @@ import { useState } from "react";
 import { SettingsActions, SettingsButton } from "./settings-controls.tsx";
 import type { PlayerController, PlayerSnapshot } from "./player/player.ts";
 import type { LoudnessMode } from "./settings.ts";
+import { CAPABILITY_LABELS, type PlayerCapabilities } from "./player/capabilities.ts";
 
 type Props = { player: PlayerController; snapshot: PlayerSnapshot };
 const TASK_STATES = { queued: "排队中", resolving: "解析中", downloading: "下载中", completed: "已完成", failed: "失败", cancelled: "已取消", skipped: "已跳过" };
@@ -51,12 +52,16 @@ export function DownloadTasks({ player, snapshot }: Props) {
     </Field>
     <Field label="下载任务" description={`${snapshot.download.status}；失败 ${failed.length} 首，排队 ${tasks.filter(task => task.state === "queued").length} 首。${snapshot.download.progress ? `已下载 ${Math.round(snapshot.download.progress.received / 1024)} / ${Math.round(snapshot.download.progress.total / 1024)} KB` : ""}`} childrenLayout="below" bottomSeparator="standard">
       <SettingsActions>
-        <SettingsButton disabled={!snapshot.download.available} onClick={() => player.downloadCurrentSong()}>下载当前歌曲</SettingsButton>
-        <SettingsButton disabled={!snapshot.download.available || snapshot.download.busy} onClick={() => player.downloadPlayingList()}>下载播放列表</SettingsButton>
+        <SettingsButton onClick={() => player.pauseDownloads(!snapshot.download.paused)}>{snapshot.download.paused ? "继续队列" : "暂停队列"}</SettingsButton>
+        <SettingsButton disabled={!snapshot.download.available || snapshot.download.paused} onClick={() => player.downloadCurrentSong()}>下载当前歌曲</SettingsButton>
+        <SettingsButton disabled={!snapshot.download.available || snapshot.download.busy || snapshot.compatibility.capabilities?.queue === false} onClick={() => player.downloadPlayingList()}>下载播放列表</SettingsButton>
         <SettingsButton disabled={!snapshot.download.available || !failed.length} onClick={() => player.retryFailedDownloads()}>重试失败</SettingsButton>
         <SettingsButton onClick={() => player.clearFinishedDownloads()}>清理已结束</SettingsButton>
       </SettingsActions>
     </Field>
+    {snapshot.download.paused && <p>队列已暂停；正在下载的歌曲会继续完成。未完成任务会保存，重启后打开播放器继续。</p>}
+    {snapshot.download.persistenceError && <p role="alert">下载任务保存失败，请检查 Steam 浏览器存储空间。</p>}
+    {snapshot.download.progress && <p>{Math.round(snapshot.download.speed / 1024)} KB/s{snapshot.download.remaining != null ? `，预计剩余 ${Math.ceil(snapshot.download.remaining)} 秒` : ""}</p>}
     <div aria-label="下载任务列表" style={{ maxHeight: 320, overflowY: "auto" }}>
       {tasks.slice(-100).map(task => <Field key={task.id} label={`${task.artist ? `${task.artist} — ` : ""}${task.title}`}
         description={`${TASK_STATES[task.state]}${task.error ? `：${task.error}` : ""}${task.path ? `；${task.path}` : ""}`} verticalAlignment="center" bottomSeparator="standard">
@@ -68,7 +73,7 @@ export function DownloadTasks({ player, snapshot }: Props) {
   </>;
 }
 
-export function Diagnostics({ player }: Props) {
+export function Diagnostics({ player, snapshot }: Props) {
   const [report, setReport] = useState("");
   const [busy, setBusy] = useState(false);
   const [copyStatus, setCopyStatus] = useState("");
@@ -77,6 +82,15 @@ export function Diagnostics({ player }: Props) {
     catch { setCopyStatus("请选中下方报告手动复制"); }
   };
   return <>
+    <Field label="网页兼容性" description={snapshot.compatibility.status} childrenLayout="below" bottomSeparator="standard">
+      <SettingsActions>
+        <SettingsButton disabled={!snapshot.hasView} onClick={() => { void player.checkCompatibility(true); }}>重新检测兼容性</SettingsButton>
+        <SettingsButton onClick={() => player.repairPlayback()}>重连播放后端</SettingsButton>
+        <SettingsButton disabled={!snapshot.hasView} onClick={() => player.reload()}>重新加载网页</SettingsButton>
+      </SettingsActions>
+    </Field>
+    {snapshot.compatibility.capabilities && <p>{(Object.entries(snapshot.compatibility.capabilities) as [keyof PlayerCapabilities, boolean | null][])
+      .map(([name, available]) => `${CAPABILITY_LABELS[name]}：${available == null ? "等待初始化" : available ? "可用" : "未适配"}`).join("；")}</p>}
     <Field label="一键诊断" description="检查播放依赖、网页连接与各功能状态。报告不包含登录态、账号或音频地址。" inlineWrap="shift-children-below" verticalAlignment="center" bottomSeparator="standard">
       <SettingsActions>
         <SettingsButton disabled={busy} onClick={() => { setBusy(true); setCopyStatus(""); void player.diagnose().then(setReport).catch(() => setReport("诊断失败，请稍后重试")).finally(() => setBusy(false)); }}>{busy ? "检查中…" : "运行诊断"}</SettingsButton>

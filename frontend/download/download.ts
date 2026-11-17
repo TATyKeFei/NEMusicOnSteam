@@ -8,6 +8,7 @@ import {
   type DownloadTrack,
 } from "./download-player.ts";
 import { MENU_POLL_SCRIPT, MENU_TICK_SCRIPT, menuToastScript } from "./menu-player.ts";
+import { readDownloadTasks, saveDownloadTasks, readDownloadPaused, saveDownloadPaused, type TaskStorage } from "./task-storage.ts";
 
 type DownloadJob = {
   id?: string;
@@ -51,6 +52,10 @@ export type DownloadSnapshot = {
   menu: string;
   progress: DownloadProgress | null;
   tasks: DownloadTask[];
+  paused: boolean;
+  persistenceError: boolean;
+  speed: number;
+  remaining: number | null;
 };
 
 export type DownloadOptions = {
@@ -66,6 +71,7 @@ export type DownloadDependencies = {
   evaluate: (expression: string) => Promise<unknown>;
   notify: (title: string, body: string) => void;
   timers?: Pick<Window, "setInterval" | "clearInterval" | "setTimeout">;
+  storage?: TaskStorage | null;
 };
 
 const POLL_MS = 800;
@@ -107,25 +113,44 @@ export class DownloadBridge {
   private readonly resolveTrack?: (quality: number, song?: DownloadSong) => Promise<DownloadTrack>;
   private readonly dependencies: DownloadDependencies;
   private readonly timers: NonNullable<DownloadDependencies["timers"]>;
+  private paused = false;
+  private persistenceError = false;
+  private speed = 0;
+  private progressAt = 0;
+  private progressBytes = 0;
+  private persistPending = false;
+  private persistRevision = 0;
 
   constructor(options: () => DownloadOptions, dependencies: DownloadDependencies, resolveTrack?: (quality: number, song?: DownloadSong) => Promise<DownloadTrack>) {
     this.options = options;
     this.dependencies = dependencies;
     this.timers = dependencies.timers ?? window;
     this.resolveTrack = resolveTrack;
+    this.tasks = readDownloadTasks(dependencies.storage);
+    this.paused = readDownloadPaused(dependencies.storage);
+    this.queue = this.tasks.filter(task => task.state === "queued");
   }
 
   setEnabled(enabled: boolean): void {
     if (enabled === this.enabled) return;
     this.enabled = enabled;
     if (!enabled) {
-      if (this.activeTask) void this.cancelTask(this.activeTask.id);
-      for (const task of this.queue) task.state = "cancelled";
+      this.persist(true);
+      if (this.activeTask) {
+        const task = this.activeTask;
+        task.state = this.dependencies.storage ? "queued" : "cancelled";
+        void this.cancelBackend(task.id);
+      }
+      if (!this.dependencies.storage) for (const task of this.queue) task.state = "cancelled";
+      this.queue = [];
     }
     this.generation++;
     this.busy = this.activeTask !== null;
     this.progress = null;
-    this.queue = [];
+    if (enabled) {
+      if (this.dependencies.storage) this.tasks = readDownloadTasks(this.dependencies.storage);
+      this.queue = this.tasks.filter(task => task.state === "queued");
+    }
     this.status = enabled ? "可以下载当前正在播放的歌曲" : DISABLED_STATUS;
     if (enabled) {
       this.timer = this.timers.setInterval((): void => void this.tickMenu(), MENU_TICK_MS);
@@ -148,6 +173,9 @@ export class DownloadBridge {
       menu: this.menuText(),
       progress: this.progress ? { ...this.progress } : null,
       tasks: this.tasks.map(task => ({ ...task, song: task.song ? { ...task.song } : undefined })),
+      paused: this.paused, persistenceError: this.persistenceError, speed: this.speed,
+      remaining: this.progress && this.speed > 0 && this.progress.total > 0
+        ? Math.max(0, (this.progress.total - this.progress.received) / this.speed) : null,
     };
   }
 
@@ -157,7 +185,7 @@ export class DownloadBridge {
       this.status = "先打开播放器再下载";
       return;
     }
-    if (this.busy) {
+    if (this.busy || this.paused) {
       // 辅助进程一次只跑一个任务；这一侧维护队列，把用户的重复点击变成依次下载，
       // 而不是撞上一堵 409 的墙。
       if (song != null) {
@@ -172,18 +200,21 @@ export class DownloadBridge {
     if (!task) return;
     const { quality, directory, nameTemplate, notificationMode, skipDuplicates } = task.options;
     task.state = "resolving";
+    this.persist();
     this.activeTask = task;
     const generation = ++this.generation;
     this.busy = true;
     this.progress = null;
+    this.speed = 0; this.progressAt = Date.now(); this.progressBytes = 0;
     try {
       this.status = "正在解析音频地址";
       const track = await this.resolve(quality, song);
       if (generation !== this.generation || (task.state as string) === "cancelled") return;
       task.title = track.name;
       task.artist = track.artist;
-      task.songId = song?.id ?? track.songId ?? 0;
-      if (!task.song && task.songId) task.song = { id: task.songId, name: track.name, artist: track.artist };
+      task.songId = song?.id || track.songId || task.songId;
+      task.song = { id: task.songId, name: track.name, artist: track.artist, album: track.album };
+      this.persist();
       task.key = this.taskKey(task.songId, task.options);
       if (skipDuplicates !== false && this.tasks.some(item => item !== task && item.key === task.key && task.songId > 0 && ["completed", "skipped"].includes(item.state))) {
         task.state = "skipped"; this.status = "已跳过重复歌曲"; return;
@@ -214,9 +245,9 @@ export class DownloadBridge {
       }
       if (!started.ok) throw new Error(await failureText(started, "下载请求被拒绝"));
       const accepted = await started.json() as { skipped?: boolean; path?: string };
-      if (generation !== this.generation) task.state = "cancelled";
+      if (generation !== this.generation && (task.state as string) !== "cancelled") task.state = this.dependencies.storage ? "queued" : "cancelled";
       if (accepted.skipped) { task.state = "skipped"; task.path = accepted.path || ""; this.status = "文件已存在，已跳过下载"; return; }
-      if ((task.state as string) === "cancelled") await this.cancelBackend(task.id);
+      if (generation !== this.generation || (task.state as string) === "cancelled") await this.cancelBackend(task.id);
       else task.state = "downloading";
       this.status = task.state === "cancelled" ? "正在取消下载，等待下载进程响应" : "正在下载";
       while (this.activeTask === task) {
@@ -226,7 +257,7 @@ export class DownloadBridge {
         const job = (await response.json()) as DownloadJob;
         if (job.id && job.id !== task.id) throw new Error("下载任务已被替换，请重试");
         if (job.cancelled || task.state === "cancelled") {
-          task.state = "cancelled";
+          task.state = (task.state as string) !== "cancelled" && generation !== this.generation && this.dependencies.storage ? "queued" : "cancelled";
           if (job.active) continue;
           this.status = "已取消下载";
           return;
@@ -234,6 +265,9 @@ export class DownloadBridge {
         if (job.error) throw new Error(job.error);
         if (job.active) {
           this.progress = { received: job.received, total: job.total, filename: job.filename };
+          const now = Date.now();
+          if (now > this.progressAt) this.speed = Math.max(0, (job.received - this.progressBytes) * 1000 / (now - this.progressAt));
+          this.progressAt = now; this.progressBytes = job.received;
           continue;
         }
         this.progress = null;
@@ -248,7 +282,7 @@ export class DownloadBridge {
       }
     } catch (error) {
       if (this.activeTask === task) {
-        if ((task.state as string) === "cancelled") return;
+        if ((task.state as string) === "cancelled" || generation !== this.generation) return;
         task.state = "failed";
         task.error = message(error);
         this.status = message(error);
@@ -261,6 +295,7 @@ export class DownloadBridge {
       if (this.activeTask === task) {
         this.busy = false;
         this.activeTask = null;
+        if (this.enabled) this.persist();
         this.pump();
       }
     }
@@ -295,7 +330,7 @@ export class DownloadBridge {
   }
 
   private pump(): void {
-    if (this.busy || !this.enabled || this.queue.length === 0) return;
+    if (this.busy || this.paused || !this.enabled || this.queue.length === 0) return;
     const task = this.queue.shift()!;
     void this.download(task.song, task);
   }
@@ -311,6 +346,7 @@ export class DownloadBridge {
     const task: DownloadTask = { id: `${Date.now()}-${++this.serial}`, songId: song?.id ?? 0, title: song?.name || "当前歌曲", artist: song?.artist || "", song,
       state: "queued", error: "", path: "", key, options: { ...this.options() } };
     this.tasks.push(task);
+    this.persist();
     return task;
   }
 
@@ -322,6 +358,7 @@ export class DownloadBridge {
     const active = task === this.activeTask;
     task.state = "cancelled";
     this.queue = this.queue.filter(item => item !== task);
+    this.persist();
     if (active) { this.status = "正在取消下载，等待下载进程响应"; await this.cancelBackend(id); }
   }
 
@@ -344,7 +381,27 @@ export class DownloadBridge {
   }
 
   retryFailed(): void { for (const task of [...this.tasks]) if (task.state === "failed") this.retryTask(task.id); }
-  clearFinished(): void { this.tasks = this.tasks.filter(task => task === this.activeTask || ["queued", "resolving", "downloading"].includes(task.state)); }
+  clearFinished(): void { this.tasks = this.tasks.filter(task => task === this.activeTask || ["queued", "resolving", "downloading"].includes(task.state)); this.persist(); }
+  setPaused(paused: boolean): void {
+    this.paused = paused;
+    this.persistenceError = !saveDownloadPaused(this.dependencies.storage, paused);
+    if (!paused) this.pump();
+  }
+  private persist(immediate = false): void {
+    if (immediate) {
+      this.persistRevision++; this.persistPending = false;
+      this.persistenceError = !saveDownloadTasks(this.dependencies.storage, this.tasks);
+      return;
+    }
+    if (this.persistPending || !this.dependencies.storage) return;
+    this.persistPending = true;
+    const revision = this.persistRevision;
+    queueMicrotask(() => {
+      if (revision !== this.persistRevision) return;
+      this.persistPending = false;
+      this.persistenceError = !saveDownloadTasks(this.dependencies.storage, this.tasks);
+    });
+  }
 
   private menuText(): string {
     if (!this.enabled) return "";

@@ -16,6 +16,8 @@ import { sleepGuardScript } from "../playback/sleep-player.ts";
 import { SNAPSHOT_SCRIPT } from "./player-access.ts";
 import { saveSession, readSession, clearSession } from "./session.ts";
 import { collectDiagnostics } from "../runtime/diagnostics.ts";
+import { CAPABILITIES_SCRIPT, type PlayerCapabilities } from "./capabilities.ts";
+import { GameProfileSession } from "../playback/game-profile.ts";
 import type { Command } from "../mpris/mpris-player.ts";
 import { EXTERNAL_MUTE_SCRIPT } from "../playback/external-audio.ts";
 import { commandScript } from "../mpris/mpris-player.ts";
@@ -44,7 +46,7 @@ import {
   type SteamPopup,
   type SteamWindow,
 } from "./steam.ts";
-const TICK_MS = 400;
+const TICK_MS = 1000;
 const THROTTLE_REFRESH_MS = 2000;
 const VIEW_NAME = "NEMusicOnSteam";
 let nextViewId = 1;
@@ -94,6 +96,8 @@ export type SteamSettingsStatus = {
 };
 
 export type PlayerSnapshot = {
+  compatibility: { capabilities: PlayerCapabilities | null; status: string; checkedAt: number };
+  gameProfile: ReturnType<GameProfileSession["snapshot"]>;
   mode: PlayerMode;
   status: string;
   hasView: boolean;
@@ -117,9 +121,10 @@ export type PlayerSnapshot = {
 export class PlayerController {
   private readonly chrome = new PlayerChrome();
   private readonly mpris = new MprisBridge(() => { this.open(); }, () => { this.close(); }, () =>
-    this.settings.trackNotifyOnlyCollapsed && this.mode === "expanded" && !this.owner?.document.hidden ? "none" : notificationModeFor(this.settings, "track"));
+    this.gameProfile.snapshot().muteNotifications || (this.settings.trackNotifyOnlyCollapsed && this.mode === "expanded" && !this.owner?.document.hidden) ? "none" : notificationModeFor(this.settings, "track"));
   private readonly unblock = new UnblockBridge(() => ({ enabled: this.settings.unblockEnabled, sources: this.settings.unblockSources }));
   private readonly mpv: MpvBridge = new MpvBridge({
+    localDownloads: () => ({ enabled: this.settings.preferLocalDownloads, directory: this.settings.downloadDirectory }),
     quality: () => this.settings.downloadQuality,
     crossfade: () => this.sleep.snapshot().mode === "track" || this.settings.mpvTransitionMode === "none" ? "off"
       : this.settings.mpvTransitionMode === "crossfade" ? "standard" : this.settings.mpvCrossfade,
@@ -176,7 +181,17 @@ export class PlayerController {
     helper: mprisHelper,
     evaluate: expression => evaluateInPlayer(expression, { awaitPromise: true }),
     notify: steamToast,
+    storage: browserStorage(),
   }, (quality, song) => this.unblock.resolve(quality, song));
+  private readonly gameProfile = new GameProfileSession(async () => this.settings.playbackBackend === "mpv" ? this.mpv.snapshot()
+    : this.settings.playbackBackend === "mpd" ? this.mpd.snapshot()
+      : await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { fresh: true }) as ReturnType<MprisBridge["snapshot"]> | null,
+    command => this.performCommand(command));
+  private compatibility: PlayerSnapshot["compatibility"] = { capabilities: null, status: "打开播放器后检测网页兼容性", checkedAt: 0 };
+  private capabilityBusy = false;
+  private capabilityCandidate = "";
+  private readonly subscribers = new Set<(snapshot: PlayerSnapshot) => void>();
+  private lastPublished = "";
   private readonly viewBridges = new ViewBridges([
     this.mpris, this.recognition, this.fullscreenButton, this.quality, this.together, this.download, this.webPreload,
   ]);
@@ -247,6 +262,7 @@ export class PlayerController {
   shutdown(): void {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
+    this.gameProfile.reset();
     if (this.settings.restoreSession && this.recoverySnapshot) saveSession(browserStorage(), this.recoverySnapshot);
     void this.sleep.cancel().catch(() => {});
     this.booted = false;
@@ -267,6 +283,8 @@ export class PlayerController {
 
   snapshot(): PlayerSnapshot {
     return {
+      compatibility: { ...this.compatibility, capabilities: this.compatibility.capabilities ? { ...this.compatibility.capabilities } : null },
+      gameProfile: this.gameProfile.snapshot(),
       mode: this.mode,
       status: this.status,
       hasView: this.view != null,
@@ -286,7 +304,7 @@ export class PlayerController {
           : !this.settings.preloadNext && this.settings.mpvTransitionMode === "none" ? "已关闭" : this.mpv.getPreloadStatus(),
       audioDevices: this.mpv.audioDevices(),
       sleep: this.sleep.snapshot(),
-      settings: { ...this.settings, mpd: { ...this.settings.mpd }, unblockSources: [...this.settings.unblockSources] },
+      settings: { ...this.settings, mpd: { ...this.settings.mpd }, unblockSources: [...this.settings.unblockSources], gameProfiles: this.settings.gameProfiles?.map(profile => ({ ...profile })) },
     };
   }
 
@@ -304,7 +322,64 @@ export class PlayerController {
     if (patch.preloadNext != null || patch.playbackBackend != null || patch.unblockEnabled != null || patch.unblockSources != null) this.webPreload.refresh();
     if (patch.uiScale != null) this.applyUiScale();
     this.syncView(true, this.render());
+    this.publish();
     return this.snapshot();
+  }
+
+  subscribe(listener: (snapshot: PlayerSnapshot) => void): () => void {
+    this.subscribers.add(listener);
+    listener(this.snapshot());
+    return () => { this.subscribers.delete(listener); };
+  }
+  private publish(): void {
+    if (!this.subscribers.size) return;
+    const snapshot = this.snapshot(), encoded = JSON.stringify(snapshot);
+    if (encoded === this.lastPublished) return;
+    this.lastPublished = encoded;
+    for (const listener of this.subscribers) listener(snapshot);
+  }
+  selectGameProfile(id: string): void {
+    const profile = this.settings.gameProfiles.find(item => item.id === id) ?? null;
+    void this.gameProfile.select(profile).finally(() => this.publish());
+    this.publish();
+  }
+  pauseDownloads(paused: boolean): void { this.download.setPaused(paused); this.publish(); }
+
+  async checkCompatibility(force = false): Promise<void> {
+    if (!this.loaded || !this.view || this.capabilityBusy || (!force && Date.now() - this.compatibility.checkedAt < 30000)) return;
+    this.capabilityBusy = true;
+    const view = this.view;
+    try {
+      const value = await tryEvaluateInPlayer(CAPABILITIES_SCRIPT) as PlayerCapabilities | null;
+      if (view !== this.view) return;
+      if (!value || typeof value.playback !== "boolean" || typeof value.queue !== "boolean"
+        || typeof value.quality !== "boolean" || typeof value.download !== "boolean"
+        || (value.together !== null && typeof value.together !== "boolean")) {
+        this.capabilityCandidate = "";
+        this.compatibility = { ...this.compatibility, status: "网页能力尚未就绪，稍后自动复查", checkedAt: Date.now() - 25000 };
+        return;
+      }
+      const signature = JSON.stringify(value);
+      if (Object.values(value).includes(false) && this.capabilityCandidate !== signature) {
+        this.capabilityCandidate = signature;
+        this.compatibility = { ...this.compatibility, status: "部分网页能力未就绪，正在复查", checkedAt: Date.now() - 25000 };
+        return;
+      }
+      const wasUnavailable = this.compatibility.capabilities?.playback === false;
+      this.capabilityCandidate = signature;
+      this.compatibility = { capabilities: value, status: Object.values(value).includes(false)
+        ? "部分功能与当前网页不兼容，已暂停对应功能；可重新检测或复制诊断报告"
+        : value.together == null ? "基础网页能力可用，一起听模块等待初始化" : "网页能力检测通过", checkedAt: Date.now() };
+      this.quality.setEnabled(value.quality);
+      this.together.setEnabled(value.together !== false);
+      this.download.setEnabled(value.download);
+      this.webPreload.setEnabled(value.playback && value.queue);
+      this.mpris.setEnabled(value.playback);
+      if (!value.playback) this.stopExternalPlayback(false);
+      else if (wasUnavailable) this.applyPlaybackBackend();
+    } catch {
+      if (view === this.view) this.compatibility = { ...this.compatibility, status: "网页连接暂时不可用，将自动复查", checkedAt: Date.now() - 20000 };
+    } finally { this.capabilityBusy = false; this.publish(); }
   }
 
   reconnectMpris(): void {
@@ -361,6 +436,11 @@ export class PlayerController {
     void this.sleep.cancel().catch(error => { this.status = errorText(error); });
   }
   async diagnose(): Promise<string> { return collectDiagnostics(this.snapshot()); }
+  repairPlayback(): void {
+    this.mpris.reconnect();
+    if (this.settings.playbackBackend === "mpv") this.mpv.reconnect();
+    if (this.settings.playbackBackend === "mpd") this.mpd.reconnect();
+  }
 
   private async performCommand(command: Command): Promise<boolean> {
     if (this.shuttingDown || !this.loaded) return false;
@@ -409,6 +489,7 @@ export class PlayerController {
   }
 
   close(): string {
+    this.gameProfile.reset();
     if (this.desktopFullscreen || this.windowFullscreen) this.setFullscreen(false);
     this.pendingOpen = false;
     this.mode = "closed";
@@ -477,6 +558,7 @@ export class PlayerController {
       }
       this.fullscreenButton.refresh(this.setFullscreen);
       this.refreshRecoverySnapshot();
+      void this.checkCompatibility();
       if (!desktopAvailable) {
         if (this.mode !== "closed") this.refreshThrottle();
         return;
@@ -486,6 +568,8 @@ export class PlayerController {
     } catch (error) {
       this.status = errorText(error);
       console.error("[NEMusic]", error);
+    } finally {
+      this.publish();
     }
   };
 
@@ -660,6 +744,8 @@ export class PlayerController {
   }
 
   private enableViewBridges(): void {
+    this.compatibility = { capabilities: null, status: "正在检测网页兼容性", checkedAt: 0 };
+    this.capabilityCandidate = "";
     this.viewBridges.setEnabled(true);
     this.applyPlaybackBackend();
     this.applyUiScale();
@@ -676,7 +762,7 @@ export class PlayerController {
       if (this.view === view && state?.snapshot) {
         const external = this.settings.playbackBackend === "mpv" ? this.mpv.snapshot() : this.settings.playbackBackend === "mpd" ? this.mpd.snapshot() : null;
         this.recoverySnapshot = external?.active ? { ...state.snapshot, position: external.position, playing: external.playbackStatus === "Playing" } : state.snapshot;
-        this.recoverySnapshot = { ...this.recoverySnapshot, volume: this.sleep.recoveryVolume(this.recoverySnapshot.volume) };
+        this.recoverySnapshot = { ...this.recoverySnapshot, volume: this.gameProfile.recoveryVolume(this.sleep.recoveryVolume(this.recoverySnapshot.volume)) };
         if (this.settings.restoreSession && Date.now() - this.lastSessionSaveAt >= 10000) {
           this.lastSessionSaveAt = Date.now();
           saveSession(browserStorage(), this.recoverySnapshot);
@@ -822,7 +908,7 @@ export class PlayerController {
 
   private applyPlaybackBackend(): void {
     const epoch = ++this.playbackEpoch;
-    if (this.restorePending != null) return;
+    if (this.restorePending != null || this.compatibility.capabilities?.playback === false) return;
     if (this.view != null && this.settings.playbackBackend !== "web") {
       const selected = this.settings.playbackBackend === "mpd" ? this.mpd : this.mpv;
       const previous = this.settings.playbackBackend === "mpd" ? this.mpv : this.mpd;

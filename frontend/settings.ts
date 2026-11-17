@@ -1,5 +1,6 @@
 import { DEFAULT_DOWNLOAD_NAME_TEMPLATE, DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download/download-player.ts";
 import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } from "./unblock/sources.ts";
+import { DEFAULT_GAME_PROFILES, sanitizeGameProfiles, type GameProfile } from "./playback/game-profile.ts";
 
 export type NotificationMode = "system" | "steam" | "none";
 export type NotificationSettingsMode = "unified" | "independent";
@@ -13,11 +14,13 @@ export const UI_SCALE_MIN = 0.8;
 export const UI_SCALE_MAX = 1.5;
 
 export type PlayerSettings = {
+  gameProfiles: GameProfile[];
   playbackBackend: PlaybackBackend;
   mpvCrossfade: CrossfadeMode;
   mpvTransitionMode: TransitionMode;
   mpvCrossfadeSeconds: number;
   preloadNext: boolean;
+  preferLocalDownloads: boolean;
   mpvLoudness: LoudnessMode;
   audioOutputDevice: string;
   restoreSession: boolean;
@@ -44,11 +47,13 @@ export type PlayerSettings = {
 export const SETTINGS_KEY = "nemusic.onsteam.settings.v1";
 
 export const defaultSettings: PlayerSettings = {
+  gameProfiles: DEFAULT_GAME_PROFILES.map(profile => ({ ...profile })),
   playbackBackend: "web",
   mpvCrossfade: "off",
   mpvTransitionMode: "none",
   mpvCrossfadeSeconds: 4,
   preloadNext: false,
+  preferLocalDownloads: false,
   mpvLoudness: "off",
   audioOutputDevice: "auto",
   restoreSession: true,
@@ -139,12 +144,14 @@ export function sanitizeSettings(value: unknown): PlayerSettings {
     : record.mpvTransitionMode === "auto" && record.mpvCrossfade !== "off" ? "auto"
       : crossfade !== "off" ? "auto" : "none";
   return {
+    gameProfiles: sanitizeGameProfiles(record.gameProfiles),
     playbackBackend: playbackBackendOr(record.playbackBackend, defaultSettings.playbackBackend),
     mpvCrossfade: transitionMode === "auto" && crossfade === "off" ? "standard" : crossfade,
     mpvTransitionMode: transitionMode,
     mpvCrossfadeSeconds: finiteNumber(record.mpvCrossfadeSeconds)
       ? Math.max(1, Math.min(12, Math.round(record.mpvCrossfadeSeconds))) : defaultSettings.mpvCrossfadeSeconds,
     preloadNext: booleanOr(record.preloadNext, defaultSettings.preloadNext),
+    preferLocalDownloads: booleanOr(record.preferLocalDownloads, false),
     mpvLoudness: record.mpvLoudness === "replaygain" || record.mpvLoudness === "dynamic" ? record.mpvLoudness : "off",
     audioOutputDevice: typeof record.audioOutputDevice === "string" ? record.audioOutputDevice.replace(/[\x00-\x1f\x7f]/g, "").trim().slice(0, 512) || "auto" : "auto",
     restoreSession: booleanOr(record.restoreSession, true),

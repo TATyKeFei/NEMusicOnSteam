@@ -132,12 +132,13 @@ describe("download helper restart", () => {
 });
 
 describe("download task management", () => {
-  function managed() {
+  function managed(storage?: Pick<Storage, "getItem" | "setItem">) {
     const waits: (() => void)[] = [], started: any[] = [], cancelled: string[] = [];
     let resolveGate: Promise<void> | null = null, startGate: Promise<void> | null = null;
     let job: any = { active: false, path: "/music/song.mp3", error: "" };
     let rejectStart = false, quality = 320;
     const bridge = new DownloadBridge(() => ({ quality, directory: "", nameTemplate: "{title}", notificationMode: "none" }), {
+      storage,
       helper: { async request(path, init) {
         const payload = init?.body ? JSON.parse(String(init.body)) : null;
         if (path === "/download/cancel") { cancelled.push(payload.id); if (job.id === payload.id) job = { ...job, active: false, cancelled: true, path: "" }; return new Response("{}"); }
@@ -158,6 +159,24 @@ describe("download task management", () => {
       async finish() { for (let index = 0; index < 10; index++) { await flush(); if (!waits.length) break; waits.shift()!(); } await flush(); },
     };
   }
+  it("checkpoints an active queue before close and reparses pending songs after restart", async () => {
+    const records = new Map<string, string>();
+    const storage = { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => { records.set(key, value); } };
+    const first = managed(storage);
+    void first.bridge.download(songs[0]); await flush(); void first.bridge.download(songs[1]); await flush();
+    first.bridge.setEnabled(false); await first.finish();
+    const second = managed(storage); await second.finish();
+    assert.deepEqual(second.started.map(item => item.songId), [1, 2]);
+    assert.deepEqual(second.bridge.snapshot().tasks.map(task => task.state), ["completed", "completed"]);
+    assert.doesNotMatch([...records.values()].join(""), /audio\.example/);
+  });
+  it("persists queue pause across restarts and resumes queued work on demand", async () => {
+    const records = new Map<string, string>();
+    const storage = { getItem: (key: string) => records.get(key) ?? null, setItem: (key: string, value: string) => { records.set(key, value); } };
+    const first = managed(storage); first.bridge.setPaused(true); void first.bridge.download(songs[0]); await flush();
+    const second = managed(storage); await flush(); assert.equal(second.bridge.snapshot().paused, true); assert.equal(second.started.length, 0);
+    second.bridge.setPaused(false); await second.finish(); assert.equal(second.started.length, 1);
+  });
   it("deduplicates queued and completed songs while keeping quality choices per task", async () => {
     const p = managed(); void p.bridge.download(songs[0]); await flush();
     void p.bridge.download(songs[0]); void p.bridge.download(songs[1]); void p.bridge.download(songs[1]);

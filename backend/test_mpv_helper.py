@@ -1,12 +1,55 @@
+import os
+import tempfile
 import threading
 import unittest
 from unittest.mock import Mock, patch
 
-from mpv_helper import MpvService
+from mpv_helper import MpvProcess, MpvService, STANDARD_PATH
 from audio_source import audio_headers
 
 
+class MpvHostEnvironmentTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = self.temporary.name
+        os.makedirs(os.path.join(self.root, "usr/bin"))
+        os.makedirs(os.path.join(self.root, "usr/lib/girepository-1.0"))
+        patcher = patch("mpv_helper.HOST_ROOT", self.root)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def executable(self, name):
+        path = os.path.join(self.root, "usr/bin", name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def test_finds_mpv_from_the_host_mount(self):
+        expected = self.executable("mpv")
+        self.assertEqual(MpvProcess.find_executable(), expected)
+
+    def test_child_environment_prefers_host_tools_and_libraries(self):
+        expected_path = self.executable("ffmpeg")
+        environment = MpvProcess.clean_environment()
+        self.assertEqual(environment["PATH"], os.path.dirname(expected_path) + ":" + STANDARD_PATH)
+        self.assertEqual(environment["LD_LIBRARY_PATH"], os.path.join(self.root, "usr/lib"))
+        self.assertEqual(environment["GI_TYPELIB_PATH"], os.path.join(self.root, "usr/lib/girepository-1.0"))
+
+
 class MpvPlaybackTests(unittest.TestCase):
+    def test_local_playback_resolves_manifest_and_resets_http_headers(self):
+        with patch("mpv_helper.find_downloaded_song", return_value="/music/song.flac"):
+            self.service.load({"url": "local:123", "title": "歌曲", "localTrack": {"directory": "/music", "songId": 123, "quality": 999}})
+        self.service.mpv.command.assert_any_call("loadfile", "/music/song.flac", "replace")
+        self.service.mpv.command.assert_any_call("set_property", "http-header-fields", [])
+
+    def test_missing_local_file_is_not_forwarded_to_mpv(self):
+        with patch("mpv_helper.find_downloaded_song", return_value=None), self.assertRaises(ValueError):
+            self.service.load({"url": "file:///etc/passwd", "title": "歌曲", "localTrack": {"songId": 123}})
+        self.service.mpv.command.assert_not_called()
+
     def setUp(self):
         self.properties = {"path": "https://audio.example/song.mp3", "volume": 0}
         self.service = MpvService.__new__(MpvService)

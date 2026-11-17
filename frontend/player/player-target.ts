@@ -1,7 +1,9 @@
 import { ChromeDevToolsProtocol } from "millennium";
 import { isPlayerDocument } from "../constants.ts";
+import { SNAPSHOT_SCRIPT, SNAPSHOT_WATCH_SCRIPT } from "./player-access.ts";
+import type { TrackState } from "../mpris/mpris.ts";
 
-export type EvaluateOptions = { userGesture?: boolean; awaitPromise?: boolean };
+export type EvaluateOptions = { userGesture?: boolean; awaitPromise?: boolean; fresh?: boolean };
 
 /** evaluateInPlayer 在网易云页面还没有 CDP target 时抛出。 */
 export const PLAYER_TARGET_MISSING = "等待网易云播放器加载";
@@ -20,6 +22,12 @@ let epoch = 0;
 let selection: { marker: string; existingTargetIds: Set<string>; targetId: string | null; ready: boolean } | null = null;
 const pageListeners = new Set<(event: Record<string, unknown>) => void>();
 let removeEventListener: (() => void) | null = null;
+let stateSubscription: (() => void) | null = null;
+let sharedState: { state: TrackState; at: number } | null = null;
+let statePending: Promise<unknown> | null = null;
+let watchAttemptAt = -Infinity;
+const traffic = { evaluations: 0, snapshotReads: 0, snapshotHits: 0, stateEvents: 0 };
+export function playerTraffic(): typeof traffic { return { ...traffic }; }
 
 async function enablePageEvents(sessionId: string): Promise<void> {
   await ChromeDevToolsProtocol.send("Runtime.enable", {}, sessionId);
@@ -65,6 +73,8 @@ export function releasePlayerSession(): void {
   const current = session;
   session = null;
   resolving = null;
+  sharedState = null; statePending = null; watchAttemptAt = -Infinity;
+  stateSubscription?.(); stateSubscription = null;
   if (current) detach(current.sessionId);
 }
 
@@ -121,6 +131,7 @@ async function evaluate(expression: string, options: EvaluateOptions): Promise<O
   const request = async (): Promise<unknown> => {
     const current = await resolveSession();
     if (current == null) return null;
+    traffic.evaluations++;
     return ChromeDevToolsProtocol.send("Runtime.evaluate", {
       expression,
       returnByValue: true,
@@ -158,6 +169,51 @@ export async function evaluateInPlayer(expression: string, options: EvaluateOpti
 
 /** 与 evaluateInPlayer 相同，但页面不存在时返回 null 而不是抛异常。 */
 export async function tryEvaluateInPlayer(expression: string, options: EvaluateOptions = {}): Promise<unknown> {
+  if (typeof SNAPSHOT_SCRIPT !== "undefined" && expression === SNAPSHOT_SCRIPT && typeof ChromeDevToolsProtocol.on === "function") {
+    return readSharedState(options);
+  }
   const outcome = await evaluate(expression, options);
   return outcome.kind === "missing" ? null : outcome.value;
+}
+
+async function readSharedState(options: EvaluateOptions): Promise<unknown> {
+  traffic.snapshotReads++;
+  if (!stateSubscription) stateSubscription = listenPlayerEvents(event => {
+    const state = event.state as TrackState | undefined;
+    if (event.type !== "playback-state" || !state || typeof state.trackId !== "string"
+      || !Number.isFinite(state.position) || !Number.isFinite(state.duration)
+      || !["Playing", "Paused", "Stopped"].includes(state.playbackStatus)) return;
+    sharedState = { state, at: Date.now() }; traffic.stateEvents++;
+  });
+  if (!options.fresh && sharedState && Date.now() - sharedState.at < 2500) {
+    traffic.snapshotHits++;
+    const { state, at } = sharedState;
+    return { ...state, position: state.playbackStatus === "Playing"
+      ? Math.min(state.duration || Infinity, state.position + (Date.now() - at) / 1000 * (state.rate || 1)) : state.position };
+  }
+  if (!options.fresh && statePending) { traffic.snapshotHits++; return statePending; }
+  const generation = epoch;
+  const requestedAt = Date.now();
+  const pending = (async () => {
+    if (Date.now() - watchAttemptAt >= 10000) {
+      watchAttemptAt = Date.now();
+      try {
+        const current = await resolveSession();
+        if (current) {
+          await enablePageEvents(current.sessionId);
+          await evaluate(SNAPSHOT_WATCH_SCRIPT, {});
+        }
+      } catch { /* 旧版 Steam 不支持事件绑定时继续读取快照。 */ }
+    }
+    const outcome = await evaluate(SNAPSHOT_SCRIPT, options);
+    const state = outcome.kind === "value" ? outcome.value as TrackState | null : null;
+    if (epoch === generation && state && typeof state.trackId === "string" && (!sharedState || sharedState.at < requestedAt)) {
+      sharedState = { state, at: Date.now() - 2200 };
+    }
+    return state ? { ...state } : null;
+  })();
+  statePending = pending;
+  const clear = () => { if (statePending === pending) statePending = null; };
+  void pending.then(clear, clear);
+  return pending;
 }

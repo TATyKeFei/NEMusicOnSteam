@@ -11,6 +11,7 @@ from playback_http import PlaybackHttpService
 from audio_source import audio_headers
 from track_analysis import ANALYZE_WINDOW, sample_track, track_features
 from pcm_mixer import PcmMixer, PROFILES, RAW_OPTIONS
+from download_files import find_downloaded_song
 
 
 SOCKET_NAME = "mpv.sock"
@@ -18,13 +19,58 @@ STARTUP_TIMEOUT = 10
 ANALYZE_MAX_TRACKS = 8
 ANALYZE_CACHE_LIMIT = 512
 
+# Millennium 3.6.3 起辅助进程运行在 SteamRT3 容器里，容器的 /usr/bin 没有
+# mpv/ffmpeg；宿主机程序从这里挂载，同时需要宿主动态库和 GI typelib。
+HOST_ROOT = "/run/host"
+STANDARD_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+
+def host_bin_directories():
+    return [
+        os.path.join(HOST_ROOT, "usr/local/bin"),
+        os.path.join(HOST_ROOT, "usr/bin"),
+        os.path.join(HOST_ROOT, "bin"),
+    ]
+
+
+def host_library_directories():
+    candidates = [
+        os.path.join(HOST_ROOT, "usr/local/lib"),
+        os.path.join(HOST_ROOT, "usr/lib/x86_64-linux-gnu"),
+        os.path.join(HOST_ROOT, "usr/lib64"),
+        os.path.join(HOST_ROOT, "usr/lib"),
+        os.path.join(HOST_ROOT, "lib/x86_64-linux-gnu"),
+        os.path.join(HOST_ROOT, "lib64"),
+        os.path.join(HOST_ROOT, "lib"),
+    ]
+    return [path for path in candidates if os.path.isdir(path)]
+
+
+def host_typelib_directories():
+    typelibs = []
+    for path in host_library_directories():
+        candidate = os.path.join(path, "girepository-1.0")
+        if os.path.isdir(candidate):
+            typelibs.append(candidate)
+    return typelibs
+
+
+def host_binary(name):
+    for directory in host_bin_directories():
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
 
 class MpvProcess:
     def __init__(self, runtime_dir):
         executable = self.find_executable()
         if not executable:
             path = os.environ.get("PATH", "")
-            raise RuntimeError(f"找不到 mpv，请先安装 mpv；Steam 环境 PATH={path or '(空)'}")
+            raise RuntimeError(
+                f"找不到 mpv，请先在宿主机安装 mpv；已检查 {HOST_ROOT}/usr/bin，Steam 环境 PATH={path or '(空)'}"
+            )
         self.socket_path = os.path.join(runtime_dir, SOCKET_NAME)
         self.log_path = os.path.join(runtime_dir, "mpv.log")
         self.log_handle = open(self.log_path, "ab", buffering=0)
@@ -65,6 +111,7 @@ class MpvProcess:
     def find_executable():
         candidates = [
             os.environ.get("NEMUSIC_MPV"),
+            host_binary("mpv"),
             "/usr/bin/mpv",
             "/usr/local/bin/mpv",
             os.path.expanduser("~/.local/bin/mpv"),
@@ -95,7 +142,15 @@ class MpvProcess:
             "XDG_SESSION_TYPE",
         }
         environment = {name: value for name, value in os.environ.items() if name in names or name.startswith("LC_")}
-        environment["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        path_dirs = [path for path in host_bin_directories() if os.path.isdir(path)]
+        path_dirs.append(STANDARD_PATH)
+        environment["PATH"] = ":".join(path_dirs)
+        libraries = host_library_directories()
+        if libraries:
+            environment["LD_LIBRARY_PATH"] = ":".join(libraries)
+        typelibs = host_typelib_directories()
+        if typelibs:
+            environment["GI_TYPELIB_PATH"] = ":".join(typelibs)
         return environment
 
     def read_log(self):
@@ -257,12 +312,21 @@ class MpvService(PlaybackHttpService):
 
     @staticmethod
     def validate(payload):
+        local = payload.get("localTrack")
+        if isinstance(local, dict):
+            path = find_downloaded_song(local.get("directory"), local.get("songId"), local.get("quality"))
+            if not path:
+                raise ValueError("已下载歌曲不存在或已被移走，请重试以使用在线音源")
+            return path
         url = str(payload.get("url") or "")
         if not url.startswith(("http://", "https://")):
             raise ValueError("网易云没有返回有效的音频地址")
         if not str(payload.get("title") or "").strip():
             raise ValueError("缺少歌曲标题")
         return url
+
+    def local_track(self, payload):
+        return {"available": bool(find_downloaded_song(payload.get("directory"), payload.get("songId"), payload.get("quality")))}
 
     @staticmethod
     def metadata(payload):
@@ -319,7 +383,7 @@ class MpvService(PlaybackHttpService):
         if isinstance(volume, (int, float)) and not isinstance(volume, bool):
             # mpv 默认音量是 100%：先按网页音量落好再放声，否则从网页切过来就是一声爆音。
             self.mpv.command("set_property", "volume", max(0.0, min(100.0, float(volume) * 100)))
-        headers = audio_headers(url)
+        headers = {} if payload.get("localTrack") else audio_headers(url)
         self.mpv.command("set_property", "http-header-fields", [f"{key}: {value}" for key, value in headers.items()])
         self.mpv.command("set_property", "speed", self.rate)
         self.mpv.command("set_property", "loop-file", "inf" if payload.get("loopStatus") == "Track" else "no")
@@ -328,7 +392,7 @@ class MpvService(PlaybackHttpService):
         profile = payload.get("crossfade")
         preload = payload.get("preloadNext") is True and payload.get("transitionMode") == "none"
         if (profile in PROFILES and payload.get("transitionMode") != "none") or preload:
-            source = {**payload, **self.metadata(payload), "position": position,
+            source = {**payload, "url": url, **self.metadata(payload), "position": position,
                       "loudness": getattr(self, "audio_configuration", {}).get("loudness", "off"),
                       "duration": max(0, self.number(payload.get("duration")))}
             mixer = PcmMixer(self.runtime_dir, source, profile if profile in PROFILES else "standard", MpvProcess.clean_environment(),
@@ -365,7 +429,7 @@ class MpvService(PlaybackHttpService):
                     self.seek_mixer(view["position"])
                     return {"accepted": True, "streamId": self.mixer.identifier}
             if payload.get("url"):
-                self.validate(payload)
+                payload = {**payload, "url": self.validate(payload)}
                 payload = {**payload, "loudness": getattr(self, "audio_configuration", {}).get("loudness", "off")}
                 payload = {**payload, **self.metadata(payload), "position": 0,
                            "duration": max(0, self.number(payload.get("duration")))}

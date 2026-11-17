@@ -212,6 +212,51 @@ describe("player CDP session", () => {
 });
 
 describe("player CDP push events", () => {
+  it("shares pushed state across consumers, extrapolates progress and falls back after event loss", async () => {
+    let now = 10000, reads = 0, callback: ((event: any) => void) | null = null;
+    const state = { trackId: "1", duration: 100, position: 10, playbackStatus: "Playing", rate: 1, volume: 0.8 };
+    const api = runInNewContext(`${source}; ({ tryEvaluateInPlayer, releasePlayerSession, playerTraffic })`, {
+      SNAPSHOT_SCRIPT: "snapshot", SNAPSHOT_WATCH_SCRIPT: "watch", isPlayerDocument: () => true,
+      Date: class { static now() { return now; } },
+      ChromeDevToolsProtocol: {
+        on: (_name: string, fn: typeof callback) => { callback = fn; return () => { callback = null; }; },
+        send: async (method: string, params: any) => {
+          if (method === "Target.getTargets") return { targetInfos: [{ targetId: "player", url: "player" }] };
+          if (method === "Target.attachToTarget") return { sessionId: "s1" };
+          if (method === "Runtime.evaluate" && params.expression === "snapshot") { reads++; return { result: { value: { ...state } } }; }
+          return { result: { value: true } };
+        },
+      },
+    });
+    await Promise.all([api.tryEvaluateInPlayer("snapshot"), api.tryEvaluateInPlayer("snapshot")]);
+    assert.equal(reads, 1);
+    callback!({ sessionId: "s1", name: "__NEMusicOnSteamEvent", payload: JSON.stringify({ type: "playback-state", state }) });
+    now += 1000;
+    const a = await api.tryEvaluateInPlayer("snapshot"); a.volume = 0;
+    const b = await api.tryEvaluateInPlayer("snapshot");
+    assert.equal(b.position, 11); assert.equal(b.volume, 0.8); assert.equal(reads, 1);
+    now += 2000; await api.tryEvaluateInPlayer("snapshot"); assert.equal(reads, 2);
+    assert.equal(api.playerTraffic().stateEvents, 1); assert.equal(api.playerTraffic().snapshotHits, 3);
+    api.releasePlayerSession(); assert.equal(callback, null);
+    await api.tryEvaluateInPlayer("snapshot"); assert.equal(reads, 3);
+  });
+
+  it("keeps playback working if the Steam Runtime binding is unavailable", async () => {
+    const api = runInNewContext(`${source}; ({ tryEvaluateInPlayer })`, {
+      SNAPSHOT_SCRIPT: "snapshot", SNAPSHOT_WATCH_SCRIPT: "watch", isPlayerDocument: () => true,
+      ChromeDevToolsProtocol: {
+        on: () => () => {},
+        send: async (method: string) => {
+          if (method === "Target.getTargets") return { targetInfos: [{ targetId: "player", url: "player" }] };
+          if (method === "Target.attachToTarget") return { sessionId: "s1" };
+          if (method === "Runtime.addBinding") throw new Error("unsupported");
+          return { result: { value: { trackId: "1", position: 0, duration: 100, playbackStatus: "Paused" } } };
+        },
+      },
+    });
+    assert.equal((await api.tryEvaluateInPlayer("snapshot")).trackId, "1");
+  });
+
   it("enables Runtime, filters sessions and payloads, reconnects and unsubscribes", async () => {
     const calls: { method: string; session?: string }[] = [], events: unknown[] = [];
     let callback: ((value: any) => void) | null = null, attached = 0, removed = 0;

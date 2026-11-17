@@ -59,7 +59,27 @@ const webPlaying: TrackState = {
   rate: 1,
 };
 
-function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; crossfade?: boolean; transitionMode?: "none" | "auto" | "crossfade"; crossfadeSeconds?: number; preloadNext?: boolean; stopAfterTrack?: boolean } = {}) {
+describe("downloaded audio preference", () => {
+  it("loads a manifest reference without requesting an online audio URL", async () => {
+    const p = setup({ local: true, localAvailable: true, resolver: true, web: { ...webPlaying, trackId: "123" } });
+    p.bridge.setEnabled(true); await flush();
+    assert.equal(p.loads[0]?.url, "local:123");
+    assert.deepEqual(p.loads[0]?.localTrack, { songId: 123, quality: 1, directory: "/music" });
+    assert.equal(p.evaluations.includes("download"), false);
+    p.bridge.setEnabled(false); await flush();
+  });
+  it("uses the online resolver when the file is missing and leaves MPD on network sources", async () => {
+    for (const mpd of [false, true]) {
+      const p = setup({ local: true, localAvailable: mpd, resolver: true, mpd, web: { ...webPlaying, trackId: "123" } });
+      p.bridge.setEnabled(true); await flush();
+      assert.equal(p.loads[0]?.url, downloadTrack.url); assert.equal(p.evaluations.includes("download"), true);
+      assert.equal(p.loads[0]?.localTrack, undefined);
+      p.bridge.setEnabled(false); await flush();
+    }
+  });
+});
+
+function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boolean; alternate?: boolean; mpd?: boolean; configurationError?: string; crossfade?: boolean; transitionMode?: "none" | "auto" | "crossfade"; crossfadeSeconds?: number; preloadNext?: boolean; stopAfterTrack?: boolean; local?: boolean; localAvailable?: boolean } = {}) {
   const evaluations: string[] = [];
   const loads: Payload[] = [];
   const preparations: Payload[] = [];
@@ -103,6 +123,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
       return { ok: !options.configurationError, json: async () => ({ error: options.configurationError }) };
     }
     if (url.endsWith("/state")) return { ok: true, json: async () => mpv };
+    if (url.endsWith("/local-track")) return { ok: true, json: async () => ({ available: options.localAvailable === true }) };
     if (url.endsWith("/load")) {
       const body = JSON.parse(init!.body!);
       loads.push(body);
@@ -158,6 +179,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
 
   const bridge = new api.Bridge({
     name: options.mpd ? "MPD" : "mpv",
+    localDownloads: () => ({ enabled: options.local === true, directory: "/music" }),
     ...(options.mpd ? { configuration: () => ({ host: "music.local", port: 6600, password: "", socket: "" }), supportsRate: false } : {}),
     endpoint: async () => { await endpointGate; return "http://localhost|test-token"; },
     quality: () => 1,

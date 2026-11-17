@@ -96,7 +96,13 @@ export const EXTERNAL_MUTE_SCRIPT = `(() => {
     };
   }
   bridge.active = true;
-  for (const element of collect(document).concat(howlerNodes())) bridge.silence(element);
+  bridge.refresh = () => {
+    const full = !bridge.scannedAt || Date.now() - bridge.scannedAt > 10000;
+    const nodes = full ? collect(document) : Array.from(document.querySelectorAll('audio, video'));
+    if (full) bridge.scannedAt = Date.now();
+    for (const element of nodes.concat(howlerNodes())) bridge.silence(element);
+  };
+  bridge.refresh();
   globalThis[key] = bridge;
   return bridge.saved.size;
 })()`;
@@ -230,8 +236,13 @@ const EXTERNAL_CONTROL_INSTALL_SCRIPT = `(() => {
 
 const EXTERNAL_CONTROL_POLL_SCRIPT = `(() => {
   const bridge = globalThis.__NEMusicOnSteamMpvControls;
-  if (!bridge || !Array.isArray(bridge.actions)) return { actions: [] };
-  return { actions: bridge.actions.splice(0, bridge.actions.length) };
+  if (!bridge || !Array.isArray(bridge.actions)) return { installed: false, actions: [] };
+  return { installed: bridge.installed === true && bridge.active === true, actions: bridge.actions.splice(0, bridge.actions.length) };
+})()`;
+const EXTERNAL_MUTE_POLL_SCRIPT = `(() => {
+  const bridge = globalThis.__NEMusicOnSteamMpvMedia;
+  if (!bridge?.active || typeof bridge.refresh !== 'function') return false;
+  bridge.refresh(); return true;
 })()`;
 
 function allowWebActionScript(action: string): string {
@@ -251,6 +262,7 @@ function describeFailure(result: string, name: string): string {
 }
 
 export type ExternalAudioOptions = {
+  localDownloads?: () => { enabled: boolean; directory: string };
   name: string;
   endpoint: () => Promise<string>;
   configuration?: () => unknown;
@@ -333,6 +345,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
   private webClockPosition: number | null = null;
   private webClockTarget: number | null = null;
   private readonly options: ExternalAudioOptions;
+  private muteInstalled = false;
 
   constructor(options: ExternalAudioOptions) {
     this.options = options;
@@ -431,7 +444,13 @@ export class ExternalAudioBridge implements ExternalPlayback {
     const generation = this.generation;
     if (!this.isCurrent(generation)) return false;
     try {
-      return await this.executeCommand(command, generation);
+      const handled = await this.executeCommand(command, generation);
+      if (handled && this.isCurrent(generation)) {
+        if (command.action === "volume") this.state.volume = Math.max(0, Math.min(1, Number(command.value)));
+        if (command.action === "pause") this.state.playbackStatus = "Paused";
+        if (command.action === "play") this.state.playbackStatus = "Playing";
+      }
+      return handled;
     } catch (error) {
       if (!this.isCurrent(generation)) return false;
       throw error;
@@ -553,10 +572,12 @@ export class ExternalAudioBridge implements ExternalPlayback {
     try {
       if (this.pendingAutoplay > 0) this.pendingAutoplay--;
       if (!(await this.connect(generation)) || !this.isCurrent(generation)) return;
-      await tryEvaluateInPlayer(EXTERNAL_CONTROL_INSTALL_SCRIPT);
-      if (!this.isCurrent(generation)) return;
       const actions = (await tryEvaluateInPlayer(EXTERNAL_CONTROL_POLL_SCRIPT)) as unknown;
       if (!this.isCurrent(generation)) return;
+      if ((actions as { installed?: boolean } | null)?.installed !== true) {
+        await tryEvaluateInPlayer(EXTERNAL_CONTROL_INSTALL_SCRIPT);
+        if (!this.isCurrent(generation)) return;
+      }
       const queued = Array.isArray(actions) ? actions : (actions as { actions?: unknown } | null)?.actions;
       if (Array.isArray(queued)) {
         for (const action of queued) {
@@ -567,7 +588,10 @@ export class ExternalAudioBridge implements ExternalPlayback {
         }
       }
       // 先静音再读快照：新一首歌的游离 audio 可能这一 tick 才被 Howler 拿出来。
-      await tryEvaluateInPlayer(EXTERNAL_MUTE_SCRIPT);
+      const muted = this.muteInstalled ? await tryEvaluateInPlayer(EXTERNAL_MUTE_POLL_SCRIPT) : false;
+      if (!this.isCurrent(generation)) return;
+      if (muted !== true) await tryEvaluateInPlayer(EXTERNAL_MUTE_SCRIPT);
+      this.muteInstalled = true;
       if (!this.isCurrent(generation)) return;
       const web = (await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null;
       if (!this.isCurrent(generation)) return;
@@ -709,6 +733,20 @@ export class ExternalAudioBridge implements ExternalPlayback {
     return Boolean(this.options.preloadNext?.() || (this.options.crossfade?.() && this.options.crossfade() !== "off"));
   }
 
+  private async resolveLocal(songId: string, generation: number): Promise<DownloadTrack | null> {
+    const settings = this.options.localDownloads?.();
+    if (!settings?.enabled || this.options.name !== "mpv" || !/^\d+$/.test(songId)) return null;
+    const response = await this.request("/local-track", generation, { songId, quality: this.options.quality(), directory: settings.directory });
+    if (!response.ok) return null;
+    const payload = await response.json() as { available?: boolean };
+    return payload.available ? { url: `local:${songId}`, source: "local", name: "", artist: "", album: "", cover: "",
+      type: "", size: 0, br: 0, level: "", songId: Number(songId) } : null;
+  }
+
+  private localPayload(track: DownloadTrack): Record<string, unknown> {
+    return track.source === "local" ? { localTrack: { songId: track.songId, quality: this.options.quality(), directory: this.options.localDownloads?.().directory } } : {};
+  }
+
   private async loadFromWeb(web: TrackState, autoplay: boolean, generation: number): Promise<void> {
     this.clearPreload();
     this.handoff = null;
@@ -726,16 +764,18 @@ export class ExternalAudioBridge implements ExternalPlayback {
       await tryEvaluateInPlayer(externalSyncScript(false, true), { userGesture: true });
       if (!this.isCurrent(generation)) return;
     }
-    const result = this.options.resolveTrack
+    const local = await this.resolveLocal(web.trackId, generation);
+    if (!this.isCurrent(generation)) return;
+    const result = local ?? (this.options.resolveTrack
       ? await this.options.resolveTrack(this.options.quality(), this.requests?.signal)
-      : await tryEvaluateInPlayer(downloadScript(this.options.quality()), { awaitPromise: true });
+      : await tryEvaluateInPlayer(downloadScript(this.options.quality()), { awaitPromise: true }));
     if (!this.isCurrent(generation)) return;
     const track = result as DownloadTrack | null;
-    if (!track?.url || !/^https?:/.test(track.url)) {
+    if (!track?.url || (track.source !== "local" && !/^https?:/.test(track.url))) {
       throw new Error(`网易云没有返回可供 ${this.options.name} 播放的音频地址`);
     }
     if (this.options.resolveTrack) {
-      const current = await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true }) as TrackState | null;
+      const current = await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true, fresh: true }) as TrackState | null;
       if (!this.isCurrent(generation) || current?.trackId !== web.trackId) return;
     }
     if (transportEpoch !== this.transportEpoch && this.stopRequested) {
@@ -747,6 +787,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
     if (!this.isCurrent(generation)) return;
     const response = await this.request("/load", generation, {
       url: track.url,
+      ...this.localPayload(track),
       title: track.name || web.title,
       artist: track.artist || web.artist,
       album: track.album || web.album,
@@ -827,7 +868,8 @@ export class ExternalAudioBridge implements ExternalPlayback {
     const controller = new AbortController();
     this.preloadRequest = controller;
     void (async () => {
-      const track = await this.options.resolveNextTrack!(this.options.quality(), song, controller.signal);
+      const track = await this.resolveLocal(String(song.id), generation)
+        ?? await this.options.resolveNextTrack!(this.options.quality(), song, controller.signal);
       if (!this.isCurrent(generation) || epoch !== this.preloadEpoch || controller.signal.aborted) return;
       const current = await tryEvaluateInPlayer(CROSSFADE_QUEUE_SCRIPT) as CrossfadeCandidate | null;
       if (!this.isCurrent(generation) || epoch !== this.preloadEpoch || !current?.eligible
@@ -835,6 +877,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
       const response = await this.request("/prepare", generation, {
         fromTrackId: state.trackId, revision: ++this.prepareRevision, streamId,
         trackId: String(song.id), url: track.url, title: track.name || song.name,
+        ...this.localPayload(track),
         artist: track.artist || song.artist, album: track.album || song.album, artUrl: track.cover || song.cover,
         duration: song.duration, crossfade: this.options.crossfade?.(),
         transitionMode: this.options.transitionMode?.() ?? "auto",
@@ -886,6 +929,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
     // 暂停的——那种情况页面也一直被我们按在暂停上，接回去反而会凭空开始播。
     this.endpoint = null;
     this.token = null;
+    this.muteInstalled = false;
     this.lastWebTrackId = "";
     this.clearPreload();
     this.handoff = null;

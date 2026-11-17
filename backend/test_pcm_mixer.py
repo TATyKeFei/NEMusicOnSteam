@@ -11,6 +11,7 @@ import wave
 from unittest.mock import patch
 
 from mpv_helper import MpvProcess, MpvService
+from download_files import recorded_download
 from pcm_mixer import BLOCK_FRAMES, BUFFER_BLOCKS, FRAME_BYTES, SAMPLE_RATE, Decoder, PcmMixer, blend, energy, floats
 
 
@@ -270,6 +271,33 @@ class MixerTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("mpv"), "mpv and ffmpeg are required")
 class PcmOutputTests(unittest.TestCase):
+    def test_real_mpv_plays_a_recorded_local_file_and_keeps_seek_and_pause(self):
+        with tempfile.TemporaryDirectory(prefix="nemusic-local-output-") as directory:
+            path = os.path.join(directory, "downloaded.wav")
+            make_audio(path, 4)
+            recorded_download(directory, "123:320", path)
+            original = subprocess.Popen
+            def launch(arguments, **kwargs):
+                if arguments[0].endswith("mpv"):
+                    arguments = [*arguments, "--no-config", "--ao=null"]
+                return original(arguments, **kwargs)
+            with patch("mpv_helper.subprocess.Popen", side_effect=launch), patch.object(MpvService, "start_http"):
+                service = MpvService(directory, "token")
+            try:
+                self.assertTrue(service.local_track({"directory": directory, "songId": 123, "quality": 320})["available"])
+                service.load({"url": "local:123", "localTrack": {"directory": directory, "songId": 123, "quality": 320},
+                              "trackId": "123", "title": "downloaded", "autoplay": False, "position": 1, "volume": 0.25})
+                wait_until(lambda: service.mpv.property("path") == path)
+                self.assertEqual(service.snapshot()["playbackStatus"], "Paused")
+                self.assertAlmostEqual(service.snapshot()["position"], 1, delta=0.1)
+                self.assertEqual(service.snapshot()["volume"], 0.25)
+                service.command({"action": "play"})
+                wait_until(lambda: service.snapshot()["position"] > 1.1)
+                service.command({"action": "pause"})
+                self.assertEqual(service.snapshot()["playbackStatus"], "Paused")
+            finally:
+                service.close()
+
     def test_real_mpv_accepts_all_loudness_filters_without_audio_output(self):
         with tempfile.TemporaryDirectory(prefix="nemusic-loudness-") as directory:
             original = subprocess.Popen

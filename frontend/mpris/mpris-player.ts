@@ -162,5 +162,5 @@ export function commandScript(command: Command): string {
       case 'setposition': return Number.isFinite(command.value) && playerControl.seek(command.value / 1000000);
     }
     return false;
-  })()`;
+  })().finally(() => { try { globalThis.__NEMusicOnSteamStateWatch?.publish(); } catch {} })`;
 }

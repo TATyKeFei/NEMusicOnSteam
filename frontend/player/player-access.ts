@@ -187,3 +187,33 @@ export const SNAPSHOT_SCRIPT = `(() => {
   const previousControl = findControl(PREV_LABELS);
   return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: nativeMetadata ? nativeId : [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(nextControl) && !isDisabled(nextControl), canGoPrevious: Boolean(previousControl) && !isDisabled(previousControl), volume, loopStatus, shuffle, rate };
 })()`;
+
+/** 页面内订阅 Redux 和媒体事件；每次变化最多每 500ms 采样，2 秒心跳用于进度校准。 */
+export const SNAPSHOT_WATCH_SCRIPT = `(() => {
+  ${PLAYER_ACCESS_SCRIPT}
+  const previous = globalThis.__NEMusicOnSteamStateWatch;
+  if (previous?.store === playerStore && playerStore) { previous.publish(); return true; }
+  previous?.stop();
+  if (!playerStore?.subscribe || typeof globalThis.__NEMusicOnSteamEvent !== 'function') return false;
+  const read = () => ${SNAPSHOT_SCRIPT};
+  let timeout = 0, last = 0, active = true;
+  const publish = () => {
+    if (!active) return;
+    clearTimeout(timeout); timeout = 0; last = Date.now();
+    try { globalThis.__NEMusicOnSteamEvent(JSON.stringify({ type: 'playback-state', state: read() })); } catch {}
+  };
+  const schedule = () => { if (active && !timeout) timeout = setTimeout(publish, Math.max(0, 500 - (Date.now() - last))); };
+  const unsubscribe = playerStore.subscribe(schedule);
+  const events = ['play', 'pause', 'seeked', 'volumechange', 'ratechange', 'loadedmetadata', 'ended'];
+  for (const event of events) document.addEventListener(event, schedule, true);
+  const heartbeat = setInterval(publish, 2000);
+  const stop = () => {
+    active = false; clearTimeout(timeout); clearInterval(heartbeat); unsubscribe();
+    for (const event of events) document.removeEventListener(event, schedule, true);
+    window.removeEventListener('pagehide', stop);
+  };
+  window.addEventListener('pagehide', stop, { once: true });
+  globalThis.__NEMusicOnSteamStateWatch = { store: playerStore, publish, stop };
+  publish();
+  return true;
+})()`;

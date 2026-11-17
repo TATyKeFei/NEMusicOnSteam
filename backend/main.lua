@@ -10,9 +10,110 @@ local helper_grace = {}
 -- 宿主的 time_ms 在 32 位 Lua 下可能溢出，因此按调用次数退避。
 -- 给冷启动留出余量，避免尚未写端口文件时重复启动进程争抢 D-Bus 名称。
 local RESPAWN_SKIP_POLLS = { 10, 20, 40, 80, 120 }
+
+-- Millennium 3.6.3 起 Lua 后端跟着 64 位 Steam 进入 SteamRT3 容器。容器的
+-- /usr/bin 里没有 Python、mpv 或 Node，但宿主机的 /usr 会挂载到 /run/host/usr。
+-- 优先调用宿主程序，并补上宿主动态库和 GI typelib 搜索路径。
+local HOST_ROOT = "/run/host"
+local HOST_BIN_DIRS = {
+    "/run/host/usr/local/bin",
+    "/run/host/usr/bin",
+    "/run/host/bin",
+}
+local HOST_LIBRARY_DIRS = {
+    "/run/host/usr/local/lib",
+    "/run/host/usr/lib/x86_64-linux-gnu",
+    "/run/host/usr/lib64",
+    "/run/host/usr/lib",
+    "/run/host/lib/x86_64-linux-gnu",
+    "/run/host/lib64",
+    "/run/host/lib",
+}
+
+local function shell_quote(value)
+    return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+local function is_directory(path)
+    if type(fs.is_directory) ~= "function" then return false end
+    local ok, result = pcall(fs.is_directory, path)
+    return ok and result == true
+end
+
+local function is_file(path)
+    if type(fs.is_file) ~= "function" then return false end
+    local ok, result = pcall(fs.is_file, path)
+    return ok and result == true
+end
+
+local function host_tools_available()
+    return is_directory(HOST_ROOT .. "/usr")
+end
+
+local function existing_directories(candidates)
+    local result = {}
+    for _, path in ipairs(candidates) do
+        if is_directory(path) then table.insert(result, path) end
+    end
+    return result
+end
+
+-- 只使用宿主的动态库目录：容器自带的库通常比宿主旧，混用会让宿主 Python、
+-- mpv 或 ffmpeg 加载到不兼容的依赖。
+local function host_environment()
+    if not host_tools_available() then return nil end
+    local path_dirs = existing_directories(HOST_BIN_DIRS)
+    local environment_path = utils.getenv("PATH")
+    if environment_path ~= nil and environment_path ~= "" then table.insert(path_dirs, environment_path) end
+    local libraries = existing_directories(HOST_LIBRARY_DIRS)
+    local typelibs = {}
+    for _, path in ipairs(libraries) do
+        local candidate = path .. "/girepository-1.0"
+        if is_directory(candidate) then table.insert(typelibs, candidate) end
+    end
+    local environment = { "PATH=" .. table.concat(path_dirs, ":") }
+    if #libraries > 0 then table.insert(environment, "LD_LIBRARY_PATH=" .. table.concat(libraries, ":")) end
+    if #typelibs > 0 then table.insert(environment, "GI_TYPELIB_PATH=" .. table.concat(typelibs, ":")) end
+    return environment
+end
+
+local function find_tool(name, override)
+    local custom = utils.getenv(override)
+    if custom ~= nil and custom ~= "" and is_file(custom) then return custom end
+    if host_tools_available() then
+        for _, directory in ipairs(HOST_BIN_DIRS) do
+            local candidate = directory .. "/" .. name
+            if is_file(candidate) then return candidate end
+        end
+    end
+    return name
+end
+
+local function host_command_prefix()
+    local environment = host_environment()
+    if environment == nil then return nil end
+    local parts = { "env", "-u", "LD_PRELOAD", "-u", "LD_LIBRARY_PATH", "-u", "PYTHONHOME" }
+    for _, entry in ipairs(environment) do table.insert(parts, shell_quote(entry)) end
+    return table.concat(parts, " ") .. " "
+end
+
+local function python_interpreter()
+    local python = shell_quote(find_tool("python3", "NEMUSIC_PYTHON"))
+    local prefix = host_command_prefix()
+    return prefix and (prefix .. python) or python
+end
+
+local function node_interpreter()
+    local node = shell_quote(find_tool("node", "NEMUSIC_NODE"))
+    local prefix = host_command_prefix()
+    -- 旧版非容器环境仍需避开 Steam Runtime 的动态库。
+    return prefix and (prefix .. node) or ("env -u LD_LIBRARY_PATH -u LD_PRELOAD " .. node)
+end
+
 local helpers = {
     mpris = {
         name = "mpris", entry = "helper.py", polls = 20, retry_only = true,
+        interpreter = python_interpreter,
         assets = {
             { "backend/mpris_helper.py", "helper.py", "helper" },
             { "backend/recognition.py", "recognition.py", "recognition" },
@@ -23,8 +124,10 @@ local helpers = {
     },
     mpv = {
         name = "mpv", entry = "helper.py", polls = 200,
+        interpreter = python_interpreter,
         assets = {
             { "backend/mpv_helper.py", "helper.py", "helper" },
+            { "backend/download_files.py", "download_files.py", "download-files" },
             { "backend/pcm_mixer.py", "pcm_mixer.py", "pcm-mixer" },
             { "backend/track_analysis.py", "track_analysis.py", "track-analysis" },
             { "backend/audio_source.py", "audio_source.py", "audio-source" },
@@ -33,6 +136,7 @@ local helpers = {
     },
     mpd = {
         name = "mpd", entry = "helper.py", polls = 20, shutdown_grace = 1500,
+        interpreter = python_interpreter,
         assets = {
             { "backend/mpd_helper.py", "helper.py", "helper" },
             { "backend/playback_http.py", "playback_http.py", "playback-http" },
@@ -40,20 +144,17 @@ local helpers = {
     },
     unblock = {
         name = "unblock", entry = "helper.cjs", polls = 20, fixed_skip = 10,
-        interpreter = "env -u LD_LIBRARY_PATH -u LD_PRELOAD node",
+        interpreter = node_interpreter,
         assets = { { "dist/unblock_helper.cjs", "helper.cjs", "helper" } },
     },
 }
-
-local function shell_quote(value)
-    return "'" .. value:gsub("'", "'\\''") .. "'"
-end
 
 -- 辅助进程是从 Steam 后端脱离出来的，前端的异步 fetch 在 Steam 退出时不一定来得及
 -- 发出 /shutdown。启动时把它们放进自己的进程组并记录组长 PID，这样 on_unload 可以同步
 -- 收掉 Python、识曲录音子进程以及 mpv，避免 Steam 关掉窗口后还留在后台。
 local function launch_helper(path, dir, log_path, interpreter)
     local pid_path = dir .. "/pid"
+    if type(interpreter) == "function" then interpreter = interpreter() end
     -- exec 让 $! 就是 setsid/python 的 PID，而不是临时 shell 的 PID；只有它是
     -- 新进程组组长时，退出时的 kill -- -PID 才能连同 mpv、parec 一起回收。
     local command = "setsid " .. (interpreter or "python3") .. " " .. shell_quote(path) .. " " .. shell_quote(dir)
@@ -214,11 +315,29 @@ end
 ---@return string
 function diagnostics()
     -- 只返回固定依赖的可用性；不返回环境变量、目录、登录态或辅助进程令牌。
-    local script = [[for tool in python3 mpv ffmpeg node; do if command -v "$tool" >/dev/null 2>&1; then echo "$tool=ok"; else echo "$tool=missing"; fi; done
-python3 -c 'from gi.repository import Gio, GLib' >/dev/null 2>&1 && echo 'PyGObject=ok' || echo 'PyGObject=missing'
-node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' >/dev/null 2>&1 && echo 'Node22=ok' || echo 'Node22=missing'
-test -n "$DBUS_SESSION_BUS_ADDRESS" && echo 'sessionBus=ok' || echo 'sessionBus=missing']]
-    local ok, pipe = pcall(io.popen, "env -u LD_LIBRARY_PATH -u LD_PRELOAD sh -c " .. shell_quote(script), "r")
+    local script = [[python_bin=${NEMUSIC_PYTHON:-python3}
+mpv_bin=${NEMUSIC_MPV:-mpv}
+node_bin=${NEMUSIC_NODE:-node}
+for tool in python3 mpv ffmpeg node; do
+  case "$tool" in
+    python3) candidate=$python_bin;;
+    mpv) candidate=$mpv_bin;;
+    node) candidate=$node_bin;;
+    *) candidate=$tool;;
+  esac
+  if command -v "$candidate" >/dev/null 2>&1; then echo "$tool=ok"; else echo "$tool=missing"; fi
+done
+"$python_bin" -c 'from gi.repository import Gio, GLib' >/dev/null 2>&1 && echo 'PyGObject=ok' || echo 'PyGObject=missing'
+"$node_bin" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' >/dev/null 2>&1 && echo 'Node22=ok' || echo 'Node22=missing'
+test -n "$DBUS_SESSION_BUS_ADDRESS" && echo 'sessionBus=ok' || echo 'sessionBus=missing'
+if test -r /run/host/os-release; then release=/run/host/os-release; elif test -r /etc/os-release; then release=/etc/os-release; fi
+if test -n "$release"; then
+  . "$release"
+  case "$ID" in arch|endeavouros|manjaro|ubuntu|debian|linuxmint|fedora|opensuse-tumbleweed|opensuse-leap) echo "Distro=$ID";; *) echo 'Distro=unknown';; esac
+fi]]
+    local prefix = host_command_prefix()
+    if prefix == nil then prefix = "env -u LD_LIBRARY_PATH -u LD_PRELOAD " end
+    local ok, pipe = pcall(io.popen, prefix .. "sh -c " .. shell_quote(script), "r")
     if not ok or pipe == nil then return "environment=unavailable" end
     local read_ok, result = pcall(pipe.read, pipe, "*a")
     pcall(pipe.close, pipe)

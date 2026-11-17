@@ -1,4 +1,5 @@
 import { AudioSettings, SleepSettings, DownloadTasks, Diagnostics } from "./settings-extras.tsx";
+import { GameProfileSettings } from "./settings-game-profiles.tsx";
 import { Dropdown, Field, TextField, Toggle } from "millennium";
 import { SettingsActions, SettingsButton } from "./settings-controls.tsx";
 import { useEffect, useState } from "react";
@@ -28,29 +29,6 @@ const UI_SCALE_OPTIONS = [
   { data: 1.25, label: "125%" },
   { data: 1.5, label: "150%" },
 ];
-
-// snapshot() 每次调用都会返回全新的对象，所以无条件喂给 setState 会让整个面板每秒重渲染
-// 好几次，哪怕什么都没变。
-function sameSnapshot(a: PlayerSnapshot, b: PlayerSnapshot): boolean {
-  return a.mode === b.mode
-    && a.status === b.status
-    && a.hasView === b.hasView
-    && a.throttlingSupported === b.throttlingSupported
-    && a.mprisStatus === b.mprisStatus
-    && a.mprisCanReconnect === b.mprisCanReconnect
-    && a.mpvStatus === b.mpvStatus
-    && a.mpdStatus === b.mpdStatus
-    && a.unblockStatus === b.unblockStatus
-    && a.recognitionStatus === b.recognitionStatus
-    && a.settingsEntry === b.settingsEntry
-    && JSON.stringify(a.quality) === JSON.stringify(b.quality)
-    && JSON.stringify(a.together) === JSON.stringify(b.together)
-    && JSON.stringify(a.download) === JSON.stringify(b.download)
-    && a.preloadStatus === b.preloadStatus
-    && JSON.stringify(a.audioDevices) === JSON.stringify(b.audioDevices)
-    && JSON.stringify(a.sleep) === JSON.stringify(b.sleep)
-    && JSON.stringify(a.settings) === JSON.stringify(b.settings);
-}
 
 const SETTINGS_ENTRY_TEXT: Record<PlayerSnapshot["settingsEntry"], string> = {
   native: "设置入口：原生补丁生效",
@@ -82,13 +60,7 @@ export function SettingsContent({ player }: { player: PlayerController }) {
   const [unblockSources, setUnblockSources] = useState(() => snapshot.settings.unblockSources.join(", "));
   const [mpd, setMpd] = useState(() => ({ ...snapshot.settings.mpd, port: String(snapshot.settings.mpd.port) }));
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      const next = player.snapshot();
-      setSnapshot(current => (sameSnapshot(current, next) ? current : next));
-    }, 400);
-    return () => window.clearInterval(timer);
-  }, [player]);
+  useEffect(() => player.subscribe(setSnapshot), [player]);
 
   const commitDirectory = () => {
     const trimmed = directory.trim();
@@ -148,6 +120,9 @@ export function SettingsContent({ player }: { player: PlayerController }) {
         />
       </Field>
       {settings.playbackBackend === "mpv" && <>
+        <Field label="优先播放已下载歌曲" description="先在当前下载目录查找歌曲，找不到时使用在线音源。仍使用网易云网页选歌和管理队列。" bottomSeparator="standard">
+          <Toggle value={settings.preferLocalDownloads} onChange={preferLocalDownloads => setSnapshot(player.updateSettings({ preferLocalDownloads }))} />
+        </Field>
         <Field label="过渡模式" description={settings.mpvTransitionMode === "none"
           ? "当前歌曲播完后再切换下一首，不叠加或淡化音频。"
           : settings.mpvTransitionMode === "crossfade"
@@ -234,6 +209,10 @@ export function SettingsContent({ player }: { player: PlayerController }) {
         bottomSeparator="standard"
       />
       <SleepSettings player={player} snapshot={snapshot} />
+      </details>
+      <details style={{ marginBottom: 14 }}>
+        <summary style={{ padding: "12px 0", cursor: "pointer", fontSize: 17 }}>游戏配置</summary>
+        <GameProfileSettings player={player} snapshot={snapshot} />
       </details>
       <details style={{ marginBottom: 14 }}>
         <summary style={{ padding: "12px 0", cursor: "pointer", fontSize: 17 }}>下载管理</summary>

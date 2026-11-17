@@ -94,6 +94,34 @@ class UniquePathTests(unittest.TestCase):
 
 
 class DownloadManifestTests(unittest.TestCase):
+    def test_local_lookup_prefers_requested_quality_and_falls_back(self):
+        with TemporaryDirectory() as directory:
+            for quality, name in ((320, "song.mp3"), (999, "song.flac")):
+                path = os.path.join(directory, name)
+                with open(path, "wb") as handle:
+                    handle.write(b"audio")
+                files.recorded_download(directory, "123:" + str(quality), path)
+            self.assertEqual(files.find_downloaded_song(directory, "123", 320), os.path.join(directory, "song.mp3"))
+            self.assertEqual(files.find_downloaded_song(directory, "123", 128), os.path.join(directory, "song.flac"))
+            os.unlink(os.path.join(directory, "song.flac"))
+            self.assertEqual(files.find_downloaded_song(directory, "123", 999), os.path.join(directory, "song.mp3"))
+            self.assertIsNone(files.find_downloaded_song(directory, "124", 999))
+
+    def test_local_lookup_rejects_symlink_escape_and_non_audio_files(self):
+        with TemporaryDirectory() as directory, TemporaryDirectory() as outside:
+            outside_path = os.path.join(outside, "song.mp3")
+            with open(outside_path, "wb") as handle:
+                handle.write(b"audio")
+            link = os.path.join(directory, "song.mp3")
+            os.symlink(outside_path, link)
+            files.recorded_download(directory, "123:320", link)
+            self.assertIsNone(files.find_downloaded_song(directory, "123", 320))
+            path = os.path.join(directory, "passwords.txt")
+            with open(path, "w") as handle:
+                handle.write("private")
+            files.recorded_download(directory, "123:999", path)
+            self.assertIsNone(files.find_downloaded_song(directory, "123", 999))
+
     def test_tracks_quality_separately_and_ignores_removed_files(self):
         with TemporaryDirectory() as directory:
             path = os.path.join(directory, "歌曲.flac")

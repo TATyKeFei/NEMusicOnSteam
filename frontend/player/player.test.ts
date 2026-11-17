@@ -14,6 +14,9 @@ import { browserId, type BrowserView, type BrowserViewCreateOptions, type SteamP
 import { PLAYER_READY_SCRIPT, PLAYER_RECOVERY_SCRIPT, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
 import { ViewBridges } from "./view-bridges.ts";
 import { notificationModeFor } from "../settings.ts";
+import { GameProfileSession } from "../playback/game-profile.ts";
+import { CAPABILITIES_SCRIPT } from "./capabilities.ts";
+import type { PlayerCapabilities } from "./capabilities.ts";
 
 const source = stripTypeScriptTypes(
   readFileSync(new URL("./player.ts", import.meta.url), "utf8")
@@ -44,9 +47,11 @@ type Controller = {
   shutdown(): void;
   settings: { playbackBackend: string };
   applyPlaybackBackend(): void;
+  checkCompatibility(force?: boolean): Promise<void>;
+  compatibility: { capabilities: PlayerCapabilities | null; status: string };
 };
 
-function setup(options: { desktopSupported?: boolean; failToggle?: boolean; playbackBackend?: string; keepAliveWhenCollapsed?: boolean; ready?: () => Promise<boolean>; retire?: (destroyNative?: () => void) => Promise<PlayerRecoverySnapshot | null>; steamSettings?: SteamSettingsStatus; saved?: PlayerRecoverySnapshot; restoreSession?: boolean; resumeOnRestore?: boolean; checkpoint?: PlayerRecoverySnapshot } = {}) {
+function setup(options: { desktopSupported?: boolean; failToggle?: boolean; playbackBackend?: string; keepAliveWhenCollapsed?: boolean; ready?: () => Promise<boolean>; retire?: (destroyNative?: () => void) => Promise<PlayerRecoverySnapshot | null>; steamSettings?: SteamSettingsStatus; saved?: PlayerRecoverySnapshot; restoreSession?: boolean; resumeOnRestore?: boolean; checkpoint?: PlayerRecoverySnapshot; capabilities?: () => PlayerCapabilities | null } = {}) {
   const models: ChromeModel[] = [];
   const toggles: boolean[] = [];
   const created: { view: BrowserView; options: BrowserViewCreateOptions; bounds: Bounds[]; visible: boolean[]; callbacks: Map<string, (...args: unknown[]) => void> }[] = [];
@@ -107,6 +112,8 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
       destroy() {}
     },
     MprisBridge: FakeBridge,
+    GameProfileSession,
+    CAPABILITIES_SCRIPT,
     ViewBridges,
     mprisHelper: {},
     steamToast() {},
@@ -155,6 +162,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     tryEvaluateInPlayer: async (expression: string) => {
       evaluations.push(expression);
       if (expression === PLAYER_READY_SCRIPT) return options.ready ? options.ready() : true;
+      if (expression === CAPABILITIES_SCRIPT) return options.capabilities?.() ?? null;
       if (expression === PLAYER_RECOVERY_CHECKPOINT_SCRIPT) return options.checkpoint ?? null;
       return expression.includes("const snapshot =") || expression === "mpv-mute" ? true : null;
     },
@@ -211,6 +219,36 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     },
   };
 }
+
+describe("web compatibility recovery", () => {
+  it("waits for confirmation before disabling a changed feature and re-enables it after recovery", async () => {
+    let capabilities: PlayerCapabilities = { playback: true, queue: true, quality: true, together: true, download: true };
+    const runtime = setup({ capabilities: () => capabilities });
+    runtime.player.loaded = true; runtime.player.view = {} as BrowserView;
+    await runtime.player.checkCompatibility(true);
+    assert.equal(runtime.player.compatibility.capabilities?.quality, true);
+    capabilities = { ...capabilities, quality: false };
+    await runtime.player.checkCompatibility(true);
+    assert.equal(runtime.player.compatibility.capabilities?.quality, true);
+    await runtime.player.checkCompatibility(true);
+    assert.equal(runtime.player.compatibility.capabilities?.quality, false);
+    assert.equal(runtime.player.compatibility.capabilities?.playback, true);
+    capabilities = { ...capabilities, quality: true };
+    await runtime.player.checkCompatibility(true);
+    assert.equal(runtime.player.compatibility.capabilities?.quality, true);
+    capabilities = { ...capabilities, quality: false };
+    await runtime.player.checkCompatibility(true);
+    assert.equal(runtime.player.compatibility.capabilities?.quality, true);
+  });
+  it("reports unavailable page state without marking every feature incompatible", async () => {
+    const runtime = setup({ capabilities: () => null });
+    runtime.player.loaded = true; runtime.player.view = {} as BrowserView;
+    await runtime.player.checkCompatibility(true);
+    assert.equal(runtime.player.compatibility.capabilities, null);
+    assert.match(runtime.player.compatibility.status, /尚未就绪/);
+    assert.equal(runtime.bridgeDisables.length, 0);
+  });
+});
 
 describe("player fullscreen modes", () => {
   it("fills the Steam window without calling desktop fullscreen", () => {

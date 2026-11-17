@@ -18,8 +18,7 @@ CONTROL_CHARACTERS = frozenset(chr(code) for code in range(32)) | {"\x7f"}
 MP3_MAGIC = (b"\xff\xfb", b"\xff\xf3", b"\xff\xf2", b"\xff\xfa", b"\xff\xf9")
 
 
-def recorded_download(directory, key, filename=None):
-    """按歌曲 ID/音质记录已有下载；只记录文件名，不保存地址或账号信息。"""
+def download_records(directory):
     manifest = os.path.join(directory, ".nemusic-downloads.json")
     try:
         with open(manifest, encoding="utf-8") as handle:
@@ -29,11 +28,24 @@ def recorded_download(directory, key, filename=None):
             records = {}
     except (OSError, ValueError):
         records = {}
+    return records
+
+
+def recorded_path(directory, name):
+    if isinstance(name, str) and name == os.path.basename(name):
+        root = os.path.realpath(directory)
+        path = os.path.realpath(os.path.join(root, name))
+        if os.path.dirname(path) == root and os.path.isfile(path) and path.lower().endswith(AUDIO_SUFFIXES):
+            return path
+    return None
+
+
+def recorded_download(directory, key, filename=None):
+    """按歌曲 ID/音质记录已有下载；只记录文件名，不保存地址或账号信息。"""
+    manifest = os.path.join(directory, ".nemusic-downloads.json")
+    records = download_records(directory)
     if filename is None:
-        name = records.get(key)
-        if isinstance(name, str) and name == os.path.basename(name) and os.path.isfile(os.path.join(directory, name)):
-            return os.path.join(directory, name)
-        return None
+        return recorded_path(directory, records.get(key))
     records[key] = os.path.basename(filename)
     temporary = None
     try:
@@ -47,6 +59,21 @@ def recorded_download(directory, key, filename=None):
                 os.unlink(temporary)
             except OSError:
                 pass
+    return None
+
+
+def find_downloaded_song(directory, song_id, quality):
+    """只允许读取下载清单内、且仍位于下载目录中的音频；优先所选音质。"""
+    song_id = str(song_id)
+    if len(song_id) > 20 or not song_id.isascii() or not song_id.isdigit() or int(song_id) <= 0:
+        return None
+    directory = download_directory(directory)
+    records = download_records(directory)
+    qualities = list(dict.fromkeys([str(quality), "5999", "4999", "3999", "1999", "999", "320", "192", "128"]))
+    for level in qualities:
+        path = recorded_path(directory, records.get(song_id + ":" + level))
+        if path:
+            return path
     return None
 
 

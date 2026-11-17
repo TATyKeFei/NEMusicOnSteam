@@ -64,6 +64,7 @@ export const PLAYER_RECOVERY_SCRIPT = `(() => {
 export const PLAYER_RETIRE_SCRIPT = `(async () => {
   ${PLAYER_ACCESS_SCRIPT}
   globalThis.__NEMusicOnSteamRetired = true;
+  globalThis.__NEMusicOnSteamStateWatch?.stop();
   if (typeof HTMLMediaElement !== 'undefined') {
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {

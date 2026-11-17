@@ -6,11 +6,18 @@ import { runInNewContext } from "node:vm";
 
 const source = stripTypeScriptTypes(readFileSync(new URL("./diagnostics.ts", import.meta.url), "utf8").replace(/^import .*;\n/gm, "").replace(/^export /gm, ""));
 function setup(environment = "mpv=ok\npython3=missing\nunknown=private\nMillennium=2.40.0\ncookie=secret") {
-  return runInNewContext(`${source}; ({ redactDiagnostic, collectDiagnostics })`, {
+  return runInNewContext(`${source}; ({ redactDiagnostic, collectDiagnostics, diagnosticAdvice })`, {
     ffi: () => async () => environment, navigator: { platform: "Linux" }, PLAYER_READY_SCRIPT: "ready", tryEvaluateInPlayer: async () => true,
-  }) as { redactDiagnostic(value: string): string; collectDiagnostics(snapshot: any): Promise<string> };
+  }) as { redactDiagnostic(value: string): string; collectDiagnostics(snapshot: any): Promise<string>; diagnosticAdvice(environment: string, backend: string, unblock?: boolean): string[] };
 }
 describe("privacy filtered diagnostics", () => {
+  it("offers distro-specific installation steps only for relevant missing dependencies", () => {
+    const api = setup();
+    assert.match(api.diagnosticAdvice("Distro=arch\nmpv=missing\nffmpeg=missing\nPyGObject=missing", "mpv").join("\n"), /sudo pacman -S python-gobject mpv ffmpeg/);
+    const report = api.diagnosticAdvice("Distro=ubuntu\nmpv=missing\nPyGObject=missing\nNode22=missing", "web", true).join("\n");
+    assert.match(report, /sudo apt install python3-gi/); assert.match(report, /Node.js 22/); assert.doesNotMatch(report, /install.*mpv/);
+    assert.doesNotMatch(api.diagnosticAdvice("Distro=unknown\npython3=missing", "web").join("\n"), /undefined|sudo/);
+  });
   it("removes endpoints, paths with spaces and credential fields", () => {
     const api = setup();
     for (const value of ["失败 https://host.example/audio?token=secret", "失败 /home/Real Name/music file.flac", "失败 C:\\Users\\Real Name\\music.mp3", "Authorization: Bearer secret", "uid=123456", "cookie: sid=secret; other=private"]) {

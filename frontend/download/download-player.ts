@@ -23,7 +23,7 @@ export type DownloadTrack = {
   artist: string;
   album: string;
   cover: string;
-  source: "api" | "player" | "unblock";
+  source: "api" | "player" | "unblock" | "local";
   songId?: number;
   trial?: boolean;
   provider?: string;
@@ -159,8 +159,8 @@ export function downloadScript(value: number, song?: DownloadSong, allowUnavaila
 export const PLAYING_LIST_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
   const state = playerStore?.getState() || {};
-  const playing = state.playing || {};
-  const candidates = [playing.playingList, playing.playList, playing.list, state.playingList];
+  const playback = state.playing || {};
+  const candidates = [state.playingList?.curPlayingList, playback.playingList, playback.playList, playback.list, state.playingList];
   const raw = candidates.find(item => Array.isArray(item) && item.length > 0) || [];
   const seen = new Set();
   const songs = [];
