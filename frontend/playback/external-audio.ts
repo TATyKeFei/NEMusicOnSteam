@@ -1,4 +1,4 @@
-import { tryEvaluateInPlayer } from "../player/player-target.ts";
+import { listenPlaybackState, tryEvaluateInPlayer } from "../player/player-target.ts";
 import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
 import { downloadScript, type DownloadTrack, type DownloadSong } from "../download/download-player.ts";
 import { CROSSFADE_QUEUE_SCRIPT, crossfadeAdoptScript, crossfadeClockScript, type CrossfadeCandidate } from "./crossfade-player.ts";
@@ -346,6 +346,11 @@ export class ExternalAudioBridge implements ExternalPlayback {
   private webClockTarget: number | null = null;
   private readonly options: ExternalAudioOptions;
   private muteInstalled = false;
+  private unsubscribePlayback: (() => void) | null = null;
+  private webVolume: number | null = null;
+  private volumeRevision = 0;
+  private pendingVolume: number | null = null;
+  private volumeUpdate: Promise<void> | null = null;
 
   constructor(options: ExternalAudioOptions) {
     this.options = options;
@@ -362,6 +367,12 @@ export class ExternalAudioBridge implements ExternalPlayback {
     const generation = ++this.generation;
     this.enabled = enabled;
     if (!enabled) {
+      this.unsubscribePlayback?.();
+      this.unsubscribePlayback = null;
+      this.webVolume = null;
+      this.volumeRevision++;
+      this.pendingVolume = null;
+      this.volumeUpdate = null;
       this.clearPreload();
       // 用户按停的意图要活到关后端这一刻：resume 得赶在清标志之前算出来，
       // 否则 stop() 会以为页面该被接回去，凭空把用户停掉的歌放出来。
@@ -395,6 +406,13 @@ export class ExternalAudioBridge implements ExternalPlayback {
       if (!this.enabled || generation !== this.generation) return;
       this.requests = new AbortController();
       this.timer = window.setInterval((): void => void this.tick(), 500);
+      this.unsubscribePlayback = listenPlaybackState(state => {
+        if (!this.isCurrent(generation) || !this.updateWebVolume(state.volume)) return;
+        if (!this.endpoint || !this.token || !this.state.active || this.state.volume === null) return;
+        void this.syncVolume(generation).catch(error => {
+          if (this.isCurrent(generation)) console.warn(`[NEMusic] ${this.options.name} volume`, error);
+        });
+      });
       void this.tick();
     };
     if (this.stopping) void this.stopping.then(start, start);
@@ -446,7 +464,6 @@ export class ExternalAudioBridge implements ExternalPlayback {
     try {
       const handled = await this.executeCommand(command, generation);
       if (handled && this.isCurrent(generation)) {
-        if (command.action === "volume") this.state.volume = Math.max(0, Math.min(1, Number(command.value)));
         if (command.action === "pause") this.state.playbackStatus = "Paused";
         if (command.action === "play") this.state.playbackStatus = "Playing";
       }
@@ -498,6 +515,12 @@ export class ExternalAudioBridge implements ExternalPlayback {
       await this.options.commandWeb(command);
       if (!this.isCurrent(generation)) return false;
     }
+    if (command.action === "volume") {
+      if (!Number.isFinite(command.value)) return false;
+      this.updateWebVolume(Number(command.value));
+      await this.syncVolume(generation);
+      return this.isCurrent(generation);
+    }
     // 外部播放器 的播放状态是权威，这些标志要在 /command 之前落好：请求失败时下个 tick 还会照着
     // 它们重试，而播放类命令失败的唯一常见原因就是 外部播放器 手里已经没歌了。
     if (command.action === "stop") {
@@ -530,6 +553,41 @@ export class ExternalAudioBridge implements ExternalPlayback {
 
   private isCurrent(generation: number): boolean {
     return this.enabled && this.timer !== 0 && generation === this.generation;
+  }
+
+  private updateWebVolume(value: number | null | undefined): boolean {
+    if (typeof value !== "number" || !Number.isFinite(value)) return false;
+    const volume = Math.max(0, Math.min(1, value));
+    if (this.webVolume === volume) return false;
+    this.webVolume = volume;
+    this.volumeRevision++;
+    return true;
+  }
+
+  private async syncVolume(generation: number): Promise<void> {
+    this.pendingVolume = this.webVolume;
+    if (this.volumeUpdate) return this.volumeUpdate;
+    const update = (async () => {
+      let sentVolume: number | null = null;
+      while (this.isCurrent(generation) && this.pendingVolume !== null) {
+        const volume = this.pendingVolume;
+        this.pendingVolume = null;
+        if (volume === sentVolume) continue;
+        const response = await this.request("/command", generation, { action: "volume", value: volume });
+        if (!this.isCurrent(generation)) return;
+        const payload = await response.json() as { handled?: boolean; error?: string };
+        if (!this.isCurrent(generation)) return;
+        if (!response.ok || !payload.handled) throw new Error(payload.error || `${this.options.name} 音量调整失败`);
+        sentVolume = volume;
+        this.state.volume = volume;
+      }
+    })();
+    this.volumeUpdate = update;
+    try {
+      await update;
+    } finally {
+      if (this.volumeUpdate === update) this.volumeUpdate = null;
+    }
   }
 
   private async connect(generation: number): Promise<boolean> {
@@ -593,8 +651,10 @@ export class ExternalAudioBridge implements ExternalPlayback {
       if (muted !== true) await tryEvaluateInPlayer(EXTERNAL_MUTE_SCRIPT);
       this.muteInstalled = true;
       if (!this.isCurrent(generation)) return;
+      const volumeRevision = this.volumeRevision;
       const web = (await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null;
       if (!this.isCurrent(generation)) return;
+      if (volumeRevision === this.volumeRevision) this.updateWebVolume(web?.volume);
       let earlyPayload: ExternalAudioPayload | null = null;
       if (this.usesPcm()) {
         const response = await this.request("/state", generation);
@@ -647,12 +707,11 @@ export class ExternalAudioBridge implements ExternalPlayback {
       if (Array.isArray(payload.audioDevices)) this.devices = payload.audioDevices;
       if (payload.queuedTrackId) this.preloadStatus = "下一首已送入解码缓冲";
       if (payload.error) this.preloadStatus = `预载失败：${payload.error}`;
-      // 网页 store 是音量的唯一来源（网页滑块和媒体键最后都落到它），外部播放器 只跟着走：
-      // 拖滑块时网页那边的 div[role=slider] 不派发事件，只能靠这里的对账把音量送过去。
-      if (next.active && next.volume != null && web?.volume != null && Math.abs(web.volume - next.volume) > VOLUME_EPSILON) {
-        await this.request("/command", generation, { action: "volume", value: web.volume });
+      if (next.active && next.volume != null && this.webVolume != null
+        && (this.volumeUpdate || Math.abs(this.webVolume - next.volume) > VOLUME_EPSILON)) {
+        await this.syncVolume(generation);
         if (!this.isCurrent(generation)) return;
-        next.volume = web.volume;
+        next.volume = this.webVolume;
       }
       // 进度同理：网页的进度条也是 div[role=slider]，拖完没有事件可听，只能靠快照发现。
       // 只在两边同一首且都在播时对账——暂停中 seek 会把刚按住的 外部播放器 拽走；
@@ -681,6 +740,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
       const alternatePlaying = this.alternateTrack && this.state.playbackStatus === "Playing";
       const lost = !next.active && !this.stopRequested && Boolean(web?.trackId) && web?.trackId === this.lastWebTrackId
         && (web.playbackStatus === "Playing" || this.playRequested || alternatePlaying);
+      if (next.active && next.volume != null && this.webVolume != null) next.volume = this.webVolume;
       this.state = next;
       this.previousStatus = next.playbackStatus;
       if (payload.pcm && !this.handoff && !this.stopRequested) {
@@ -802,7 +862,7 @@ export class ExternalAudioBridge implements ExternalPlayback {
       position: web.position,
       autoplay: transportEpoch === this.transportEpoch ? autoplay : this.playRequested,
       // 外部播放器 的初始音量是 100%：不把网页音量带上，从网页切过来就是一声爆音。
-      volume: web.volume,
+      volume: this.webVolume ?? web.volume,
     });
     if (!this.isCurrent(generation)) return;
     if (!response.ok) {

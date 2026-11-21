@@ -215,7 +215,7 @@ describe("player CDP push events", () => {
   it("shares pushed state across consumers, extrapolates progress and falls back after event loss", async () => {
     let now = 10000, reads = 0, callback: ((event: any) => void) | null = null;
     const state = { trackId: "1", duration: 100, position: 10, playbackStatus: "Playing", rate: 1, volume: 0.8 };
-    const api = runInNewContext(`${source}; ({ tryEvaluateInPlayer, releasePlayerSession, playerTraffic })`, {
+    const api = runInNewContext(`${source}; ({ tryEvaluateInPlayer, releasePlayerSession, playerTraffic, listenPlaybackState })`, {
       SNAPSHOT_SCRIPT: "snapshot", SNAPSHOT_WATCH_SCRIPT: "watch", isPlayerDocument: () => true,
       Date: class { static now() { return now; } },
       ChromeDevToolsProtocol: {
@@ -230,15 +230,25 @@ describe("player CDP push events", () => {
     });
     await Promise.all([api.tryEvaluateInPlayer("snapshot"), api.tryEvaluateInPlayer("snapshot")]);
     assert.equal(reads, 1);
+    assert.equal((await api.tryEvaluateInPlayer("snapshot")).position, 10);
+    const pushedVolumes: number[] = [];
+    const unsubscribe = api.listenPlaybackState((snapshot: typeof state) => {
+      pushedVolumes.push(snapshot.volume);
+      snapshot.volume = 0;
+    });
     callback!({ sessionId: "s1", name: "__NEMusicOnSteamEvent", payload: JSON.stringify({ type: "playback-state", state }) });
+    assert.deepEqual(pushedVolumes, [0.8]);
+    unsubscribe();
     now += 1000;
     const a = await api.tryEvaluateInPlayer("snapshot"); a.volume = 0;
     const b = await api.tryEvaluateInPlayer("snapshot");
     assert.equal(b.position, 11); assert.equal(b.volume, 0.8); assert.equal(reads, 1);
     now += 2000; await api.tryEvaluateInPlayer("snapshot"); assert.equal(reads, 2);
-    assert.equal(api.playerTraffic().stateEvents, 1); assert.equal(api.playerTraffic().snapshotHits, 3);
+    assert.equal(api.playerTraffic().stateEvents, 1); assert.equal(api.playerTraffic().snapshotHits, 4);
     api.releasePlayerSession(); assert.equal(callback, null);
     await api.tryEvaluateInPlayer("snapshot"); assert.equal(reads, 3);
+    callback!({ sessionId: "s1", name: "__NEMusicOnSteamEvent", payload: JSON.stringify({ type: "playback-state", state }) });
+    assert.deepEqual(pushedVolumes, [0.8]);
   });
 
   it("keeps playback working if the Steam Runtime binding is unavailable", async () => {

@@ -21,13 +21,19 @@ let resolving: Promise<PlayerSession | null> | null = null;
 let epoch = 0;
 let selection: { marker: string; existingTargetIds: Set<string>; targetId: string | null; ready: boolean } | null = null;
 const pageListeners = new Set<(event: Record<string, unknown>) => void>();
+const playbackListeners = new Set<(state: TrackState) => void>();
 let removeEventListener: (() => void) | null = null;
 let stateSubscription: (() => void) | null = null;
-let sharedState: { state: TrackState; at: number } | null = null;
+let sharedState: { state: TrackState; at: number; maxAge: number } | null = null;
 let statePending: Promise<unknown> | null = null;
 let watchAttemptAt = -Infinity;
 const traffic = { evaluations: 0, snapshotReads: 0, snapshotHits: 0, stateEvents: 0 };
 export function playerTraffic(): typeof traffic { return { ...traffic }; }
+
+export function listenPlaybackState(listener: (state: TrackState) => void): () => void {
+  playbackListeners.add(listener);
+  return () => { playbackListeners.delete(listener); };
+}
 
 async function enablePageEvents(sessionId: string): Promise<void> {
   await ChromeDevToolsProtocol.send("Runtime.enable", {}, sessionId);
@@ -183,9 +189,10 @@ async function readSharedState(options: EvaluateOptions): Promise<unknown> {
     if (event.type !== "playback-state" || !state || typeof state.trackId !== "string"
       || !Number.isFinite(state.position) || !Number.isFinite(state.duration)
       || !["Playing", "Paused", "Stopped"].includes(state.playbackStatus)) return;
-    sharedState = { state, at: Date.now() }; traffic.stateEvents++;
+    sharedState = { state, at: Date.now(), maxAge: 2500 }; traffic.stateEvents++;
+    for (const listener of playbackListeners) listener({ ...state });
   });
-  if (!options.fresh && sharedState && Date.now() - sharedState.at < 2500) {
+  if (!options.fresh && sharedState && Date.now() - sharedState.at < sharedState.maxAge) {
     traffic.snapshotHits++;
     const { state, at } = sharedState;
     return { ...state, position: state.playbackStatus === "Playing"
@@ -193,7 +200,7 @@ async function readSharedState(options: EvaluateOptions): Promise<unknown> {
   }
   if (!options.fresh && statePending) { traffic.snapshotHits++; return statePending; }
   const generation = epoch;
-  const requestedAt = Date.now();
+  const previousState = sharedState;
   const pending = (async () => {
     if (Date.now() - watchAttemptAt >= 10000) {
       watchAttemptAt = Date.now();
@@ -207,8 +214,8 @@ async function readSharedState(options: EvaluateOptions): Promise<unknown> {
     }
     const outcome = await evaluate(SNAPSHOT_SCRIPT, options);
     const state = outcome.kind === "value" ? outcome.value as TrackState | null : null;
-    if (epoch === generation && state && typeof state.trackId === "string" && (!sharedState || sharedState.at < requestedAt)) {
-      sharedState = { state, at: Date.now() - 2200 };
+    if (epoch === generation && state && typeof state.trackId === "string" && sharedState === previousState) {
+      sharedState = { state, at: Date.now(), maxAge: 300 };
     }
     return state ? { ...state } : null;
   })();

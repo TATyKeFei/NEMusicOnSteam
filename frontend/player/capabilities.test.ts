@@ -7,6 +7,7 @@ import { SNAPSHOT_WATCH_SCRIPT } from "./player-access.ts";
 function page(state: Record<string, any>) {
   const listeners = new Map<string, Function>();
   const timers = new Map<number, Function>();
+  const delays = new Map<number, number>();
   let serial = 0, unsubscribed = 0, subscriptions = 0;
   const store = { getState: () => state, dispatch() {}, subscribe(fn: Function) { subscriptions++; listeners.set("store", fn); return () => { unsubscribed++; }; } };
   const events: any[] = [];
@@ -16,10 +17,12 @@ function page(state: Record<string, any>) {
     navigator: {}, fetch() {}, window: { addEventListener(name: string, fn: Function) { listeners.set(name, fn); }, removeEventListener(name: string) { listeners.delete(name); } },
     __NEMusicOnSteamPlayerStore: store, __NEMusicOnSteamPlayerStoreSource: {},
     __NEMusicOnSteamEvent: (raw: string) => events.push(JSON.parse(raw)),
-    setTimeout(fn: Function) { timers.set(++serial, fn); return serial; }, clearTimeout(id: number) { timers.delete(id); },
+    Date: { now: () => 1000 },
+    setTimeout(fn: Function, delay: number) { timers.set(++serial, fn); delays.set(serial, delay); return serial; },
+    clearTimeout(id: number) { timers.delete(id); delays.delete(id); },
     setInterval(fn: Function) { timers.set(++serial, fn); return serial; }, clearInterval(id: number) { timers.delete(id); },
   };
-  return { context, events, listeners, timers, run: (script: string) => runInNewContext(script, context), subscriptions: () => subscriptions, unsubscribed: () => unsubscribed };
+  return { context, delays, events, listeners, timers, run: (script: string) => runInNewContext(script, context), subscriptions: () => subscriptions, unsubscribed: () => unsubscribed };
 }
 describe("web player compatibility and state subscription", () => {
   it("recognizes the actual Redux slices and leaves lazy together state pending", () => {
@@ -38,11 +41,32 @@ describe("web player compatibility and state subscription", () => {
     assert.equal(p.run(SNAPSHOT_WATCH_SCRIPT), true);
     assert.equal(p.events[0].state.trackId, "1");
     p.run(SNAPSHOT_WATCH_SCRIPT); assert.equal(p.subscriptions(), 1);
+    p.listeners.get("store")!();
+    assert.deepEqual([...p.delays.values()], [500]);
     state.playing.resourceTrackId = "2"; state.playing.resourceName = "第二首";
     p.listeners.get("store")!(); p.listeners.get("store")!();
     assert.equal(p.timers.size, 2); // 一个心跳、一个合并后的状态更新
+    assert.deepEqual([...p.delays.values()], [0]);
     [...p.timers.values()].at(-1)!();
     assert.equal(p.events.at(-1).state.trackId, "2");
+    p.listeners.get("pause")!();
+    assert.deepEqual([...p.delays.values()], [0]);
     p.listeners.get("pagehide")!(); assert.equal(p.unsubscribed(), 1); assert.equal(p.timers.size, 0);
+  });
+
+  it("prioritizes Redux volume changes while the Howler audio stays detached from the document", () => {
+    const state = { playing: { playingVolume: 0.8, resourceTrackId: "1", resourceName: "歌曲", resourceDuration: 100 } };
+    const p = page(state);
+    p.run(SNAPSHOT_WATCH_SCRIPT);
+    p.listeners.get("store")!();
+    assert.deepEqual([...p.delays.values()], [500]);
+    state.playing.playingVolume = 0.4;
+    p.listeners.get("store")!();
+    state.playing.playingVolume = 0;
+    p.listeners.get("store")!();
+    assert.deepEqual([...p.delays.values()], [0]);
+    [...p.timers.values()].at(-1)!();
+    assert.equal(p.events.at(-1).state.volume, 0);
+    p.listeners.get("pagehide")!();
   });
 });

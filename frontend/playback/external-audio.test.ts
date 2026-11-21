@@ -96,6 +96,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
   let requestGate: { path: string; promise: Promise<void> } | null = null;
   let commandGate: Promise<void> | null = null;
   let nextGate: Promise<void> | null = null;
+  let playbackListener: ((state: TrackState) => void) | null = null;
   let candidate = { eligible: true, from: "t1", song: { id: 2, name: "next", artist: "artist", duration: 100 } };
   let web: TrackState | null = options.web === undefined ? { ...webPlaying } : options.web;
   let mpv: Payload = { active: false, playbackStatus: "Stopped", ...(options.mpv ?? {}) };
@@ -173,6 +174,10 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
       crossfadeClockScript: (id: string, position: number, isPlaying: boolean) => `clock:${id}:${position}:${isPlaying}`,
       downloadScript: () => "download",
       tryEvaluateInPlayer: evaluate,
+      listenPlaybackState: (listener: typeof playbackListener) => {
+        playbackListener = listener;
+        return () => { playbackListener = null; };
+      },
       fetch,
     },
   ) as { Bridge: new (options: unknown) => TestBridge; scripts: PageScripts };
@@ -234,6 +239,7 @@ function setup(options: { web?: TrackState | null; mpv?: Payload; resolver?: boo
     holdNext: (promise: Promise<void> | null) => { nextGate = promise; },
     setCandidate: (next: typeof candidate) => { candidate = next; },
     setWeb: (next: TrackState | null) => { web = next; },
+    pushWeb: (next: TrackState) => { web = next; playbackListener?.(next); },
     setMpv: (next: Payload) => { mpv = next; },
     lastSync: () => evaluations.filter(isSync).at(-1) ?? "",
     lastUnmute: () => evaluations.filter(isUnmute).at(-1) ?? "",
@@ -943,7 +949,6 @@ describe("external audio bridge tick", () => {
   });
 
   it("hands the page's volume to mpv on load and reconciles the rest", async () => {
-    // 网页滑块是 div[role=slider]，拖动不派发事件，音量只能靠快照跟 mpv 对账。
     const player = setup({
       web: { ...webPlaying, volume: 0.4 },
       mpv: { active: true, playbackStatus: "Playing", trackId: "t1", volume: 1 },
@@ -963,6 +968,67 @@ describe("external audio bridge tick", () => {
     await flush();
     assert.deepEqual(player.volumeCommands, []);
     assert.equal(player.loads[0].volume, 0.4);
+  });
+
+  it("sends slider volume changes without waiting for a timer or a blocked state poll", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1", volume: 1 } });
+    player.bridge.setEnabled(true);
+    await flush();
+    const pending = deferred();
+    player.holdRequest("/state", pending.promise);
+    player.tick();
+    await flush();
+    player.pushWeb({ ...webPlaying, volume: 0.4 });
+    await flush();
+    assert.deepEqual(player.volumeCommands, [0.4]);
+    assert.equal(player.bridge.snapshot().volume, 0.4);
+    pending.resolve();
+    await flush();
+    assert.equal(player.volumeCommands.every(volume => volume === 0.4), true);
+    assert.equal(player.bridge.snapshot().volume, 0.4);
+    player.bridge.setEnabled(false);
+    await flush();
+  });
+
+  it("coalesces rapid slider changes to the latest volume instead of queuing every step", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1", volume: 1 } });
+    player.bridge.setEnabled(true);
+    await flush();
+    const previousRequests = player.requests.filter(request => request.url.endsWith("/command")).length;
+    const pending = deferred();
+    player.holdRequest("/command", pending.promise);
+    player.pushWeb({ ...webPlaying, volume: 0.8 });
+    await flush();
+    player.pushWeb({ ...webPlaying, volume: 0.6 });
+    player.pushWeb({ ...webPlaying, volume: 0.4 });
+    player.pushWeb({ ...webPlaying, volume: 0 });
+    await flush();
+    assert.equal(player.requests.filter(request => request.url.endsWith("/command")).length, previousRequests + 1);
+    pending.resolve();
+    await flush();
+    assert.deepEqual(player.volumeCommands, [0.8, 0]);
+    assert.equal(player.bridge.snapshot().volume, 0);
+    player.bridge.setEnabled(false);
+    await flush();
+  });
+
+  it("does not flush queued slider changes after the backend is disabled", async () => {
+    const player = setup({ mpv: { active: true, playbackStatus: "Playing", trackId: "t1", volume: 1 } });
+    player.bridge.setEnabled(true);
+    await flush();
+    const previousRequests = player.requests.filter(request => request.url.endsWith("/command")).length;
+    const pending = deferred();
+    player.holdRequest("/command", pending.promise);
+    player.pushWeb({ ...webPlaying, volume: 0.8 });
+    player.pushWeb({ ...webPlaying, volume: 0.2 });
+    await flush();
+    player.bridge.setEnabled(false);
+    await flush();
+    player.pushWeb({ ...webPlaying, volume: 0.1 });
+    pending.resolve();
+    await flush();
+    assert.equal(player.requests.filter(request => request.url.endsWith("/command")).length, previousRequests + 1);
+    assert.equal(player.bridge.snapshot().active, false);
   });
 
   it("writes media-key volume back to the page so the next tick keeps it", async () => {

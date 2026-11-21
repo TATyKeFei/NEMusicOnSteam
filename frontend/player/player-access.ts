@@ -188,7 +188,7 @@ export const SNAPSHOT_SCRIPT = `(() => {
   return { active: Boolean(title || artist || media || progressSlider), playbackStatus, title, artist, album, artUrl, trackId: nativeMetadata ? nativeId : [title, artist, album].join('|'), duration, position, canSeek: Boolean(playerStore && playing?.resourceTrackId && duration > 0), canGoNext: Boolean(nextControl) && !isDisabled(nextControl), canGoPrevious: Boolean(previousControl) && !isDisabled(previousControl), volume, loopStatus, shuffle, rate };
 })()`;
 
-/** 页面内订阅 Redux 和媒体事件；每次变化最多每 500ms 采样，2 秒心跳用于进度校准。 */
+/** 页面内订阅 Redux 和媒体事件；普通状态变更限频，切歌和媒体事件优先发布。 */
 export const SNAPSHOT_WATCH_SCRIPT = `(() => {
   ${PLAYER_ACCESS_SCRIPT}
   const previous = globalThis.__NEMusicOnSteamStateWatch;
@@ -196,20 +196,36 @@ export const SNAPSHOT_WATCH_SCRIPT = `(() => {
   previous?.stop();
   if (!playerStore?.subscribe || typeof globalThis.__NEMusicOnSteamEvent !== 'function') return false;
   const read = () => ${SNAPSHOT_SCRIPT};
-  let timeout = 0, last = 0, active = true;
+  let timeout = 0, last = 0, active = true, urgent = false;
+  const currentTrack = () => playerStore.getState()?.playing?.resourceTrackId;
+  let trackId = currentTrack();
+  let volume = playerStore.getState()?.playing?.playingVolume;
   const publish = () => {
     if (!active) return;
-    clearTimeout(timeout); timeout = 0; last = Date.now();
+    clearTimeout(timeout); timeout = 0; urgent = false; last = Date.now();
     try { globalThis.__NEMusicOnSteamEvent(JSON.stringify({ type: 'playback-state', state: read() })); } catch {}
   };
   const schedule = () => { if (active && !timeout) timeout = setTimeout(publish, Math.max(0, 500 - (Date.now() - last))); };
-  const unsubscribe = playerStore.subscribe(schedule);
+  const scheduleUrgent = () => {
+    if (!active || urgent) return;
+    clearTimeout(timeout);
+    urgent = true;
+    timeout = setTimeout(publish, 0);
+  };
+  const unsubscribe = playerStore.subscribe(() => {
+    const nextTrackId = currentTrack();
+    const nextVolume = playerStore.getState()?.playing?.playingVolume;
+    if (nextTrackId === trackId && nextVolume === volume) return schedule();
+    trackId = nextTrackId;
+    volume = nextVolume;
+    scheduleUrgent();
+  });
   const events = ['play', 'pause', 'seeked', 'volumechange', 'ratechange', 'loadedmetadata', 'ended'];
-  for (const event of events) document.addEventListener(event, schedule, true);
+  for (const event of events) document.addEventListener(event, scheduleUrgent, true);
   const heartbeat = setInterval(publish, 2000);
   const stop = () => {
     active = false; clearTimeout(timeout); clearInterval(heartbeat); unsubscribe();
-    for (const event of events) document.removeEventListener(event, schedule, true);
+    for (const event of events) document.removeEventListener(event, scheduleUrgent, true);
     window.removeEventListener('pagehide', stop);
   };
   window.addEventListener('pagehide', stop, { once: true });

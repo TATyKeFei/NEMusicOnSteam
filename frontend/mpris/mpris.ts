@@ -1,6 +1,6 @@
 import { mprisHelper } from "../runtime/mpris-helper.ts";
 import { HelperConnectionError, type HelperConnection } from "../runtime/helper-client.ts";
-import { releasePlayerSession, tryEvaluateInPlayer } from "../player/player-target.ts";
+import { listenPlaybackState, releasePlayerSession, tryEvaluateInPlayer } from "../player/player-target.ts";
 import type { NotificationMode } from "../settings.ts";
 import { steamToast } from "../widget/toast.ts";
 import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
@@ -91,7 +91,9 @@ export class MprisBridge {
   private reconnectRequested = false;
   private commandError = "";
   private commandRequest: AbortController | null = null;
-  private pendingCommands: Command[] = [];
+  private unsubscribePlayback: (() => void) | null = null;
+  private refreshRequested = false;
+  private freshSnapshot = false;
   private external: ExternalPlayback | null = null;
 
   private readonly open: () => void;
@@ -111,6 +113,9 @@ export class MprisBridge {
       return;
     }
     this.timer = window.setInterval((): void => void this.tick(), 500);
+    this.unsubscribePlayback = listenPlaybackState(() => {
+      if (this.enabled && !this.external) this.refresh();
+    });
     void this.tick();
   }
 
@@ -120,7 +125,11 @@ export class MprisBridge {
     this.connectionFailed = false;
     this.reconnectRequested = false;
     this.commandRequest?.abort();
-    this.pendingCommands = [];
+    this.commandRequest = null;
+    this.unsubscribePlayback?.();
+    this.unsubscribePlayback = null;
+    this.refreshRequested = false;
+    this.freshSnapshot = false;
     const connection = this.connection;
     this.connection = null;
     mprisHelper.invalidate();
@@ -175,7 +184,6 @@ export class MprisBridge {
       this.status = "正在重新连接 MPRIS";
       this.commandRequest?.abort();
       this.commandRequest = null;
-      this.pendingCommands = [];
       this.connection = null;
       this.commandError = "";
     }
@@ -185,7 +193,6 @@ export class MprisBridge {
       if (!this.timer) return false;
       this.commandRequest?.abort();
       this.commandRequest = null;
-      this.pendingCommands = [];
       this.connection = connection;
       this.lastSentLyrics = null;
       this.lastSentState = null;
@@ -261,10 +268,27 @@ export class MprisBridge {
         if (!response.ok) throw new Error(`MPRIS command poll failed: ${response.status}`);
         const commands = (await response.json()) as Command[];
         if (controller.signal.aborted || !this.timer) return;
-        if (commands.length) {
-          this.pendingCommands.push(...commands);
-          await this.tick();
+        for (const command of commands) {
+          if (controller.signal.aborted || !this.timer) return;
+          if (command.action === "open") this.open();
+          else if (command.action === "close") this.close();
+          else {
+            try {
+              const handled = this.external
+                ? await this.external.command(command)
+                : await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true });
+              if (controller.signal.aborted || !this.timer) return;
+              if (handled || ["volume", "seek", "setposition"].includes(command.action)) {
+                this.commandError = handled ? "" : `MPRIS ${command.action} 未执行；未找到可用的网易云播放器状态`;
+              }
+            } catch (error) {
+              if (controller.signal.aborted || !this.timer) return;
+              this.commandError = `MPRIS ${command.action} 执行失败`;
+              console.warn("[NEMusic] MPRIS command", error);
+            }
+          }
         }
+        if (commands.length) this.refresh(true);
       }
     } catch (error) {
       if (!controller.signal.aborted) console.warn("[NEMusic] MPRIS commands", error);
@@ -273,34 +297,27 @@ export class MprisBridge {
     }
   }
 
+  private refresh(fresh = false): void {
+    this.refreshRequested = true;
+    this.freshSnapshot ||= fresh;
+    void this.tick();
+  }
+
   private async tick(): Promise<void> {
     if (this.busy || !this.timer) return;
     this.busy = true;
+    this.refreshRequested = false;
     try {
       const connected = await this.connect();
       if (!this.timer) return;
-      if (connected) {
-        void this.listenForCommands();
-        while (this.pendingCommands.length) {
-          const command = this.pendingCommands.shift()!;
-          if (command.action === "open") this.open();
-          else if (command.action === "close") this.close();
-          else {
-            const handled = this.external
-              ? await this.external.command(command)
-              : await tryEvaluateInPlayer(commandScript(command), { userGesture: true, awaitPromise: true });
-            if (["volume", "seek", "setposition"].includes(command.action)) {
-              this.commandError = handled ? "" : `MPRIS ${command.action} 未执行；未找到可用的网易云播放器状态`;
-              if (!handled) console.warn("[NEMusic] MPRIS command not handled", command.action);
-            }
-          }
-        }
-      }
+      if (connected) void this.listenForCommands();
+      const fresh = this.freshSnapshot;
+      this.freshSnapshot = false;
       // 播放器关闭时没有页面可读，直接上报 Stopped，不必每个 tick 都跑一趟 CDP。
       const snapshot = this.external
         ? this.external.snapshot()
         : this.enabled
-          ? ((await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true })) as TrackState | null) ?? EMPTY_STATE
+          ? ((await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true, fresh })) as TrackState | null) ?? EMPTY_STATE
           : EMPTY_STATE;
       this.requestLyrics(snapshot);
       this.state = snapshot;
@@ -331,7 +348,7 @@ export class MprisBridge {
       this.connection = null;
     } finally {
       this.busy = false;
-      if (this.timer && (this.reconnectRequested || (this.pendingCommands.length && this.connection))) void this.tick();
+      if (this.timer && (this.reconnectRequested || this.refreshRequested)) void this.tick();
     }
   }
 

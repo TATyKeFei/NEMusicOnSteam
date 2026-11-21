@@ -20,7 +20,7 @@ const targetSource = stripTypeScriptTypes(
 );
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function setup(options: { trackId?: string; lyric?: unknown; platform?: string; endpoint?: string; reconnectEndpoint?: string; failState?: boolean; snapshot?: () => unknown; notifyMode?: "system" | "steam" } = {}) {
+function setup(options: { trackId?: string; lyric?: unknown; platform?: string; endpoint?: string; reconnectEndpoint?: string; failState?: boolean; snapshot?: () => unknown; pushEvents?: boolean; notifyMode?: "system" | "steam" } = {}) {
   const evaluations: string[] = [];
   const polls: { signal: AbortSignal; deliver: (commands: unknown[]) => void; fail: () => void }[] = [];
   const endpointCalls: string[] = [];
@@ -32,6 +32,7 @@ function setup(options: { trackId?: string; lyric?: unknown; platform?: string; 
   let stateUpdates = 0;
   let targetQueries = 0;
   let lyricCalls = 0;
+  let onPlayerEvent: ((event: unknown) => void) | null = null;
   const clock = { now: 0 };
   const Bridge = runInNewContext(`${targetSource}\nconst mprisHelper = new HelperClient(ffi('mpris_endpoint'), ffi('mpris_reconnect'), fetch);\n${source}; MprisBridge`, {
     HelperClient,
@@ -54,8 +55,13 @@ function setup(options: { trackId?: string; lyric?: unknown; platform?: string; 
     isPlayerDocument: () => true,
     commandScript: (command: { action: string }) => command.action,
     SNAPSHOT_SCRIPT: "snapshot",
+    SNAPSHOT_WATCH_SCRIPT: "watch",
     LYRICS_SCRIPT: "lyrics",
     ChromeDevToolsProtocol: {
+      on: options.pushEvents ? (_name: string, callback: typeof onPlayerEvent) => {
+        onPlayerEvent = callback;
+        return () => { onPlayerEvent = null; };
+      } : undefined,
       async send(method: string, params: { expression: string }) {
         if (method === "Target.getTargets") {
           targetQueries++;
@@ -108,6 +114,9 @@ function setup(options: { trackId?: string; lyric?: unknown; platform?: string; 
     bridge, evaluations, polls, endpointCalls, requests, statePayloads, toasts,
     tick: () => interval(),
     holdSnapshot: (promise: Promise<void>) => { holdSnapshot = promise; },
+    pushState: (state: unknown) => onPlayerEvent?.({
+      sessionId: "session", name: "__NEMusicOnSteamEvent", payload: JSON.stringify({ type: "playback-state", state }),
+    }),
     stateUpdates: () => stateUpdates,
     targetQueries: () => targetQueries,
     lyricCalls: () => lyricCalls,
@@ -160,7 +169,7 @@ describe("MPRIS command delivery", () => {
     await player.bridge.stop();
   });
 
-  it("processes commands arriving during a snapshot as soon as it completes", async () => {
+  it("processes commands arriving during a snapshot without waiting for it", async () => {
     const player = setup();
     await flush();
     let release!: () => void;
@@ -169,10 +178,35 @@ describe("MPRIS command delivery", () => {
     await flush();
     player.polls[0].deliver([{ action: "next" }]);
     await flush();
-    assert.equal(player.evaluations.includes("next"), false);
+    assert.deepEqual(player.evaluations, ["snapshot", "snapshot", "next"]);
     release();
     await flush();
     assert.deepEqual(player.evaluations, ["snapshot", "snapshot", "next", "snapshot"]);
+    await player.bridge.stop();
+  });
+
+  it("publishes browser state events without waiting for a timer or making another CDP read", async () => {
+    const player = setup({ pushEvents: true, trackId: "t1" });
+    await flush();
+    const reads = player.evaluations.filter(value => value === "snapshot").length;
+    player.pushState({ active: true, trackId: "t1", duration: 100, position: 12, playbackStatus: "Paused" });
+    await flush();
+    assert.equal(player.statePayloads.at(-1)?.playbackStatus, "Paused");
+    assert.equal(player.statePayloads.at(-1)?.position, 12);
+    assert.equal(player.evaluations.filter(value => value === "snapshot").length, reads);
+    await player.bridge.stop();
+  });
+
+  it("bypasses cached browser state after executing a command", async () => {
+    const state = { active: true, trackId: "t1", duration: 100, position: 0, playbackStatus: "Playing" };
+    const player = setup({ pushEvents: true, snapshot: () => ({ ...state }) });
+    await flush();
+    player.pushState(state);
+    await flush();
+    state.playbackStatus = "Paused";
+    player.polls[0].deliver([{ action: "pause" }]);
+    await flush();
+    assert.equal(player.statePayloads.at(-1)?.playbackStatus, "Paused");
     await player.bridge.stop();
   });
 
