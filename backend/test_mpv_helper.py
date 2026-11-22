@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import threading
@@ -60,6 +61,79 @@ class MpvShutdownTests(unittest.TestCase):
         process.command.side_effect = ConnectionRefusedError()
         process.close()
         process.process.terminate.assert_called_once()
+
+
+class MpvIpcTests(unittest.TestCase):
+    def process(self):
+        process = MpvProcess.__new__(MpvProcess)
+        process.socket_path = "/unused/mpv.sock"
+        process.lock = threading.Lock()
+        process.request_id = 0
+        process.connection = None
+        process.receive_buffer = b""
+        process.clock_lock = threading.Lock()
+        process.clock_state = {}
+        process.clock_stop = threading.Event()
+        process.clock_thread = None
+        return process
+
+    def test_reuses_the_connection_and_routes_responses_by_request_id(self):
+        process = self.process()
+        connection = Mock()
+        def respond(payload):
+            request = json.loads(payload)
+            event = {"event": "property-change", "name": "path", "data": "song"}
+            response = {"request_id": request["request_id"], "error": "success", "data": request["command"][-1]}
+            connection.recv.return_value = (json.dumps(event) + "\n" + json.dumps(response) + "\n").encode()
+        connection.sendall.side_effect = respond
+        with patch("mpv_helper.socket.socket", return_value=connection) as socket_factory:
+            self.assertEqual(process.command("get_property", "path"), "path")
+            self.assertEqual(process.command("get_property", "time-pos"), "time-pos")
+        self.assertEqual(socket_factory.call_count, 1)
+        connection.connect.assert_called_once()
+
+    def test_lost_response_drops_the_connection_without_replaying_a_command(self):
+        process = self.process()
+        broken, replacement = Mock(), Mock()
+        broken.recv.return_value = b""
+        replacement.recv.return_value = b'{"request_id":2,"error":"success","data":true}\n'
+        with patch("mpv_helper.socket.socket", side_effect=[broken, replacement]):
+            with self.assertRaises(RuntimeError):
+                process.command("cycle", "pause")
+            self.assertIsNone(process.connection)
+            self.assertTrue(process.command("get_property", "pause"))
+        broken.sendall.assert_called_once()
+        broken.close.assert_called_once()
+
+    def test_observer_updates_clock_without_polling_or_opening_more_connections(self):
+        process = self.process()
+        raw = (b'{"event":"property-change","name":"path","data":"fifo"}\n'
+               b'{"event":"property-change","name":"time-pos","data":12.5}\n')
+        connection = Mock()
+        def receive(_size):
+            process.clock_stop.set()
+            return raw
+        connection.recv.side_effect = receive
+        connection.__enter__ = Mock(return_value=connection)
+        connection.__exit__ = Mock(return_value=False)
+        with patch("mpv_helper.socket.socket", return_value=connection) as factory:
+            process.watch_clock()
+        self.assertEqual(factory.call_count, 1)
+        messages = [json.loads(call.args[0]) for call in connection.sendall.call_args_list]
+        self.assertEqual([item["command"] for item in messages], [
+            ["observe_property", 1, "path"], ["observe_property", 2, "time-pos"],
+        ])
+
+    def test_mixer_clock_reads_cached_position_without_requesting_properties(self):
+        process = self.process()
+        process.clock_state = {"path": "fifo", "time-pos": 12.5}
+        process.clock_thread = Mock()
+        with patch.object(process, "command") as command, patch("mpv_helper.socket.socket") as factory:
+            for _ in range(200):
+                self.assertEqual(process.playback_clock("fifo"), 12.5)
+            self.assertEqual(process.playback_clock("old-fifo"), 0)
+        command.assert_not_called()
+        factory.assert_not_called()
 
 
 class MpvPlaybackTests(unittest.TestCase):

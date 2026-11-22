@@ -616,6 +616,8 @@ class MprisService:
                         chunk = response.read(DOWNLOAD_CHUNK)
                 if job.get("cancelled"):
                     raise InterruptedError("下载已取消")
+                if declared_total > 0 and received != declared_total:
+                    raise ValueError(f"音频下载不完整：预期 {declared_total} 字节，实际收到 {received} 字节")
                 with self.lock:
                     job["filename"] = os.path.basename(path)
                     job["path"] = path

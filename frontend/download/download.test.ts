@@ -31,11 +31,19 @@ function setup(options: { notificationMode?: NotificationMode; downloadError?: s
       return new Response(JSON.stringify({ active: false, error: downloadError, path: "/music/song.mp3" }), { status: init?.body ? 202 : 200 });
     });
   let poll = () => {};
+  let menuGate: Promise<void> | null = null;
+  let menuReads = 0;
   const bridge = new DownloadBridge(
     () => ({ quality: 320, directory: "", nameTemplate: "{title}", notificationMode: options.notificationMode ?? "none" }),
     {
       helper,
-      evaluate: async () => ({ installed: true, menus: 1, songs: 1, pending: pending.splice(0) }),
+      evaluate: async expression => {
+        if (!expression.includes("const pending")) return true;
+        menuReads++;
+        const taken = pending.splice(0);
+        if (menuGate) await menuGate;
+        return { installed: true, menus: 1, songs: 1, pending: taken };
+      },
       notify: (title, body) => { notifications.push({ title, body }); },
       timers: {
         setInterval: callback => { poll = callback as () => void; return 1; },
@@ -45,7 +53,8 @@ function setup(options: { notificationMode?: NotificationMode; downloadError?: s
     },
     async (_quality, song) => ({ url: `https://audio.example/${song!.id}.mp3`, name: song!.name, artist: song!.artist, source: "api" }),
   );
-  return { bridge, pending, downloaded, waits, notificationModes, notifications, helper, requests, poll: () => poll() };
+  return { bridge, pending, downloaded, waits, notificationModes, notifications, helper, requests, poll: () => poll(),
+    holdMenu(gate: Promise<void> | null) { menuGate = gate; }, menuReads: () => menuReads };
 }
 
 async function finishDownloads(player: ReturnType<typeof setup>) {
@@ -57,6 +66,34 @@ async function finishDownloads(player: ReturnType<typeof setup>) {
 }
 
 describe("download menu queue", () => {
+  it("keeps a menu request taken before another download starts and allows only one poll at a time", async () => {
+    const player = setup();
+    player.bridge.setEnabled(true); await flush();
+    let release!: () => void;
+    player.holdMenu(new Promise(resolve => { release = resolve; }));
+    player.pending.push(songs[1]);
+    const before = player.menuReads();
+    player.poll(); player.poll(); player.poll();
+    assert.equal(player.menuReads() - before, 1);
+    void player.bridge.download(songs[0]); await flush();
+    release(); player.holdMenu(null);
+    await finishDownloads(player);
+    assert.deepEqual(player.downloaded, [1, 2]);
+  });
+
+  it("ignores a poll from the previous view after disable and re-enable", async () => {
+    const player = setup();
+    let release!: () => void;
+    player.holdMenu(new Promise(resolve => { release = resolve; }));
+    player.pending.push(songs[0]);
+    player.bridge.setEnabled(true);
+    player.bridge.setEnabled(false); player.bridge.setEnabled(true);
+    player.pending.push(songs[1]);
+    release(); player.holdMenu(null);
+    await finishDownloads(player);
+    assert.deepEqual(player.downloaded, [2]);
+  });
+
   it("downloads every request from one menu poll in order", async () => {
     const player = setup();
     player.pending.push(...songs);

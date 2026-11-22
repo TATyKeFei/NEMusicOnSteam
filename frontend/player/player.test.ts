@@ -11,7 +11,7 @@ import type { Bounds } from "../widget/layout.ts";
 import { sameBounds } from "../widget/layout.ts";
 import { isPlayerDocument, PLAYER_URL } from "../constants.ts";
 import { browserId, type BrowserView, type BrowserViewCreateOptions, type SteamPopup, type SteamWindow } from "./steam.ts";
-import { PLAYER_READY_SCRIPT, PLAYER_RECOVERY_SCRIPT, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
+import { PLAYER_READY_SCRIPT, playerRecoveryScript, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
 import { ViewBridges } from "./view-bridges.ts";
 import { notificationModeFor } from "../settings.ts";
 import { GameProfileSession } from "../playback/game-profile.ts";
@@ -169,7 +169,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     uiScaleScript: () => "scale",
     releasePlayerSession() { sessionReleases++; },
     preparePlayerTarget: async () => {},
-    PLAYER_RECOVERY_SCRIPT,
+    playerRecoveryScript,
     PLAYER_READY_SCRIPT,
     PLAYER_RECOVERY_CHECKPOINT_SCRIPT,
     PLAYER_RECOVERY_CLEAR_SCRIPT,

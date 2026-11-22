@@ -13,7 +13,7 @@ const source = stripTypeScriptTypes(
 
 type Request = { expression?: string; sessionId?: string; targetId?: string; source?: string };
 type TestApi = {
-  evaluateInPlayer(expression: string): Promise<unknown>;
+  evaluateInPlayer(expression: string, options?: { retrySafe?: boolean }): Promise<unknown>;
   tryEvaluateInPlayer(expression: string): Promise<unknown>;
   releasePlayerSession(): void;
   preparePlayerTarget(marker: string): Promise<void>;
@@ -28,6 +28,39 @@ function setup(send: (method: string, params?: Request) => Promise<unknown>): Te
 }
 
 describe("player CDP session", () => {
+  it("does not replay an executed command when its response is lost", async () => {
+    let executions = 0, attachments = 0;
+    const api = setup(async method => {
+      if (method === "Target.getTargets") return { targetInfos: [{ targetId: "player", url: "player" }] };
+      if (method === "Target.attachToTarget") return { sessionId: `s${++attachments}` };
+      if (method === "Runtime.evaluate") {
+        executions++;
+        if (executions === 1) throw new Error("response lost");
+        return { result: { value: true } };
+      }
+      return {};
+    });
+    await assert.rejects(api.evaluateInPlayer("next()"), /response lost/);
+    assert.equal(executions, 1);
+    assert.equal(await api.evaluateInPlayer("read()"), true);
+    assert.equal(attachments, 2);
+  });
+
+  it("reconnects and retries a read explicitly marked safe", async () => {
+    let reads = 0;
+    const api = setup(async method => {
+      if (method === "Target.getTargets") return { targetInfos: [{ targetId: "player", url: "player" }] };
+      if (method === "Target.attachToTarget") return { sessionId: "s" };
+      if (method === "Runtime.evaluate") {
+        if (++reads === 1) throw new Error("disconnected");
+        return { result: { value: 42 } };
+      }
+      return {};
+    });
+    assert.equal(await api.evaluateInPlayer("read()", { retrySafe: true }), 42);
+    assert.equal(reads, 2);
+  });
+
   it("handles discovery and attachment failures without detached promise rejections", () => {
     const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
       import { runInNewContext } from 'node:vm';

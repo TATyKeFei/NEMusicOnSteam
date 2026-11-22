@@ -31,7 +31,9 @@ export const PLAYER_READY_SCRIPT = `(async () => {
   return Boolean(await waitForPlayerReady());
 })()`;
 
-export const PLAYER_RECOVERY_SCRIPT = `(() => {
+/** 完整快照用于迁移页面；周期检查带回已变化的队列，响应丢失后可用版本号重取。 */
+export function playerRecoveryScript(knownQueueRevision?: string): string {
+  return `(() => {
   const owned = new URL(location.href).searchParams.has('nemusic_view')
     || Boolean(globalThis.__NEMusicOnSteamViewToken || globalThis.__nemusicFullscreenButton || globalThis.__NEMusicOnSteamPlayerStore);
   if (!owned) return null;
@@ -48,18 +50,32 @@ export const PLAYER_RECOVERY_SCRIPT = `(() => {
     || media.find(element => Number(element.currentTime) > 0);
   const progress = document.querySelector('[role="slider"][aria-label="播放进度调节"]');
   const state = playerStore.getState();
+  const queue = Array.isArray(state.playingList?.curPlayingList) ? state.playingList.curPlayingList : [];
+  let cache = globalThis.__NEMusicOnSteamRecoveryQueue;
+  if (!cache || cache.store !== playerStore) {
+    cache = { store: playerStore, queue: null, version: 0, prefix: Date.now().toString(36) + Math.random().toString(36).slice(2) };
+    globalThis.__NEMusicOnSteamRecoveryQueue = cache;
+  }
+  if (!cache.queue || cache.queue.length !== queue.length || queue.some((item, index) => item !== cache.queue[index])) {
+    cache.queue = queue.slice(); cache.version++;
+  }
+  const queueRevision = cache.prefix + ':' + cache.version;
+  const includeQueue = ${knownQueueRevision === undefined ? "true" : `queueRevision !== ${JSON.stringify(knownQueueRevision)}`};
   const position = active?.currentTime ?? playing?.restoreResource?.current ?? progress?.getAttribute('aria-valuenow') ?? 0;
-  return { owned: true, snapshot: {
+  return { owned: true, queueRevision, snapshot: {
     accountId: String(state.host?.uid || ''),
     href: location.href,
     current: playing?.curPlaying || null,
-    queue: Array.isArray(state.playingList?.curPlayingList) ? state.playingList.curPlayingList : [],
+    ...(includeQueue ? { queue } : {}),
     position: Math.max(0, Number(position) || 0),
     playing: playing?.playingState === 2,
     volume: Number.isFinite(playing?.playingVolume) ? playing.playingVolume : 1,
     mode: playing?.playingMode || 'playOrder',
   } };
 })()`;
+}
+
+export const PLAYER_RECOVERY_SCRIPT = playerRecoveryScript();
 
 export const PLAYER_RETIRE_SCRIPT = `(async () => {
   ${PLAYER_ACCESS_SCRIPT}

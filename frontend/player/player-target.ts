@@ -3,7 +3,7 @@ import { isPlayerDocument } from "../constants.ts";
 import { SNAPSHOT_SCRIPT, SNAPSHOT_WATCH_SCRIPT } from "./player-access.ts";
 import type { TrackState } from "../mpris/mpris.ts";
 
-export type EvaluateOptions = { userGesture?: boolean; awaitPromise?: boolean; fresh?: boolean };
+export type EvaluateOptions = { userGesture?: boolean; awaitPromise?: boolean; fresh?: boolean; retrySafe?: boolean };
 
 /** evaluateInPlayer 在网易云页面还没有 CDP target 时抛出。 */
 export const PLAYER_TARGET_MISSING = "等待网易云播放器加载";
@@ -134,10 +134,12 @@ async function resolveSession(): Promise<PlayerSession | null> {
 }
 
 async function evaluate(expression: string, options: EvaluateOptions): Promise<Outcome> {
+  let sent = false;
   const request = async (): Promise<unknown> => {
     const current = await resolveSession();
     if (current == null) return null;
     traffic.evaluations++;
+    sent = true;
     return ChromeDevToolsProtocol.send("Runtime.evaluate", {
       expression,
       returnByValue: true,
@@ -145,14 +147,15 @@ async function evaluate(expression: string, options: EvaluateOptions): Promise<O
       awaitPromise: options.awaitPromise ?? false,
     }, current.sessionId);
   };
-  // send 被 reject 说明缓存的会话已经失效（页面刷新、跳转、视图关闭），而不是页面抛了
-  // 异常：丢掉它并重新 attach 一次。exceptionDetails 是一次成功往返的结果，
-  // 不能因此触发同样的反复重连。
+  // 响应丢失时页面可能已经执行了操作。只有发送前失败或明确可重放的读取才重试；
+  // 下一首、播放暂停以及会取走按钮请求的脚本不能自动重放。
   let response: unknown;
   try {
     response = await request();
   } catch (error) {
     releasePlayerSession();
+    const readOnly = options.retrySafe === true || (typeof SNAPSHOT_SCRIPT !== "undefined" && expression === SNAPSHOT_SCRIPT);
+    if (sent && !readOnly) throw error;
     try {
       response = await request();
     } catch {
@@ -212,7 +215,7 @@ async function readSharedState(options: EvaluateOptions): Promise<unknown> {
         }
       } catch { /* 旧版 Steam 不支持事件绑定时继续读取快照。 */ }
     }
-    const outcome = await evaluate(SNAPSHOT_SCRIPT, options);
+    const outcome = await evaluate(SNAPSHOT_SCRIPT, { ...options, retrySafe: true });
     const state = outcome.kind === "value" ? outcome.value as TrackState | null : null;
     if (epoch === generation && state && typeof state.trackId === "string" && sharedState === previousState) {
       sharedState = { state, at: Date.now(), maxAge: 300 };

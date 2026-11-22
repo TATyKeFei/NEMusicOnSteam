@@ -1,6 +1,9 @@
 """MP3/FLAC 标签与封面写入，不依赖媒体控制服务。"""
 
+import os
+import shutil
 import sys
+import tempfile
 from http.client import HTTPException
 from urllib.request import Request, urlopen
 from download_files import validate_download_url
@@ -70,16 +73,33 @@ def build_id3_tag(title, artist, album, cover):
 
 
 def write_id3_tag(path, title, artist, album, cover):
-    with open(path, "rb") as handle:
-        data = handle.read()
-    if data.startswith(b"ID3") and len(data) >= 10:
-        old_size = (data[6] & 0x7F) << 21 | (data[7] & 0x7F) << 14 | (data[8] & 0x7F) << 7 | data[9] & 0x7F
-        audio = data[10 + old_size:]
-    else:
-        audio = data
-    with open(path, "wb") as handle:
-        handle.write(build_id3_tag(title, artist, album, cover) + audio)
-    return True
+    temporary = None
+    try:
+        with open(path, "rb") as source:
+            header = source.read(10)
+            audio_start = 0
+            if header.startswith(b"ID3") and len(header) == 10:
+                old_size = ((header[6] & 0x7F) << 21 | (header[7] & 0x7F) << 14
+                            | (header[8] & 0x7F) << 7 | header[9] & 0x7F)
+                candidate = 10 + old_size
+                source.seek(0, os.SEEK_END)
+                if candidate <= source.tell():
+                    audio_start = candidate
+            source.seek(audio_start)
+            with tempfile.NamedTemporaryFile(dir=os.path.dirname(path) or ".", delete=False) as output:
+                temporary = output.name
+                os.fchmod(output.fileno(), os.fstat(source.fileno()).st_mode & 0o777)
+                output.write(build_id3_tag(title, artist, album, cover))
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+        os.replace(temporary, path)
+        temporary = None
+        return True
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def _flac_vorbis_block(comments):
@@ -105,44 +125,71 @@ def _flac_picture_block(cover):
 
 
 def write_flac_tags(path, title, artist, album, cover):
-    with open(path, "rb") as handle:
-        data = handle.read()
-    if not data.startswith(b"fLaC") or len(data) < 8:
-        return False
-    pos = 4
-    kept = []
-    while True:
-        if pos + 4 > len(data):
-            return False
-        header = data[pos:pos + 4]
-        last = bool(header[0] & 0x80)
-        block_type = header[0] & 0x7F
-        length = int.from_bytes(header[1:4], "big")
-        body = data[pos + 4:pos + 4 + length]
-        if len(body) != length:
-            return False
-        pos += 4 + length
-        # 旧的评论块和图片块由我们的替换，其余块原样保留。
-        if block_type not in (4, 6):
-            kept.append((block_type, body))
-        if last:
-            break
-    if not kept or kept[0][0] != 0:
-        return False
-    comments = [("TITLE", title), ("ARTIST", artist), ("ALBUM", album)]
-    new_blocks = [_flac_vorbis_block(comments)]
-    if cover is not None:
-        new_blocks.append(_flac_picture_block(cover))
-    all_blocks = kept[:1] + new_blocks + kept[1:]
-    out = bytearray(b"fLaC")
-    for index, (block_type, body) in enumerate(all_blocks):
-        out.append((0x80 if index == len(all_blocks) - 1 else 0) | block_type)
-        out += len(body).to_bytes(3, "big")
-        out += body
-    out += data[pos:]
-    with open(path, "wb") as handle:
-        handle.write(out)
-    return True
+    temporary = None
+    try:
+        with open(path, "rb") as source:
+            if source.read(4) != b"fLaC":
+                return False
+            size = os.fstat(source.fileno()).st_size
+            kept = []
+            while True:
+                header = source.read(4)
+                if len(header) != 4:
+                    return False
+                last = bool(header[0] & 0x80)
+                block_type = header[0] & 0x7F
+                length = int.from_bytes(header[1:4], "big")
+                offset = source.tell()
+                if offset + length > size:
+                    return False
+                if not kept and (block_type != 0 or length != 34):
+                    return False
+                # 只记保留块的位置；封面、旧评论和音频都不整段载入内存。
+                if block_type not in (4, 6):
+                    kept.append((block_type, offset, length))
+                source.seek(length, os.SEEK_CUR)
+                if last:
+                    break
+            audio_start = source.tell()
+            comments = [("TITLE", title), ("ARTIST", artist), ("ALBUM", album)]
+            new_blocks = [_flac_vorbis_block(comments)]
+            if cover is not None:
+                new_blocks.append(_flac_picture_block(cover))
+            blocks = kept[:1] + new_blocks + kept[1:]
+            with tempfile.NamedTemporaryFile(
+                dir=os.path.dirname(path) or ".", delete=False,
+            ) as output:
+                temporary = output.name
+                os.fchmod(output.fileno(), os.fstat(source.fileno()).st_mode & 0o777)
+                output.write(b"fLaC")
+                for index, block in enumerate(blocks):
+                    block_type = block[0]
+                    length = block[2] if len(block) == 3 else len(block[1])
+                    last = index == len(blocks) - 1
+                    output.write(bytes([(0x80 if last else 0) | block_type]))
+                    output.write(length.to_bytes(3, "big"))
+                    if len(block) == 2:
+                        output.write(block[1])
+                    else:
+                        source.seek(block[1])
+                        remaining = length
+                        while remaining:
+                            chunk = source.read(min(1024 * 1024, remaining))
+                            if not chunk:
+                                raise OSError("FLAC 元数据读取中断")
+                            output.write(chunk)
+                            remaining -= len(chunk)
+                source.seek(audio_start)
+                shutil.copyfileobj(source, output, length=1024 * 1024)
+        os.replace(temporary, path)
+        temporary = None
+        return True
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 def tag_audio(path, extension, title, artist, album, cover):

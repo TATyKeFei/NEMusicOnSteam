@@ -99,6 +99,8 @@ export class DownloadBridge {
   private enabled = false;
   private busy = false;
   private generation = 0;
+  private menuGeneration = 0;
+  private menuPending: object | null = null;
   private queue: DownloadTask[] = [];
   private tasks: DownloadTask[] = [];
   private activeTask: DownloadTask | null = null;
@@ -134,6 +136,7 @@ export class DownloadBridge {
   setEnabled(enabled: boolean): void {
     if (enabled === this.enabled) return;
     this.enabled = enabled;
+    this.menuGeneration++;
     if (!enabled) {
       this.persist(true);
       if (this.activeTask) {
@@ -425,11 +428,13 @@ export class DownloadBridge {
    * tick 才需要付出安装代码的代价，其余每次 tick 都只发那个小轮询。
    */
   private async tickMenu(): Promise<void> {
-    if (!this.enabled) return;
-    const generation = this.generation;
+    if (!this.enabled || this.menuPending) return;
+    const generation = this.menuGeneration;
+    const pending = {};
+    this.menuPending = pending;
     try {
       const result = (await this.evaluate(this.menuInstalled ? MENU_POLL_SCRIPT : MENU_TICK_SCRIPT)) as MenuTick | null;
-      if (generation !== this.generation || result == null) return;
+      if (generation !== this.menuGeneration || !this.enabled || result == null) return;
       if (result.error) this.menuBroken = true;
       this.menuInstalled = result.installed === true;
       this.menus = Math.max(this.menus, Number(result.menus) || 0);
@@ -439,6 +444,9 @@ export class DownloadBridge {
       this.pump();
     } catch {
       /* the player page is not there yet, or is mid-navigation */
+    } finally {
+      if (this.menuPending === pending) this.menuPending = null;
+      if (this.enabled && generation !== this.menuGeneration) void this.tickMenu();
     }
   }
 

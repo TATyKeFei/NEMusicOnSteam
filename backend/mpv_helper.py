@@ -76,6 +76,12 @@ class MpvProcess:
         self.log_handle = open(self.log_path, "ab", buffering=0)
         self.lock = threading.Lock()
         self.request_id = 0
+        self.connection = None
+        self.receive_buffer = b""
+        self.clock_lock = threading.Lock()
+        self.clock_state = {}
+        self.clock_thread = None
+        self.clock_stop = threading.Event()
         try:
             self.process = subprocess.Popen(
                 [
@@ -168,15 +174,19 @@ class MpvProcess:
             self.request_id += 1
             request_id = self.request_id
             request = {"command": [name, *args], "request_id": request_id}
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection = self.connection
+            try:
+                if connection is None:
+                    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    connection.settimeout(2)
+                    connection.connect(self.socket_path)
+                    self.connection = connection
                 connection.settimeout(2)
-                connection.connect(self.socket_path)
                 connection.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
-                buffer = b""
                 deadline = time.monotonic() + 2
                 while time.monotonic() < deadline:
-                    while b"\n" in buffer:
-                        line, buffer = buffer.split(b"\n", 1)
+                    while b"\n" in self.receive_buffer:
+                        line, self.receive_buffer = self.receive_buffer.split(b"\n", 1)
                         if not line:
                             continue
                         try:
@@ -192,8 +202,63 @@ class MpvProcess:
                     chunk = connection.recv(65536)
                     if not chunk:
                         break
-                    buffer += chunk
-            raise RuntimeError("mpv 没有返回命令结果")
+                    self.receive_buffer += chunk
+                raise RuntimeError("mpv 没有返回命令结果")
+            except (OSError, RuntimeError):
+                if self.connection is connection:
+                    self.connection = None
+                    self.receive_buffer = b""
+                if connection is not None:
+                    try:
+                        connection.close()
+                    except OSError:
+                        pass
+                raise
+
+    def playback_clock(self, path):
+        """混音线程只读事件缓存，不再每 10 ms 向 mpv 发起查询。"""
+        with self.clock_lock:
+            if self.clock_thread is None and not self.clock_stop.is_set():
+                self.clock_thread = threading.Thread(target=self.watch_clock, name="nemusic-mpv-clock", daemon=True)
+                self.clock_thread.start()
+            if self.clock_state.get("path") != path:
+                return 0
+            return self.clock_state.get("time-pos") or 0
+
+    def watch_clock(self):
+        while not self.clock_stop.is_set():
+            try:
+                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                    connection.settimeout(0.5)
+                    connection.connect(self.socket_path)
+                    for identifier, name in enumerate(("path", "time-pos"), 1):
+                        message = {"command": ["observe_property", identifier, name]}
+                        connection.sendall((json.dumps(message) + "\n").encode("utf-8"))
+                    buffer = b""
+                    while not self.clock_stop.is_set():
+                        try:
+                            chunk = connection.recv(65536)
+                        except socket.timeout:
+                            continue
+                        if not chunk:
+                            break
+                        buffer += chunk
+                        while b"\n" in buffer:
+                            line, buffer = buffer.split(b"\n", 1)
+                            try:
+                                event = json.loads(line)
+                            except ValueError:
+                                continue
+                            if event.get("event") == "property-change" and event.get("name") in ("path", "time-pos"):
+                                with self.clock_lock:
+                                    if event["name"] == "path" and self.clock_state.get("path") != event.get("data"):
+                                        self.clock_state.pop("time-pos", None)
+                                    self.clock_state[event["name"]] = event.get("data")
+            except OSError:
+                pass
+            with self.clock_lock:
+                self.clock_state.clear()
+            self.clock_stop.wait(0.5)
 
     def set_position(self, position):
         position = max(0.0, float(position))
@@ -218,6 +283,12 @@ class MpvProcess:
             return fallback
 
     def close(self):
+        clock_stop = getattr(self, "clock_stop", None)
+        if clock_stop is not None:
+            clock_stop.set()
+        clock_thread = getattr(self, "clock_thread", None)
+        if clock_thread is not None:
+            clock_thread.join(timeout=2)
         process = getattr(self, "process", None)
         if process is None:
             return
@@ -232,6 +303,14 @@ class MpvProcess:
             except (OSError, subprocess.TimeoutExpired):
                 process.kill()
                 process.wait()
+        connection = getattr(self, "connection", None)
+        self.connection = None
+        self.receive_buffer = b""
+        if connection is not None:
+            try:
+                connection.close()
+            except OSError:
+                pass
         try:
             os.unlink(self.socket_path)
         except FileNotFoundError:
@@ -401,7 +480,7 @@ class MpvService(PlaybackHttpService):
                       "loudness": getattr(self, "audio_configuration", {}).get("loudness", "off"),
                       "duration": max(0, self.number(payload.get("duration")))}
             mixer = PcmMixer(self.runtime_dir, source, profile if profile in PROFILES else "standard", MpvProcess.clean_environment(),
-                             lambda: self.mpv.property("time-pos", 0) if self.mpv.property("path") == mixer.fifo else 0)
+                             lambda: self.mpv.playback_clock(mixer.fifo))
             mixer.rate = self.rate
             self.mixer = mixer
             try:

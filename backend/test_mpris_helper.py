@@ -639,6 +639,16 @@ class DownloadEndpointTests(DownloadTestCase):
 
 
 class DownloadRunTests(DownloadTestCase):
+    def test_truncated_audio_is_removed_before_tagging_or_recording(self):
+        with patch.object(helper, "tag_audio") as tag, patch.object(helper, "recorded_download") as record:
+            job = self.run_job(b"ID3" + b"x" * 97, total=10000)
+        self.assertIn("下载不完整", job["error"])
+        self.assertFalse(job["active"])
+        self.assertEqual(job["path"], "")
+        self.assertEqual(os.listdir(self.directory.name), [])
+        tag.assert_not_called()
+        record.assert_not_called()
+
     def test_streams_audio_and_sniffs_the_extension_from_magic_bytes(self):
         content = b"fLaC" + b"\x00" * 10
         job = self.run_job(content, declared="mp3", total=len(content))

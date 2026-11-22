@@ -54,6 +54,7 @@ export const EXTERNAL_MUTE_SCRIPT = `(() => {
   const bridge = globalThis[key] || {};
   if (!bridge.saved || typeof bridge.saved.clear !== 'function') bridge.saved = new Map();
   if (!bridge.paused || typeof bridge.paused.clear !== 'function') bridge.paused = new Set();
+  bridge.originals ||= new WeakMap();
   const collect = root => {
     const media = Array.from(root.querySelectorAll('audio, video'));
     for (const element of Array.from(root.querySelectorAll('*'))) {
@@ -74,7 +75,11 @@ export const EXTERNAL_MUTE_SCRIPT = `(() => {
   };
   bridge.silence = element => {
     if (!(element instanceof HTMLMediaElement)) return;
-    if (!bridge.saved.has(element)) bridge.saved.set(element, { volume: element.volume, muted: element.muted });
+    if (!bridge.saved.has(element)) {
+      const original = bridge.originals.get(element) || { volume: element.volume, muted: element.muted };
+      bridge.saved.set(element, original);
+      bridge.originals.set(element, original);
+    }
     if (!element.nemusicMpvGuard) {
       element.nemusicMpvGuard = true;
       element.addEventListener('volumechange', () => {
@@ -92,6 +97,10 @@ export const EXTERNAL_MUTE_SCRIPT = `(() => {
     const play = HTMLMediaElement.prototype.play;
     HTMLMediaElement.prototype.play = function () {
       if (bridge.active) bridge.silence(this);
+      else {
+        const original = bridge.originals?.get(this);
+        if (original) { this.volume = original.volume; this.muted = original.muted; bridge.originals.delete(this); }
+      }
       return play.apply(this, arguments);
     };
   }
@@ -100,7 +109,13 @@ export const EXTERNAL_MUTE_SCRIPT = `(() => {
     const full = !bridge.scannedAt || Date.now() - bridge.scannedAt > 10000;
     const nodes = full ? collect(document) : Array.from(document.querySelectorAll('audio, video'));
     if (full) bridge.scannedAt = Date.now();
-    for (const element of nodes.concat(howlerNodes())) bridge.silence(element);
+    const current = new Set(nodes.concat(howlerNodes()));
+    for (const element of current) bridge.silence(element);
+    for (const element of bridge.saved.keys()) {
+      if (!current.has(element) && !element.isConnected && (element.paused || element.ended)) bridge.saved.delete(element);
+    }
+    const howls = globalThis.Howler?._howls || [];
+    for (const howl of bridge.paused) if (!howls.includes(howl)) bridge.paused.delete(howl);
   };
   bridge.refresh();
   globalThis[key] = bridge;
@@ -150,6 +165,7 @@ function externalUnmuteScript(resume: boolean): string {
       for (const entry of bridge.saved) {
         entry[0].volume = entry[1].volume;
         entry[0].muted = entry[1].muted;
+        bridge.originals?.delete(entry[0]);
         restored++;
       }
       bridge.saved.clear();

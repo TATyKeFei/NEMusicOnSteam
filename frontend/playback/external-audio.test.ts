@@ -534,6 +534,35 @@ function fakeHowl(node: { paused: boolean }, ended = false) {
 }
 
 describe("external audio page scripts", () => {
+  it("drops unloaded Howler nodes and paused howls while preserving the active nodes and pool", () => {
+    const web = page();
+    const stale = new web.FakeMedia(); stale.volume = 0.6;
+    const current = new web.FakeMedia(); current.volume = 0.8;
+    const pooled = new web.FakeMedia(); pooled.volume = 0.4;
+    const oldHowl = fakeHowl(stale);
+    web.withHowler([oldHowl]);
+    web.run(scripts.mute); web.run(scripts.sync(false, true));
+    web.withHowler([fakeHowl(current)]);
+    web.context.poolNode = pooled;
+    web.run("Howler._html5AudioPool.push(poolNode)");
+    web.run(scripts.mute);
+    assert.equal(web.run("__NEMusicOnSteamMpvMedia.saved.size"), 2);
+    assert.equal(web.run("__NEMusicOnSteamMpvMedia.paused.size"), 0);
+    for (let index = 0; index < 100; index++) {
+      web.withHowler([fakeHowl(new web.FakeMedia())]);
+      web.run(scripts.mute);
+    }
+    assert.equal(web.run("__NEMusicOnSteamMpvMedia.saved.size"), 1);
+    web.withHowler([fakeHowl(stale)]); web.run(scripts.mute);
+    web.run(scripts.unmute(false));
+    assert.equal(stale.volume, 0.6);
+    assert.equal(stale.muted, false);
+    // 已离开播放器但仍由网页持有的节点，之后再次播放也能恢复原音量。
+    current.play();
+    assert.equal(current.volume, 0.8);
+    assert.equal(current.muted, false);
+  });
+
   it("restores the PCM clock before resuming native playback when the backend is disabled", () => {
     const web = page();
     const node = new web.FakeMedia();

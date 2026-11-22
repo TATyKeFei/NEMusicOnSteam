@@ -1,6 +1,8 @@
 import os
 import unittest
+import tracemalloc
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 import audio_tags as tags
 
 
@@ -12,6 +14,58 @@ def _id3_frame_size(data, offset):
 
 
 class TagTests(unittest.TestCase):
+    def test_large_audio_is_copied_with_bounded_memory_and_permissions(self):
+        for extension, writer, prefix in (
+            ("mp3", tags.write_id3_tag, b"ID3\x03\x00\x00\x00\x00\x00\x00"),
+            ("flac", tags.write_flac_tags, b"fLaC\x80\x00\x00\x22" + bytes(34)),
+        ):
+            with self.subTest(extension=extension), TemporaryDirectory() as directory:
+                path = os.path.join(directory, "song." + extension)
+                with open(path, "wb") as handle:
+                    handle.write(prefix)
+                    for _ in range(16):
+                        handle.write(b"a" * (1024 * 1024))
+                os.chmod(path, 0o640)
+                tracemalloc.start()
+                try:
+                    self.assertTrue(writer(path, "歌", "", "", None))
+                    peak = tracemalloc.get_traced_memory()[1]
+                finally:
+                    tracemalloc.stop()
+                self.assertLess(peak, 4 * 1024 * 1024)
+                self.assertEqual(os.stat(path).st_mode & 0o777, 0o640)
+                with open(path, "rb") as handle:
+                    handle.seek(-16 * 1024 * 1024, os.SEEK_END)
+                    for _ in range(16):
+                        self.assertEqual(handle.read(1024 * 1024), b"a" * (1024 * 1024))
+
+    def test_failed_copy_or_replace_keeps_the_original_and_removes_temporary_files(self):
+        for writer, prefix in (
+            (tags.write_id3_tag, b"ID3\x03\x00\x00\x00\x00\x00\x00"),
+            (tags.write_flac_tags, b"fLaC\x80\x00\x00\x22" + bytes(34)),
+        ):
+            for failure in ("shutil.copyfileobj", "os.replace"):
+                with self.subTest(writer=writer.__name__, failure=failure), TemporaryDirectory() as directory:
+                    path = os.path.join(directory, "song")
+                    original = prefix + b"AUDIO"
+                    with open(path, "wb") as handle:
+                        handle.write(original)
+                    with patch("audio_tags." + failure, side_effect=OSError("disk full")), self.assertRaises(OSError):
+                        writer(path, "歌", "", "", None)
+                    with open(path, "rb") as handle:
+                        self.assertEqual(handle.read(), original)
+                    self.assertEqual(os.listdir(directory), ["song"])
+
+    def test_truncated_flac_metadata_leaves_the_original_untouched(self):
+        with TemporaryDirectory() as directory:
+            path = os.path.join(directory, "song.flac")
+            original = b"fLaC\x00\x00\x00\x22" + bytes(34) + b"\x84\x00\x10\x00short"
+            with open(path, "wb") as handle:
+                handle.write(original)
+            self.assertFalse(tags.write_flac_tags(path, "歌", "", "", None))
+            with open(path, "rb") as handle:
+                self.assertEqual(handle.read(), original)
+
     def test_build_id3_tag_has_frames_and_a_synchsafe_size(self):
         tag = tags.build_id3_tag("歌名", "歌手", "专辑", (PNG, "image/png"))
         self.assertTrue(tag.startswith(b"ID3\x03\x00\x00"))

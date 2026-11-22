@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { runInNewContext } from "node:vm";
+import { createContext, runInContext, runInNewContext } from "node:vm";
 import { PLAYER_URL } from "../constants.ts";
-import { PLAYER_READY_SCRIPT, PLAYER_RECOVERY_SCRIPT, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, PLAYER_RETIRE_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
+import { PLAYER_READY_SCRIPT, PLAYER_RECOVERY_SCRIPT, playerRecoveryScript, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, PLAYER_RETIRE_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
 
 function setup(options: { owned?: boolean; playing?: boolean } = {}) {
   const actions: { type: string; payload?: Record<string, unknown> }[] = [];
@@ -59,6 +59,28 @@ function setup(options: { owned?: boolean; playing?: boolean } = {}) {
 }
 
 describe("player recovery state", () => {
+  it("sends the queue only when changed and retries it until the receiver acknowledges its revision", () => {
+    const runtime = setup(), context = createContext(runtime.context);
+    const first = runInContext(playerRecoveryScript(""), context);
+    assert.equal(first.snapshot.queue.length, 2);
+    const retry = runInContext(playerRecoveryScript(""), context);
+    assert.equal(retry.queueRevision, first.queueRevision);
+    assert.equal(retry.snapshot.queue.length, 2);
+    runtime.detached.currentTime = 90;
+    const unchanged = runInContext(playerRecoveryScript(first.queueRevision), context);
+    assert.equal(unchanged.snapshot.position, 90);
+    assert.equal("queue" in unchanged.snapshot, false);
+    runtime.state.playingList.curPlayingList = [...runtime.state.playingList.curPlayingList];
+    assert.equal("queue" in runInContext(playerRecoveryScript(first.queueRevision), context).snapshot, false);
+    runtime.state.playingList.curPlayingList.reverse();
+    const changed = runInContext(playerRecoveryScript(first.queueRevision), context);
+    assert.notEqual(changed.queueRevision, first.queueRevision);
+    assert.equal(changed.snapshot.queue[0].resourceId, "456");
+    runtime.state.playingList.curPlayingList.length = 0;
+    const emptied = runInContext(playerRecoveryScript(changed.queueRevision), context);
+    assert.equal(emptied.snapshot.queue.length, 0);
+  });
+
   it("refuses another account's saved queue before dispatching any changes", async () => {
     const runtime = setup();
     const snapshot = runInNewContext(PLAYER_RECOVERY_SCRIPT, runtime.context).snapshot as PlayerRecoverySnapshot;

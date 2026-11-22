@@ -340,7 +340,7 @@ class PcmMixer:
                 if self.closed.is_set():
                     break
                 if self.rendered / SAMPLE_RATE > played + 0.4:
-                    self.closed.wait(0.01)
+                    self.closed.wait(0.05)
                     continue
                 data = self.render()
                 if data is None:

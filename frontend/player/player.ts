@@ -24,7 +24,7 @@ import { commandScript } from "../mpris/mpris-player.ts";
 import { releasePlayerSession, preparePlayerTarget } from "./player-target.ts";
 import { evaluateInPlayer, tryEvaluateInPlayer, PLAYER_TARGET_MISSING } from "./player-target.ts";
 import { retirePlayerTargets } from "./player-recovery.ts";
-import { PLAYER_READY_SCRIPT, PLAYER_RECOVERY_SCRIPT, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
+import { PLAYER_READY_SCRIPT, playerRecoveryScript, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
 import { uiScaleScript } from "./ui-scale.ts";
 import { RecognitionBridge } from "../recognition/recognition.ts";
 import { FullscreenButtonBridge } from "../fullscreen/fullscreen.ts";
@@ -230,6 +230,7 @@ export class PlayerController {
   private viewCreation: Promise<void> | null = null;
   private viewEpoch = 0;
   private recoverySnapshot: PlayerRecoverySnapshot | null = null;
+  private recoveryQueueRevision = "";
   private restorePending: PlayerRecoverySnapshot | null = null;
   private recoveryBusy = false;
   private recoveryFailed = false;
@@ -757,11 +758,15 @@ export class PlayerController {
     this.lastRecoveryAt = Date.now();
     this.recoveryBusy = true;
     const view = this.view;
-    void tryEvaluateInPlayer(PLAYER_RECOVERY_SCRIPT).then(value => {
-      const state = value as { snapshot?: PlayerRecoverySnapshot | null } | null;
+    void tryEvaluateInPlayer(playerRecoveryScript(this.recoveryQueueRevision), { retrySafe: true }).then(value => {
+      const state = value as { queueRevision?: string; snapshot?: Omit<PlayerRecoverySnapshot, "queue"> & { queue?: unknown[] } } | null;
       if (this.view === view && state?.snapshot) {
+        const queue = state.snapshot.queue ?? this.recoverySnapshot?.queue;
+        if (!queue) { this.recoveryQueueRevision = ""; return; }
+        const snapshot = { ...state.snapshot, queue };
+        this.recoveryQueueRevision = state.queueRevision ?? "";
         const external = this.settings.playbackBackend === "mpv" ? this.mpv.snapshot() : this.settings.playbackBackend === "mpd" ? this.mpd.snapshot() : null;
-        this.recoverySnapshot = external?.active ? { ...state.snapshot, position: external.position, playing: external.playbackStatus === "Playing" } : state.snapshot;
+        this.recoverySnapshot = external?.active ? { ...snapshot, position: external.position, playing: external.playbackStatus === "Playing" } : snapshot;
         this.recoverySnapshot = { ...this.recoverySnapshot, volume: this.gameProfile.recoveryVolume(this.sleep.recoveryVolume(this.recoverySnapshot.volume)) };
         if (this.settings.restoreSession && Date.now() - this.lastSessionSaveAt >= 10000) {
           this.lastSessionSaveAt = Date.now();
@@ -803,6 +808,7 @@ export class PlayerController {
     if (this.loaded) return;
     if (typeof url === "string" && url !== "" && !isPlayerDocument(url)) return;
     this.loaded = true;
+    this.recoveryQueueRevision = "";
     const view = this.view;
     this.status = "等待网易云页面初始化";
     void this.restoreView(view);
@@ -1069,6 +1075,7 @@ export class PlayerController {
 
   private destroyView(destroyNative = true): void {
     this.viewEpoch++;
+    this.recoveryQueueRevision = "";
     const view = this.view;
     const client = sharedSteamClient() ?? this.client ?? this.owner?.SteamClient;
     this.destroying = true;
