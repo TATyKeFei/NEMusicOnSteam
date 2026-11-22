@@ -1,4 +1,4 @@
 这里保留未接入插件运行时的一起听协议签名工具，仅用于本地诊断。
 
 `together.py` 只构造请求，不发送网络请求，也不读取登录态。运行示例见该文件末尾。
-对应的签名测试由 `npm run test:python` 一并执行。
+对应的签名测试位于 [`tests/diagnostics/test_together.py`](../../tests/diagnostics/test_together.py)，由 `npm run test:python` 一并执行。

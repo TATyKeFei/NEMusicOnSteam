@@ -3,7 +3,7 @@ import type { ReactElement } from "react";
 import { getPlayer, shutdownPlayer } from "./player/player.ts";
 import { registerSteamShutdown } from "./player/steam-shutdown.ts";
 import { SteamSettingsEntry } from "./widget/steam-settings.ts";
-import { SettingsContent } from "./settings-content.tsx";
+import { SettingsContent } from "./settings/settings-content.tsx";
 import { SETTINGS_ICON } from "./widget/settings-icon.ts";
 
 const steamSettings = new SteamSettingsEntry(() => renderSettings());

@@ -19,7 +19,7 @@ WEBP_COVER = b"RIFF\x04\x00\x00\x00WEBP"
 repository = ModuleType("gi.repository")
 repository.Gio = SimpleNamespace()
 repository.GLib = SimpleNamespace(idle_add=Mock())
-spec = importlib.util.spec_from_file_location("mpris_helper_test_target", Path(__file__).with_name("mpris_helper.py"))
+spec = importlib.util.spec_from_file_location("mpris_helper_test_target", Path(__file__).resolve().parents[2] / "backend" / "mpris_helper.py")
 helper = importlib.util.module_from_spec(spec)
 gi_module = ModuleType("gi")
 gi_module.require_version = Mock()

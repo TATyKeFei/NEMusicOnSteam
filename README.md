@@ -78,25 +78,25 @@
 # 预览
 
 <p align="center">
-  <img src=".docs/p1.png" width="800">
+  <img src="docs/images/p1.png" width="800">
   <br>
   <sub>主界面，从库左下角的网易云音乐入口进入</sub>
 </p>
 
 <p align="center">
-  <img src=".docs/p2.png" width="800">
+  <img src="docs/images/p2.png" width="800">
   <br>
   <sub>设置界面(施工中，图片里全是工地)</sub>
 </p>
 
 <p align="center">
-  <img src=".docs/p3.png" width="800">
+  <img src="docs/images/p3.png" width="800">
   <br>
   <sub>MPRIS支持; 此图片中展示用的KDE部件为<a herf=https://github.com/ccatterina/plasmusic-toolbar>PlsaMusic Toolbar</a></sub>
 </p>
 
 <p align="center">
-  <img src=".docs/p4.png" width="800">
+  <img src="docs/images/p4.png" width="800">
   <br>
   <sub>切换、下一首歌曲弹窗通知支持</sub>
 </p>

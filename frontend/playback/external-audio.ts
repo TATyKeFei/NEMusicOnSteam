@@ -2,7 +2,7 @@ import { listenPlaybackState, tryEvaluateInPlayer } from "../player/player-targe
 import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
 import { downloadScript, type DownloadTrack, type DownloadSong } from "../download/download-player.ts";
 import { CROSSFADE_QUEUE_SCRIPT, crossfadeAdoptScript, crossfadeClockScript, type CrossfadeCandidate } from "./crossfade-player.ts";
-import type { CrossfadeMode, TransitionMode } from "../settings.ts";
+import type { CrossfadeMode, TransitionMode } from "../settings/settings.ts";
 import type { Command } from "../mpris/mpris-player.ts";
 import type { ExternalPlayback, TrackState } from "../mpris/mpris.ts";
 

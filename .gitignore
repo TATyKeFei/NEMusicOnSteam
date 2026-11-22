@@ -1,6 +1,12 @@
+# Dependencies and generated Millennium types
 node_modules/
 .millennium/
+
+# Build output
 dist/
-.millennium/lsp/
 *.star
+
+# Python cache
 __pycache__/
+*.py[cod]
+.millennium/lsp/

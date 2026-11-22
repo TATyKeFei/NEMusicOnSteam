@@ -1,6 +1,6 @@
-import { DEFAULT_DOWNLOAD_NAME_TEMPLATE, DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "./download/download-player.ts";
-import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } from "./unblock/sources.ts";
-import { DEFAULT_GAME_PROFILES, sanitizeGameProfiles, type GameProfile } from "./playback/game-profile.ts";
+import { DEFAULT_DOWNLOAD_NAME_TEMPLATE, DEFAULT_DOWNLOAD_QUALITY, isDownloadQuality } from "../download/download-player.ts";
+import { DEFAULT_UNBLOCK_SOURCES, sanitizeUnblockSources, type UnblockSource } from "../unblock/sources.ts";
+import { DEFAULT_GAME_PROFILES, sanitizeGameProfiles, type GameProfile } from "../playback/game-profile.ts";
 
 export type NotificationMode = "system" | "steam" | "none";
 export type NotificationSettingsMode = "unified" | "independent";

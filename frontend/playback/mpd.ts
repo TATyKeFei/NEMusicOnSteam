@@ -1,7 +1,7 @@
 import { ffi } from "millennium";
 import { ExternalAudioBridge } from "./external-audio.ts";
 import type { PlaybackOptions } from "./mpv.ts";
-import type { MpdSettings } from "../settings.ts";
+import type { MpdSettings } from "../settings/settings.ts";
 
 const getEndpoint = ffi<[], string>("mpd_endpoint");
 

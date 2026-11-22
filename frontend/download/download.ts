@@ -1,5 +1,5 @@
 import { HelperConnectionError, type HelperClient } from "../runtime/helper-client.ts";
-import type { NotificationMode } from "../settings.ts";
+import type { NotificationMode } from "../settings/settings.ts";
 import {
   downloadScript,
   PLAYING_LIST_SCRIPT,

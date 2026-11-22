@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { DownloadSong } from "./download-player.ts";
-import type { NotificationMode } from "../settings.ts";
+import type { NotificationMode } from "../settings/settings.ts";
 import { HelperClient } from "../runtime/helper-client.ts";
 import { DownloadBridge } from "./download.ts";
 

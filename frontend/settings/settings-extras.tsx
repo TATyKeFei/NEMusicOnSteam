@@ -1,9 +1,9 @@
 import { Dropdown, Field, Toggle } from "millennium";
 import { useState } from "react";
 import { SettingsActions, SettingsButton } from "./settings-controls.tsx";
-import type { PlayerController, PlayerSnapshot } from "./player/player.ts";
+import type { PlayerController, PlayerSnapshot } from "../player/player.ts";
 import type { LoudnessMode } from "./settings.ts";
-import { CAPABILITY_LABELS, type PlayerCapabilities } from "./player/capabilities.ts";
+import { CAPABILITY_LABELS, type PlayerCapabilities } from "../player/capabilities.ts";
 
 type Props = { player: PlayerController; snapshot: PlayerSnapshot };
 const TASK_STATES = { queued: "排队中", resolving: "解析中", downloading: "下载中", completed: "已完成", failed: "失败", cancelled: "已取消", skipped: "已跳过" };

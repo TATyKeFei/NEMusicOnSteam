@@ -33,7 +33,7 @@ import { QualityBridge, type QualitySnapshot } from "../quality/quality.ts";
 import { TogetherBridge, type TogetherSnapshot } from "../together/together.ts";
 import { UnblockBridge } from "../unblock/unblock.ts";
 import type { IdentityVariant } from "../together/identity-player.ts";
-import { browserStorage, readSettings, writeSettings, sanitizeSettings, notificationModeFor, type PlayerSettings } from "../settings.ts";
+import { browserStorage, readSettings, writeSettings, sanitizeSettings, notificationModeFor, type PlayerSettings } from "../settings/settings.ts";
 import { STEAM_PAGE_FALLBACK_CLASSES, steamPageTransition, steamPageVisible, type SteamPageSelectors } from "./steam-page.ts";
 import {
   BROWSER_VIEW_STACK_TOP,

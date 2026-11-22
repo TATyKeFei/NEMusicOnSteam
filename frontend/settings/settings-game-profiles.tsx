@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Dropdown, Field, TextField, Toggle } from "millennium";
-import type { PlayerController, PlayerSnapshot } from "./player/player.ts";
-import type { GameProfile } from "./playback/game-profile.ts";
+import type { PlayerController, PlayerSnapshot } from "../player/player.ts";
+import type { GameProfile } from "../playback/game-profile.ts";
 import { SettingsActions, SettingsButton } from "./settings-controls.tsx";
 
 export function GameProfileSettings({ player, snapshot }: { player: PlayerController; snapshot: PlayerSnapshot }) {

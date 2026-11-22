@@ -1,4 +1,4 @@
-import { sanitizeSettings } from "../settings.ts";
+import { sanitizeSettings } from "../settings/settings.ts";
 import type { DownloadTask } from "./download.ts";
 
 export const DOWNLOAD_TASKS_KEY = "nemusic.onsteam.download-tasks.v1";

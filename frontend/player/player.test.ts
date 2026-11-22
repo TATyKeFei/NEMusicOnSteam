@@ -13,7 +13,7 @@ import { isPlayerDocument, PLAYER_URL } from "../constants.ts";
 import { browserId, type BrowserView, type BrowserViewCreateOptions, type SteamPopup, type SteamWindow } from "./steam.ts";
 import { PLAYER_READY_SCRIPT, playerRecoveryScript, PLAYER_RECOVERY_CHECKPOINT_SCRIPT, PLAYER_RECOVERY_CLEAR_SCRIPT, playerRestoreScript, type PlayerRecoverySnapshot } from "./player-recovery-player.ts";
 import { ViewBridges } from "./view-bridges.ts";
-import { notificationModeFor } from "../settings.ts";
+import { notificationModeFor } from "../settings/settings.ts";
 import { GameProfileSession } from "../playback/game-profile.ts";
 import { CAPABILITIES_SCRIPT } from "./capabilities.ts";
 import type { PlayerCapabilities } from "./capabilities.ts";

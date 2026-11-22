@@ -3,11 +3,11 @@ import { GameProfileSettings } from "./settings-game-profiles.tsx";
 import { Dropdown, Field, TextField, Toggle } from "millennium";
 import { SettingsActions, SettingsButton } from "./settings-controls.tsx";
 import { useEffect, useState } from "react";
-import type { PlayerController, PlayerSnapshot } from "./player/player.ts";
-import { QUALITY_OPTIONS, qualityLabel } from "./quality/quality-player.ts";
-import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "./together/identity-player.ts";
+import type { PlayerController, PlayerSnapshot } from "../player/player.ts";
+import { QUALITY_OPTIONS, qualityLabel } from "../quality/quality-player.ts";
+import { IDENTITY_LABELS, IDENTITY_VARIANTS, type IdentityVariant } from "../together/identity-player.ts";
 import { sanitizeMpdSettings, type NotificationMode, type NotificationSettingsMode, type PlaybackBackend, type CrossfadeMode, type TransitionMode } from "./settings.ts";
-import { sanitizeUnblockSources } from "./unblock/sources.ts";
+import { sanitizeUnblockSources } from "../unblock/sources.ts";
 
 const NOTIFICATION_OPTIONS = [
   { data: "system", label: "系统通知" },

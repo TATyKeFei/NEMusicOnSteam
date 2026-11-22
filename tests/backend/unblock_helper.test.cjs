@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const { test } = require('node:test');
 const { Readable } = require('node:stream');
-const { createService, validateMatch, audioResult, publicAddress, audioHeaders, completeAudio, playbackSources, audioType, inspectAudio } = require('./unblock_helper.cjs');
+const { createService, validateMatch, audioResult, publicAddress, audioHeaders, completeAudio, playbackSources, audioType, inspectAudio } = require('../../backend/unblock_helper.cjs');
 
 const audio = { url: 'https://audio.example/song.flac', source: 'kuwo', br: 999000, size: 1234 };
 

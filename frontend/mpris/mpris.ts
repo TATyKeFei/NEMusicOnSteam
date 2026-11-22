@@ -1,7 +1,7 @@
 import { mprisHelper } from "../runtime/mpris-helper.ts";
 import { HelperConnectionError, type HelperConnection } from "../runtime/helper-client.ts";
 import { listenPlaybackState, releasePlayerSession, tryEvaluateInPlayer } from "../player/player-target.ts";
-import type { NotificationMode } from "../settings.ts";
+import type { NotificationMode } from "../settings/settings.ts";
 import { steamToast } from "../widget/toast.ts";
 import { SNAPSHOT_SCRIPT } from "../player/player-access.ts";
 import { commandScript, LYRICS_SCRIPT, type Command } from "./mpris-player.ts";
