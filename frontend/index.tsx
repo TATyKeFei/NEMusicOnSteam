@@ -5,8 +5,12 @@ import { registerSteamShutdown } from "./player/steam-shutdown.ts";
 import { SteamSettingsEntry } from "./widget/steam-settings.ts";
 import { SettingsContent } from "./settings/settings-content.tsx";
 import { SETTINGS_ICON } from "./widget/settings-icon.ts";
+import { SteamMusicButton } from "./now-playing/steam-button.ts";
+import { NowPlayingPanel } from "./now-playing/panel.tsx";
 
 const steamSettings = new SteamSettingsEntry(() => renderSettings());
+const musicButton = new SteamMusicButton((onClose, onDismiss) =>
+  <NowPlayingPanel player={getPlayer(steamSettings)} onClose={onClose} onDismiss={onDismiss} />);
 const shutdownBackend = ffi<[], string>("shutdown_backend");
 let runtimeStopped = false;
 
@@ -47,6 +51,7 @@ export function closePlayer(): string {
 export function shutdown(): string {
   if (runtimeStopped) return "ok";
   runtimeStopped = true;
+  musicButton.stop();
   steamSettings.stop();
   shutdownPlayer();
   return "ok";
@@ -65,6 +70,7 @@ export default definePlugin(() => {
   window.addEventListener("beforeunload", onPageExit);
   getPlayer(steamSettings).boot();
   steamSettings.start();
+  musicButton.start();
   return {
     title: "网易云音乐",
     icon: renderSettingsIcon(),

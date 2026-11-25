@@ -17,6 +17,10 @@ import { notificationModeFor } from "../settings/settings.ts";
 import { GameProfileSession } from "../playback/game-profile.ts";
 import { CAPABILITIES_SCRIPT } from "./capabilities.ts";
 import type { PlayerCapabilities } from "./capabilities.ts";
+import type { TrackState } from "../mpris/mpris.ts";
+import { commandScript, type Command } from "../mpris/mpris-player.ts";
+import { parseLyrics, songLyricsScript, type SongLyrics } from "../now-playing/lyrics.ts";
+import { SNAPSHOT_SCRIPT } from "./player-access.ts";
 
 const source = stripTypeScriptTypes(
   readFileSync(new URL("./player.ts", import.meta.url), "utf8")
@@ -48,6 +52,9 @@ type Controller = {
   settings: { playbackBackend: string };
   applyPlaybackBackend(): void;
   checkCompatibility(force?: boolean): Promise<void>;
+  readPlaybackState(): Promise<TrackState | null>;
+  controlPlayback(command: Command, trackId?: string): Promise<boolean>;
+  readSongLyrics(trackId: string): Promise<SongLyrics | null>;
   compatibility: { capabilities: PlayerCapabilities | null; status: string };
 };
 
@@ -67,6 +74,11 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
   const bridgeDisables: { enabled: boolean; restoreWeb?: boolean }[] = [];
   let onFullscreenRequest: ((active: boolean, fillWindow: boolean) => void) | null = null;
   let chromeHandlers: ChromeHandlers | null = null;
+  let webState: TrackState | null = null;
+  const mpvState = { active: true, trackId: "mpv", position: 10 } as TrackState;
+  const mpdState = { active: true, trackId: "mpd", position: 20 } as TrackState;
+  const audioCommands: { backend: string; command: Command }[] = [];
+  let readState: (() => Promise<TrackState | null>) | null = null;
   const client = {
     Window: options.desktopSupported === false ? {} : {
       ToggleFullScreen(active: boolean) {
@@ -123,10 +135,14 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
       getStatus() { return "已关闭"; }
     },
     MpvBridge: class extends FakeBridge {
+      snapshot() { return mpvState; }
+      async command(command: Command) { audioCommands.push({ backend: "mpv", command }); return true; }
       setEnabled(enabled: boolean, restoreWeb?: boolean) { super.setEnabled(enabled, restoreWeb); backendChanges.push(`mpv:${enabled}`); }
       whenStopped() { return releaseMpvStop ?? Promise.resolve(); }
     },
     MpdBridge: class extends FakeBridge {
+      snapshot() { return mpdState; }
+      async command(command: Command) { audioCommands.push({ backend: "mpd", command }); return true; }
       setEnabled(enabled: boolean, restoreWeb?: boolean) { super.setEnabled(enabled, restoreWeb); backendChanges.push(`mpd:${enabled}`); }
     },
     WebPreloadBridge: FakeBridge,
@@ -154,6 +170,7 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     BROWSER_VIEW_STACK_TOP: 1,
     PLAYER_URL,
     PLAYER_USER_AGENT: "Steam",
+    SNAPSHOT_SCRIPT, commandScript, parseLyrics, songLyricsScript,
     isPlayerDocument,
     sharedSteamClient: () => client,
     findMainPopup: () => popup,
@@ -161,6 +178,9 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     steamPageTransition: () => "none",
     tryEvaluateInPlayer: async (expression: string) => {
       evaluations.push(expression);
+      if (expression === SNAPSHOT_SCRIPT) return readState ? readState() : webState;
+      if (expression.includes("const command =")) return true;
+      if (expression.includes("const currentId =")) return { original: "[00:01]Hello", translated: "[00:01]你好", instrumental: false };
       if (expression === PLAYER_READY_SCRIPT) return options.ready ? options.ready() : true;
       if (expression === CAPABILITIES_SCRIPT) return options.capabilities?.() ?? null;
       if (expression === PLAYER_RECOVERY_CHECKPOINT_SCRIPT) return options.checkpoint ?? null;
@@ -193,6 +213,9 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     sessionReleases: () => sessionReleases,
     bridgeDisables,
     backendChanges,
+    audioCommands, mpvState, mpdState,
+    setWebState(state: TrackState | null) { webState = state; },
+    setStateReader(read: () => Promise<TrackState | null>) { readState = read; },
     holdMpvStop(promise: Promise<void> | null) { releaseMpvStop = promise; },
     get chromeHandlers() { return chromeHandlers; },
     async settle() { await player.viewCreation; },
@@ -219,6 +242,59 @@ function setup(options: { desktopSupported?: boolean; failToggle?: boolean; play
     },
   };
 }
+
+describe("song panel player access", () => {
+  it("reads and controls each active backend without MPRIS", async () => {
+    for (const backend of ["web", "mpv", "mpd"]) {
+      const runtime = setup({ playbackBackend: backend });
+      runtime.player.view = {} as BrowserView; runtime.player.loaded = true;
+      runtime.setWebState({ active: true, trackId: "web", position: 30 } as TrackState);
+      assert.equal((await runtime.player.readPlaybackState())?.trackId, backend);
+      assert.equal(await runtime.player.controlPlayback({ action: "next" }), true);
+      if (backend === "web") assert.ok(runtime.evaluations.includes(commandScript({ action: "next" })));
+      else assert.deepEqual(runtime.audioCommands, [{ backend, command: { action: "next" } }]);
+    }
+  });
+
+  it("does not create a player or send controls when closed or loading", async () => {
+    const runtime = setup();
+    assert.equal(await runtime.player.readPlaybackState(), null);
+    assert.equal(await runtime.player.controlPlayback({ action: "next" }), false);
+    assert.equal(await runtime.player.readSongLyrics("123"), null);
+    assert.equal(runtime.created.length, 0);
+    assert.equal(runtime.evaluations.length, 0);
+  });
+
+  it("rejects a seek from a previous track and passes the guard into the webpage", async () => {
+    const runtime = setup(); runtime.player.view = {} as BrowserView; runtime.player.loaded = true;
+    runtime.setWebState({ active: true, trackId: "123" } as TrackState);
+    const command = { action: "setposition", value: 20_000_000 };
+    assert.equal(await runtime.player.controlPlayback(command, "old"), false);
+    assert.equal(runtime.evaluations.some(script => script.includes("const command =")), false);
+    assert.equal(await runtime.player.controlPlayback(command, "123"), true);
+    assert.ok(runtime.evaluations.includes(commandScript(command, "123")));
+  });
+
+  it("discards state if the view or backend changes while awaiting a read", async () => {
+    for (const change of ["view", "backend"]) {
+      const runtime = setup(); runtime.player.view = {} as BrowserView; runtime.player.loaded = true;
+      let resolve!: (state: TrackState) => void;
+      runtime.setStateReader(() => new Promise(done => { resolve = done; }));
+      const pending = runtime.player.readPlaybackState();
+      if (change === "view") runtime.player.view = {} as BrowserView;
+      else runtime.player.settings.playbackBackend = "mpv";
+      resolve({ trackId: "123" } as TrackState);
+      assert.equal(await pending, null);
+    }
+  });
+
+  it("parses translated lyrics returned by the player page", async () => {
+    const runtime = setup(); runtime.player.view = {} as BrowserView; runtime.player.loaded = true;
+    const lyrics = await runtime.player.readSongLyrics("123");
+    assert.deepEqual(lyrics?.lines, [{ at: 1, text: "Hello", translation: "你好" }]);
+    assert.equal(lyrics?.text, "Hello");
+  });
+});
 
 describe("web compatibility recovery", () => {
   it("waits for confirmation before disabling a changed feature and re-enables it after recovery", async () => {

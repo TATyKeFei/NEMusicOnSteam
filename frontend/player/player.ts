@@ -7,7 +7,7 @@ import { DownloadBridge, type DownloadSnapshot } from "../download/download.ts";
 import { mprisHelper } from "../runtime/mpris-helper.ts";
 import { steamToast } from "../widget/toast.ts";
 import { sameBounds, type Bounds } from "../widget/layout.ts";
-import { MprisBridge } from "../mpris/mpris.ts";
+import { MprisBridge, type TrackState } from "../mpris/mpris.ts";
 import { MpvBridge } from "../playback/mpv.ts";
 import { MpdBridge } from "../playback/mpd.ts";
 import { WebPreloadBridge } from "../playback/web-preload.ts";
@@ -21,6 +21,7 @@ import { GameProfileSession } from "../playback/game-profile.ts";
 import type { Command } from "../mpris/mpris-player.ts";
 import { EXTERNAL_MUTE_SCRIPT } from "../playback/external-audio.ts";
 import { commandScript } from "../mpris/mpris-player.ts";
+import { parseLyrics, songLyricsScript, type SongLyrics } from "../now-playing/lyrics.ts";
 import { releasePlayerSession, preparePlayerTarget } from "./player-target.ts";
 import { evaluateInPlayer, tryEvaluateInPlayer, PLAYER_TARGET_MISSING } from "./player-target.ts";
 import { retirePlayerTargets } from "./player-recovery.ts";
@@ -443,11 +444,40 @@ export class PlayerController {
     if (this.settings.playbackBackend === "mpd") this.mpd.reconnect();
   }
 
-  private async performCommand(command: Command): Promise<boolean> {
+  /** 歌曲面板直接读取当前播放后端，Web 播放不依赖 MPRIS 或 Linux。 */
+  async readPlaybackState(): Promise<TrackState | null> {
+    if (this.shuttingDown || !this.loaded || !this.view) return null;
+    const view = this.view;
+    const backend = this.settings.playbackBackend;
+    const state = backend === "mpv" ? this.mpv.snapshot() : backend === "mpd" ? this.mpd.snapshot()
+      : await tryEvaluateInPlayer(SNAPSHOT_SCRIPT, { awaitPromise: true }) as TrackState | null;
+    return !this.shuttingDown && this.view === view && this.loaded && this.settings.playbackBackend === backend ? state : null;
+  }
+
+  async controlPlayback(command: Command, trackId?: string): Promise<boolean> {
+    if (trackId) {
+      const current = await this.readPlaybackState();
+      if (current?.trackId !== trackId) return false;
+    }
+    return this.performCommand(command, trackId);
+  }
+
+  async readSongLyrics(trackId: string): Promise<SongLyrics | null> {
+    if (this.shuttingDown || !this.loaded || !this.view) return null;
+    const view = this.view;
+    const result = await tryEvaluateInPlayer(songLyricsScript(trackId), { awaitPromise: true }) as {
+      original: string; translated: string; instrumental: boolean;
+    } | null;
+    if (this.shuttingDown || this.view !== view || !this.loaded || !result) return null;
+    return { lines: parseLyrics(result.original, result.translated), text: result.original.replace(/\[[^\]]*\]/g, "").trim(),
+      instrumental: result.instrumental === true };
+  }
+
+  private async performCommand(command: Command, trackId?: string): Promise<boolean> {
     if (this.shuttingDown || !this.loaded) return false;
     return this.settings.playbackBackend === "mpv" ? this.mpv.command(command)
       : this.settings.playbackBackend === "mpd" ? this.mpd.command(command)
-        : Boolean(await tryEvaluateInPlayer(commandScript(command), { awaitPromise: true, userGesture: true }));
+        : Boolean(await tryEvaluateInPlayer(commandScript(command, trackId), { awaitPromise: true, userGesture: true }));
   }
 
   open(): string {

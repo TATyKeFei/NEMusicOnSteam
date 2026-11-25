@@ -87,11 +87,19 @@ function playerFixture() {
     state, media, store, provider, commands, addControl,
     confirmVolume: () => confirmVolume?.(),
     snapshot: () => runInNewContext(SNAPSHOT_SCRIPT, context),
-    command: (command: Command): Promise<boolean> => runInNewContext(commandScript(command), context),
+    command: (command: Command, trackId?: string): Promise<boolean> => runInNewContext(commandScript(command, trackId), context),
   };
 }
 
 describe("NetEase MPRIS player control", () => {
+  it("rejects a panel seek if the song changed before the page received it", async () => {
+    const player = playerFixture();
+    assert.equal(await player.command({ action: "setposition", value: 90_000_000 }, "old-track"), false);
+    assert.equal(player.media.currentTime, 30);
+    assert.equal(player.commands.length, 0);
+    assert.equal(await player.command({ action: "setposition", value: 90_000_000 }, "track-1"), true);
+    assert.equal(player.media.currentTime, 90);
+  });
   it("reads confirmed volume with the volume popup unmounted and an audio element at 100%", async () => {
     const player = playerFixture();
     assert.equal(player.snapshot().volume, 0.42);

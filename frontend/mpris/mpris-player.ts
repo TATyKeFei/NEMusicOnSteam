@@ -97,11 +97,13 @@ export const LYRICS_SCRIPT = `(async () => {
   return { lyric: '', resolved: answered };
 })()`;
 
-export function commandScript(command: Command): string {
+export function commandScript(command: Command, trackId?: string): string {
   return `(async () => {
     ${PLAYER_ACCESS_SCRIPT}
     ${TRANSPORT_SCRIPT}
     const command = ${JSON.stringify(command)};
+    const expectedTrack = ${JSON.stringify(trackId ?? "")};
+    if (expectedTrack && String(playerStore?.getState()?.playing?.resourceTrackId || '') !== expectedTrack) return false;
     const visible = selector => Array.from(document.querySelectorAll(selector)).find(element => {
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
