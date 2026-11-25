@@ -67,7 +67,7 @@ function page() {
 }
 
 describe("web next-track preloading", () => {
-  it("silently buffers the next song and reuses its complete URL response during native playback", async () => {
+  it("silently buffers the next song without replacing native playback requests", async () => {
     const fixture = page();
     assert.equal(fixture.tick(), true);
     await flush();
@@ -76,28 +76,33 @@ describe("web next-track preloading", () => {
     assert.equal(fixture.media[0].src, "https://audio.example/2.mp3");
     assert.equal(fixture.media[0].muted, true);
     assert.equal(fixture.media[0].preload, "auto");
+    assert.equal(fixture.network.default, fixture.original);
     const result = await fixture.request();
     assert.equal(result.data[0].id, 2);
     assert.equal(result.data[0].md5, "md5");
-    assert.equal(fixture.calls.length, 1);
+    assert.equal(fixture.calls.length, 2);
     assert.equal(fixture.current.currentTime, 80);
-    const hooked = fixture.network.default;
     fixture.tick();
     await flush();
-    assert.equal(fixture.network.default, hooked);
+    assert.equal(fixture.network.default, fixture.original);
     assert.equal(fixture.media.length, 1);
   });
 
-  it("does not reuse another song, quality, or an expired URL", async () => {
+  it("leaves fresh URL resolution to native playback, including trial and spatial audio options", async () => {
     const fixture = page();
     fixture.tick();
     await flush();
+    fixture.trial();
+    const data = { ...nextRequest, trialMode: 1, immerseType: "c51" };
+    const result = await fixture.request(data);
+    assert.deepEqual(result.data[0].freeTrialInfo, { start: 0, end: 30 });
+    assert.equal(fixture.calls.at(-1)?.data, data);
     await fixture.request({ ...nextRequest, ids: "[3]" });
     await fixture.request({ ...nextRequest, level: "lossless" });
-    assert.equal(fixture.calls.length, 3);
+    assert.equal(fixture.calls.length, 4);
     fixture.advance(301000);
     await fixture.request();
-    assert.equal(fixture.calls.length, 4);
+    assert.equal(fixture.calls.length, 5);
   });
 
   it("cancels buffering on queue changes, seeking away, or disabling", async () => {
@@ -120,6 +125,25 @@ describe("web next-track preloading", () => {
     assert.equal(fixture.media[2].src, "");
     assert.equal(fixture.network.default, fixture.original);
     assert.equal(fixture.context.__NEMusicOnSteamWebPreload, undefined);
+  });
+
+  it("keeps current playback and native requests intact when the preload fails", async () => {
+    const fixture = page();
+    fixture.tick();
+    await flush();
+    fixture.media[0].onerror?.();
+    assert.equal(fixture.media[0].src, "");
+    assert.equal(fixture.current.currentTime, 80);
+    assert.equal(fixture.current.paused, false);
+    assert.equal(fixture.state.playing.resourceTrackId, 1);
+    const result = await fixture.request();
+    assert.equal(result.data[0].url, "https://audio.example/2.mp3");
+    assert.equal(fixture.calls.length, 2);
+    assert.equal(fixture.network.default, fixture.original);
+    fixture.tick();
+    await flush();
+    assert.equal(fixture.calls.length, 2);
+    assert.equal(fixture.media.length, 1);
   });
 
   it("uses the page's current quality and discards the old quality buffer", async () => {

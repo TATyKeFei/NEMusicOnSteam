@@ -161,7 +161,7 @@ export function SettingsContent({ player }: { player: PlayerController }) {
         </Field>}
       </>}
       {settings.playbackBackend !== "mpd" && <Field label="提前预载下一首" description={settings.playbackBackend === "web"
-        ? "在当前歌曲剩余约 45 秒时提前解析并缓冲下一首，切歌时复用缓存。仅用于顺序播放和列表循环。"
+        ? "在当前歌曲剩余约 45 秒时静音缓冲下一首，当前歌曲完整播完后由网页正常切歌。仅用于顺序播放和列表循环，缓存能否复用取决于浏览器。"
         : "无过渡模式下也可提前缓冲下一首，当前歌曲播完后再切换。需要 ffmpeg；自动衔接和渐变过渡会始终预载。"} bottomSeparator="standard">
         <Toggle value={settings.preloadNext} onChange={preloadNext => setSnapshot(player.updateSettings({ preloadNext }))} />
       </Field>}

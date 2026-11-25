@@ -6,7 +6,7 @@ export const WEB_PRELOAD_CLEAR_SCRIPT = `(() => {
   return true;
 })()`;
 
-/** 缓冲音频，并让网页自己的下一次 URL 请求复用同一地址，以便命中浏览器媒体缓存。 */
+/** 独立静音缓冲音频；正式播放仍由网页重新解析，浏览器自行决定是否复用媒体缓存。 */
 export function webPreloadScript(enabled: boolean): string {
   if (!enabled) return WEB_PRELOAD_CLEAR_SCRIPT;
   return `(() => {
@@ -29,30 +29,7 @@ export function webPreloadScript(enabled: boolean): string {
       });
       const network = moduleId == null ? null : loader(moduleId);
       if (typeof network?.default !== 'function') return false;
-      const original = network.default;
       api = { store: playerStore, active: true, revision: 0, cache: null, media: null, pending: '', retryAt: 0, status: '等待预载时机' };
-      const requestKey = (raw, options) => {
-        try {
-          const url = new URL(raw, location.href);
-          if (!/\\/(?:api|weapi|eapi)\\/song\\/enhance\\/player\\/url\\/v1$/.test(url.pathname)) return '';
-          const data = options?.data;
-          const params = typeof data === 'string' ? new URLSearchParams(data) : null;
-          const value = name => params?.get(name) || data?.[name] || url.searchParams.get(name);
-          const rawIds = value('ids');
-          const ids = typeof rawIds === 'string' ? JSON.parse(rawIds) : rawIds;
-          if (!Array.isArray(ids) || ids.length !== 1) return '';
-          return String(ids[0]) + ':' + String(value('level') || '') + ':' + String(value('encodeType') || '');
-        } catch { return ''; }
-      };
-      const hooked = async function(raw, options) {
-        const cached = api.cache;
-        if (api.active && cached && cached.expires > Date.now() && cached.request === requestKey(raw, options)) {
-          return new Response(JSON.stringify(cached.payload), { status: 200, headers: { 'Content-Type': 'application/json' } });
-        }
-        return original.apply(this, arguments);
-      };
-      Object.assign(hooked, original);
-      network.default = hooked;
       api.clear = () => {
         api.revision++;
         api.controller?.abort();
@@ -71,7 +48,6 @@ export function webPreloadScript(enabled: boolean): string {
       api.restore = () => {
         api.active = false;
         api.clear();
-        if (network.default === hooked) network.default = original;
         if (globalThis[key] === api) delete globalThis[key];
       };
       api.preload = (candidate, snapshot, quality) => {
@@ -111,7 +87,7 @@ export function webPreloadScript(enabled: boolean): string {
           api.media = media;
           api.status = '正在缓冲下一首：' + song.name;
           media.oncanplay = () => { if (api.media === media) api.status = '下一首已有可播放缓冲：' + song.name; };
-          api.cache = { key: cacheKey, request: requestKey(path, options), payload,
+          api.cache = { key: cacheKey,
             expires: Date.now() + Math.min(Number(item.expi) || 300, 300) * 1000 };
           media.onerror = () => {
             if (api.media !== media) return;

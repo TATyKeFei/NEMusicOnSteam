@@ -793,6 +793,29 @@ describe("player view reuse after Big Picture", () => {
 
 
 describe("MPD backend switching", () => {
+  it("keeps both external backends disabled in web mode even with mpv transitions saved", async () => {
+    const runtime = setup();
+    runtime.player.view = {} as BrowserView;
+    Object.assign(runtime.player.settings, { mpvTransitionMode: "auto", mpvCrossfade: "standard", preloadNext: true });
+    runtime.player.applyPlaybackBackend();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(runtime.backendChanges, ["mpv:false", "mpd:false"]);
+  });
+
+  it("does not enable a pending external backend after switching back to web", async () => {
+    const runtime = setup({ playbackBackend: "mpd" });
+    runtime.player.view = {} as BrowserView;
+    let release!: () => void;
+    runtime.holdMpvStop(new Promise<void>(resolve => { release = resolve; }));
+    runtime.player.applyPlaybackBackend();
+    runtime.player.settings.playbackBackend = "web";
+    runtime.player.applyPlaybackBackend();
+    release();
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(runtime.backendChanges.includes("mpv:true"), false);
+    assert.equal(runtime.backendChanges.includes("mpd:true"), false);
+  });
+
   it("waits for the previous backend to finish before enabling MPD", async () => {
     const runtime = setup({ playbackBackend: "mpd" });
     runtime.player.view = {} as BrowserView;
